@@ -1,0 +1,29 @@
+{
+  "email": {
+    "emailEnable": "yes",
+    "smtpServer": "hwhzsmtp.qiye.163.com",
+    "smtpPort": 465,
+    "useSsl": true,
+    "smtpUser": "agent@imv.com.vn",
+    "smtpPass": "ENV:SMTP_PASS",
+    "senderEmail": "agent@imv.com.vn",
+    "senderName": "IMV Order Portal"
+  },
+  "sapb1": {
+    "baseUrl": "https://sapsld.imv.com.vn:50000/b1s/v1",
+    "companyID": "IMV260806",
+    "userId": "admin02",
+    "passWrd": "ENV:SAPB1_PASSWORD"
+  },
+  "admin": {
+    "email": "ENV:ADMIN_EMAIL",
+    "password": "ENV:USER_PASSWORD"
+  },
+  "mysql": {
+    "dbIp": "mysql8",
+    "dbPort": 3386,
+    "dbName": "orderdatasource",
+    "dpUser": "orderdata",
+    "encrypted": true
+  }
+}

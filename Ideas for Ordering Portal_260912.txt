@@ -1,0 +1,10 @@
+
+I want build Ordering Portal for Customers order directly on this portal and go directly to Draft Sales Order on SAP B1 as below.
+- App support 2 languages Vietnamese & English, default is Vietnamsese
+- System should have Backend and Frontend for Portal, Zalo MiniApp
+- Use database MySql as in config.json and .env for password, key
+- Can connect directly to SAP B1 to get Business Partner, Items, Special Price, Promotion Program and push Sales Order back
+- Customer login have to choose Distributor or User.
+- For first time accessing system, show Sign-Up srceen. User ID must be Email or phone number. If Distributor have to input MST Code then Portal will lookup correct BP code in SAP B1 system.
+- If Distributor then will get Special Price, Promotion from IMV
+- The UI for Product listing will show item name, original price, discount price. Please recommend best layout for Web and Mobile and Zalo MiniApp.
