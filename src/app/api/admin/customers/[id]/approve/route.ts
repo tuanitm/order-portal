@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query, queryOne } from "@/lib/db/connection";
 import { sendApprovalEmail } from "@/lib/email/sender";
+import { requireAdminPermission } from "@/lib/auth/adminSession";
 
 /**
  * POST /api/admin/customers/[id]/approve — Approve a customer
@@ -10,14 +11,9 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    // Admin auth check
-    const adminToken = request.cookies.get("admin-token")?.value;
-    if (!adminToken) {
-      return NextResponse.json(
-        { error: "Unauthorized" },
-        { status: 401 }
-      );
-    }
+    const guard = await requireAdminPermission(request, "customers");
+    if (guard.response) return guard.response;
+    const session = guard.session;
 
     const { id } = await params;
     const customerId = parseInt(id, 10);
@@ -33,10 +29,11 @@ export async function POST(
       id: number;
       email: string | null;
       full_name: string;
+      sap_card_code: string | null;
       approval_status: string;
       language: "vi" | "en";
     }>(
-      "SELECT id, email, full_name, approval_status, language FROM users WHERE id = ?",
+      "SELECT id, email, full_name, sap_card_code, approval_status, language FROM users WHERE id = ?",
       [customerId]
     );
 
@@ -58,8 +55,16 @@ export async function POST(
     await query(
       `UPDATE users SET approval_status = 'approved', approved_at = NOW(), approved_by = ?
        WHERE id = ?`,
-      [adminToken, customerId]
+      [session.email, customerId]
     );
+
+    // Fill the account column in customers table (link SAP customer to portal account)
+    if (customer.email && customer.sap_card_code) {
+      await query(
+        `UPDATE customers SET account = ? WHERE sap_card_code = ?`,
+        [customer.email, customer.sap_card_code]
+      );
+    }
 
     // Send approval email
     if (customer.email) {

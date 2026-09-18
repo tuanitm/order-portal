@@ -13,6 +13,10 @@ interface Customer {
   mst_code: string | null;
   sap_card_code: string | null;
   sap_card_name: string | null;
+  sap_price_list_num: number | null;
+  sap_cus_grp01: string | null;
+  sap_cus_grp02: string | null;
+  sap_cus_grp03: string | null;
   approval_status: ApprovalStatus;
   rejection_reason: string | null;
   approved_at: string | null;
@@ -71,6 +75,23 @@ export default function AdminCustomersPage() {
       }
     } catch (error) {
       console.error("Approve failed:", error);
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleResync = async (customerId: number) => {
+    setActionLoading(customerId);
+    try {
+      const res = await fetch(`/api/admin/customers/${customerId}/resync-sap`, { method: "POST" });
+      if (res.ok) {
+        await fetchCustomers(activeFilter);
+      } else {
+        const data = await res.json();
+        alert(data.error || "Failed to resync");
+      }
+    } catch (error) {
+      console.error("Resync failed:", error);
     } finally {
       setActionLoading(null);
     }
@@ -156,9 +177,7 @@ export default function AdminCustomersPage() {
               {t("admin.customers")}
             </h1>
             <p style={{ color: "var(--text-tertiary, #94A3B8)", fontSize: "0.875rem", marginTop: "0.25rem" }}>
-              {locale === "vi"
-                ? "Quản lý và duyệt tài khoản khách hàng mới"
-                : "Manage and approve new customer accounts"}
+              Manage and approve new customer accounts
             </p>
           </div>
           <a href={`/${locale}`} style={{
@@ -233,6 +252,7 @@ export default function AdminCustomersPage() {
                       t("admin.mstCode"),
                       t("admin.bpCode"),
                       t("admin.bpName"),
+                      "Group",
                       t("admin.registeredAt"),
                       t("admin.status"),
                       t("admin.actions"),
@@ -275,6 +295,9 @@ export default function AdminCustomersPage() {
                       </td>
                       <td style={{ padding: "0.75rem 1rem", color: "var(--text-secondary, #64748B)" }}>
                         {customer.sap_card_name || "—"}
+                      </td>
+                      <td style={{ padding: "0.75rem 1rem", color: "var(--text-secondary, #64748B)", fontFamily: "monospace", fontSize: "0.75rem", whiteSpace: "nowrap" }}>
+                        {[customer.sap_cus_grp01, customer.sap_cus_grp02, customer.sap_cus_grp03].filter(Boolean).join(" / ") || "—"}
                       </td>
                       <td style={{ padding: "0.75rem 1rem", color: "var(--text-tertiary, #94A3B8)", whiteSpace: "nowrap", fontSize: "0.75rem" }}>
                         {formatDate(customer.created_at)}
@@ -330,6 +353,26 @@ export default function AdminCustomersPage() {
                               ✕ {t("admin.reject")}
                             </button>
                           </div>
+                        )}
+                        {customer.sap_card_code && (
+                          <button
+                            onClick={() => handleResync(customer.id)}
+                            disabled={actionLoading === customer.id}
+                            style={{
+                              padding: "0.375rem 0.75rem",
+                              borderRadius: "var(--radius-md, 6px)",
+                              border: "1px solid var(--color-gray-200, #E2E8F0)",
+                              fontSize: "0.75rem",
+                              fontWeight: 600,
+                              cursor: actionLoading === customer.id ? "not-allowed" : "pointer",
+                              background: "var(--bg-primary, #fff)",
+                              color: "var(--text-secondary, #64748B)",
+                              opacity: actionLoading === customer.id ? 0.6 : 1,
+                              marginTop: customer.approval_status === "pending" ? "0.375rem" : 0,
+                            }}
+                          >
+                            ↻ Resync SAP
+                          </button>
                         )}
                       </td>
                     </tr>

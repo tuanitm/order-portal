@@ -1,91 +1,53 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useEffect } from "react";
 import { useTranslations, useLocale } from "next-intl";
 import ProductCard from "@/components/product/ProductCard";
-import type { ProductWithPricing } from "@/types/product";
-
-// ── Demo Products (will be replaced by API data) ──
-const DEMO_PRODUCTS: ProductWithPricing[] = [
-  {
-    id: 1, sapItemCode: "KMD-SBN150", itemNameVi: "Bình Silicon Nâu 150ml (Núm 1 Tia)",
-    itemNameEn: "Brown Silicone Bottle 150ml (Single Flow Nipple)", uom: "PCS",
-    packSize: "1 PCS", category: "Bình sữa", basePrice: 359000, imageUrl: null,
-    isActive: true, displayPrice: 359000, specialPrice: null, discountPercent: null, hasPromotion: false,
-  },
-  {
-    id: 2, sapItemCode: "KMD-SBN250", itemNameVi: "Bình Silicon Nâu 250ml (Núm 3 Tia)",
-    itemNameEn: "Brown Silicone Bottle 250ml (Triple Flow Nipple)", uom: "PCS",
-    packSize: "1 PCS", category: "Bình sữa", basePrice: 379000, imageUrl: null,
-    isActive: true, displayPrice: 329000, specialPrice: 329000, discountPercent: 13, hasPromotion: true,
-  },
-  {
-    id: 3, sapItemCode: "KMD-SBT150", itemNameVi: "Bình Silicon Trắng 150ml (Núm 1 Tia)",
-    itemNameEn: "White Silicone Bottle 150ml (Single Flow Nipple)", uom: "PCS",
-    packSize: "1 PCS", category: "Bình sữa", basePrice: 359000, imageUrl: null,
-    isActive: true, displayPrice: 299000, specialPrice: 299000, discountPercent: 17, hasPromotion: true,
-  },
-  {
-    id: 4, sapItemCode: "KMD-SBT250", itemNameVi: "Bình Silicon Trắng 250ml (Núm 3 Tia)",
-    itemNameEn: "White Silicone Bottle 250ml (Triple Flow Nipple)", uom: "PCS",
-    packSize: "1 PCS", category: "Bình sữa", basePrice: 379000, imageUrl: null,
-    isActive: true, displayPrice: 379000, specialPrice: null, discountPercent: null, hasPromotion: false,
-  },
-  {
-    id: 5, sapItemCode: "KMD-PPSU210", itemNameVi: "Bình Nhựa PPSU 210ml (Núm 1 Tia)",
-    itemNameEn: "PPSU Plastic Bottle 210ml (Single Flow Nipple)", uom: "PCS",
-    packSize: "1 PCS", category: "Bình sữa", basePrice: 389000, imageUrl: null,
-    isActive: true, displayPrice: 339000, specialPrice: 339000, discountPercent: 13, hasPromotion: true,
-  },
-  {
-    id: 6, sapItemCode: "KMD-PPSU300", itemNameVi: "Bình Nhựa PPSU 300ml (Núm 3 Tia)",
-    itemNameEn: "PPSU Plastic Bottle 300ml (Triple Flow Nipple)", uom: "PCS",
-    packSize: "1 PCS", category: "Bình sữa", basePrice: 399000, imageUrl: null,
-    isActive: true, displayPrice: 399000, specialPrice: null, discountPercent: null, hasPromotion: false,
-  },
-  {
-    id: 7, sapItemCode: "KMD-BCQ01", itemNameVi: "Bộ Cọ Bình Sữa",
-    itemNameEn: "Bottle Cleaning Brush Set", uom: "SET",
-    packSize: "1 SET", category: "Phụ kiện", basePrice: 89000, imageUrl: null,
-    isActive: true, displayPrice: 0, specialPrice: 0, discountPercent: 100, hasPromotion: true,
-  },
-  {
-    id: 8, sapItemCode: "KMD-NUM01", itemNameVi: "Núm Ti Silicone Size S (0-3 tháng)",
-    itemNameEn: "Silicone Nipple Size S (0-3 months)", uom: "PACK",
-    packSize: "2 PCS/PACK", category: "Phụ kiện", basePrice: 119000, imageUrl: null,
-    isActive: true, displayPrice: 99000, specialPrice: 99000, discountPercent: 17, hasPromotion: false,
-  },
-];
-
-const CATEGORIES = ["Bình sữa", "Phụ kiện"];
-const CATEGORIES_EN: Record<string, string> = {
-  "Bình sữa": "Bottles",
-  "Phụ kiện": "Accessories",
-};
+import type { ProductWithPricing, ProductListResponse } from "@/types/product";
 
 export default function HomePage() {
   const t = useTranslations();
   const locale = useLocale();
   const [searchQuery, setSearchQuery] = useState("");
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
+  const [products, setProducts] = useState<ProductWithPricing[]>([]);
+  const [categories, setCategories] = useState<string[]>([]);
+  const [total, setTotal] = useState(0);
+  const [isLoading, setIsLoading] = useState(true);
 
-  const filteredProducts = useMemo(() => {
-    return DEMO_PRODUCTS.filter((product) => {
-      // Category filter
-      if (activeCategory && product.category !== activeCategory) return false;
+  // Debounced fetch whenever search/category changes
+  useEffect(() => {
+    const controller = new AbortController();
+    const timer = setTimeout(async () => {
+      setIsLoading(true);
+      try {
+        const params = new URLSearchParams();
+        if (searchQuery) params.set("search", searchQuery);
+        if (activeCategory) params.set("category", activeCategory);
+        params.set("limit", "100");
 
-      // Search filter
-      if (searchQuery) {
-        const query = searchQuery.toLowerCase();
-        const name = locale === "vi" ? product.itemNameVi : product.itemNameEn;
-        return (
-          (name?.toLowerCase().includes(query)) ||
-          product.sapItemCode.toLowerCase().includes(query)
-        );
+        const res = await fetch(`/api/products?${params.toString()}`, {
+          signal: controller.signal,
+        });
+        if (!res.ok) throw new Error("Failed to load products");
+        const data: ProductListResponse & { categories: string[] } = await res.json();
+        setProducts(data.items);
+        setTotal(data.total);
+        setCategories(data.categories || []);
+      } catch (err) {
+        if (err instanceof Error && err.name !== "AbortError") {
+          console.error("Failed to load products:", err);
+        }
+      } finally {
+        setIsLoading(false);
       }
-      return true;
-    });
-  }, [searchQuery, activeCategory, locale]);
+    }, 250);
+
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [searchQuery, activeCategory]);
 
   return (
     <div className="page">
@@ -163,23 +125,25 @@ export default function HomePage() {
         </div>
 
         {/* Category Filter */}
-        <div className="category-filter" style={{ marginBottom: "1.5rem" }} id="category-filter">
-          <button
-            className={`category-chip ${!activeCategory ? "active" : ""}`}
-            onClick={() => setActiveCategory(null)}
-          >
-            {t("common.all")}
-          </button>
-          {CATEGORIES.map((cat) => (
+        {categories.length > 0 && (
+          <div className="category-filter" style={{ marginBottom: "1.5rem" }} id="category-filter">
             <button
-              key={cat}
-              className={`category-chip ${activeCategory === cat ? "active" : ""}`}
-              onClick={() => setActiveCategory(activeCategory === cat ? null : cat)}
+              className={`category-chip ${!activeCategory ? "active" : ""}`}
+              onClick={() => setActiveCategory(null)}
             >
-              {locale === "vi" ? cat : CATEGORIES_EN[cat] || cat}
+              {t("common.all")}
             </button>
-          ))}
-        </div>
+            {categories.map((cat) => (
+              <button
+                key={cat}
+                className={`category-chip ${activeCategory === cat ? "active" : ""}`}
+                onClick={() => setActiveCategory(activeCategory === cat ? null : cat)}
+              >
+                {cat}
+              </button>
+            ))}
+          </div>
+        )}
 
         {/* Product Count */}
         <div style={{
@@ -195,14 +159,18 @@ export default function HomePage() {
             fontSize: "var(--text-sm)",
             color: "var(--text-tertiary)",
           }}>
-            {filteredProducts.length} {locale === "vi" ? "sản phẩm" : "products"}
+            {total} {locale === "vi" ? "sản phẩm" : "products"}
           </span>
         </div>
 
         {/* Product Grid */}
-        {filteredProducts.length > 0 ? (
+        {isLoading ? (
+          <div style={{ textAlign: "center", padding: "4rem 2rem", color: "var(--text-tertiary)" }}>
+            {t("common.loading")}
+          </div>
+        ) : products.length > 0 ? (
           <div className="product-grid" id="product-grid">
-            {filteredProducts.map((product, index) => (
+            {products.map((product, index) => (
               <div
                 key={product.sapItemCode}
                 style={{ animationDelay: `${index * 0.05}s` }}

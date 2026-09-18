@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query, queryOne } from "@/lib/db/connection";
 import { sendRejectionEmail } from "@/lib/email/sender";
+import { requireAdminPermission } from "@/lib/auth/adminSession";
 
 /**
  * POST /api/admin/customers/[id]/reject — Reject a customer
@@ -11,14 +12,8 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    // Admin auth check
-    const adminToken = request.cookies.get("admin-token")?.value;
-    if (!adminToken) {
-      return NextResponse.json(
-        { error: "Unauthorized" },
-        { status: 401 }
-      );
-    }
+    const guard = await requireAdminPermission(request, "customers");
+    if (guard.response) return guard.response;
 
     const { id } = await params;
     const customerId = parseInt(id, 10);

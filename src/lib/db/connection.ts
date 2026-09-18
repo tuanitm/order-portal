@@ -1,58 +1,14 @@
 import mysql, { Pool, PoolOptions } from 'mysql2/promise';
-import { readFileSync } from 'fs';
-import { join } from 'path';
-import { execSync } from 'child_process';
+import { loadConfig, resolveEnvSecret } from '@/lib/config';
 
 let pool: Pool | null = null;
-
-/**
- * Decrypt a Fernet-encrypted value using the project's encryption key.
- * Falls back to the raw value if decryption fails.
- */
-function decryptFernetValue(encryptedValue: string): string {
-  try {
-    const scriptDir = join(process.cwd(), 'scripts');
-    const keyPath = join(scriptDir, '.encryption_key');
-
-    // Use Python to decrypt (reusing existing Fernet infrastructure)
-    const result = execSync(
-      `python -c "import sys; from cryptography.fernet import Fernet; key = open(r'${keyPath}','rb').read(); f = Fernet(key); print(f.decrypt(b'${encryptedValue}').decode(), end='')"`,
-      { encoding: 'utf-8', timeout: 10000 }
-    );
-    return result.trim();
-  } catch (error) {
-    console.error('Failed to decrypt Fernet value:', error);
-    return encryptedValue;
-  }
-}
 
 /**
  * Load database configuration from config.json and .env
  */
 function loadDbConfig(): PoolOptions {
-  const configPath = join(process.cwd(), 'config.json');
-  const config = JSON.parse(readFileSync(configPath, 'utf-8'));
-  const mysqlConfig = config.mysql;
-
-  // Read MySQL password from .env
-  let dbPassword = '';
-  try {
-    const envPath = join(process.cwd(), '.env');
-    const envContent = readFileSync(envPath, 'utf-8');
-    const match = envContent.match(/MYSQL_DB_PASS=["']?([^"'\r\n]+)["']?/);
-    if (match) {
-      const rawValue = match[1];
-      // Check if encrypted (Fernet tokens start with gAAAAA)
-      if (rawValue.startsWith('gAAAAA') || rawValue.startsWith('FERNET:')) {
-        const token = rawValue.replace(/^FERNET:/, '');
-        dbPassword = decryptFernetValue(token);
-      } else {
-        dbPassword = rawValue;
-      }
-    }
-  } catch (error) {
-    console.error('Failed to read .env for MYSQL_DB_PASS:', error);
-  }
+  const mysqlConfig = loadConfig().mysql;
+  const dbPassword = resolveEnvSecret('MYSQL_DB_PASS');
 
   return {
     host: mysqlConfig.dbIp || 'localhost',

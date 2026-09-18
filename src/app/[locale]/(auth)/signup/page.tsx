@@ -23,7 +23,10 @@ export default function SignupPage() {
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [mstCode, setMstCode] = useState(identifierType === "mst" ? prefilledIdentifier : "");
-  const [mstResult, setMstResult] = useState<{ cardCode: string; cardName: string } | null>(null);
+  const [mstResult, setMstResult] = useState<{
+    cardCode: string; cardName: string; priceListNum: number | null;
+    cusGrp01: string | null; cusGrp02: string | null; cusGrp03: string | null;
+  } | null>(null);
   const [mstError, setMstError] = useState("");
   const [mstLoading, setMstLoading] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -68,7 +71,10 @@ export default function SignupPage() {
       if (!res.ok) throw new Error("Lookup failed");
       const data = await res.json();
       if (data.found) {
-        setMstResult({ cardCode: data.cardCode, cardName: data.cardName });
+        setMstResult({
+          cardCode: data.cardCode, cardName: data.cardName, priceListNum: data.priceListNum ?? null,
+          cusGrp01: data.cusGrp01 ?? null, cusGrp02: data.cusGrp02 ?? null, cusGrp03: data.cusGrp03 ?? null,
+        });
         // Auto-fill customer name from SAP BP
         if (data.cardName) {
           setFullName(data.cardName);
@@ -218,6 +224,10 @@ export default function SignupPage() {
           mstCode: mstCode.trim() || undefined,
           sapCardCode: mstResult?.cardCode || undefined,
           sapCardName: mstResult?.cardName || undefined,
+          sapPriceListNum: mstResult?.priceListNum ?? undefined,
+          sapCusGrp01: mstResult?.cusGrp01 ?? undefined,
+          sapCusGrp02: mstResult?.cusGrp02 ?? undefined,
+          sapCusGrp03: mstResult?.cusGrp03 ?? undefined,
           emailVerified: true,
         }),
       });

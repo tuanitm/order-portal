@@ -1,0 +1,28 @@
+{
+    "custGrpList": [
+        {
+            "custgrpcode1": "GT",
+            "custgrpname1": "GENERAL TRADE",
+            "custgrpcode2": "GTSO",
+            "custgrpname2": "SOUTH AGENTS"
+        },
+        {
+            "custgrpcode1": "GT",
+            "custgrpname1": "GENERAL TRADE",
+            "custgrpcode2": "GTSE",
+            "custgrpname2": "SOUTH EAST AGENTS"
+        },
+        {
+            "custgrpcode1": "GT",
+            "custgrpname1": "GENERAL TRADE",
+            "custgrpcode2": "GTNO",
+            "custgrpname2": "NORTH AGENTS"
+        },
+        {
+            "custgrpcode1": "GT",
+            "custgrpname1": "GENERAL TRADE",
+            "custgrpcode2": "GTSE",
+            "custgrpname2": "SOUTH EAST AGENTS"
+        }
+    ]
+}

@@ -1,12 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
-import { readFileSync } from "fs";
-import { join } from "path";
-import { execSync } from "child_process";
+import bcrypt from "bcryptjs";
+import { loadConfig, resolveEnvSecret } from "@/lib/config";
+import { queryOne } from "@/lib/db/connection";
+import { signAdminToken } from "@/lib/auth/adminSession";
+
+interface AdminUserRow {
+  id: number;
+  email: string;
+  password_hash: string;
+  is_active: number;
+}
 
 /**
- * POST /api/admin/login — Admin authentication
- * Body: { email: string, password: string }
- * Uses credentials from config.json admin block
+ * POST /api/admin/login — Admin authentication.
+ * Accepts either the config.json bootstrap super-admin credential, or an
+ * `admin_users` account (bcrypt-verified). Issues a signed JWT in the
+ * `admin-token` cookie either way.
  */
 export async function POST(request: NextRequest) {
   try {
@@ -20,68 +29,57 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Load admin credentials from config.json and .env
-    const configPath = join(process.cwd(), "config.json");
-    const config = JSON.parse(readFileSync(configPath, "utf-8"));
-    const adminConfig = config.admin;
+    // ── Bootstrap super-admin (config.json) ──
+    const adminConfig = loadConfig().admin;
+    const bootstrapEmail = adminConfig.email.startsWith("ENV:")
+      ? resolveEnvSecret(adminConfig.email.replace("ENV:", ""))
+      : adminConfig.email;
+    const bootstrapPassword = adminConfig.password.startsWith("ENV:")
+      ? resolveEnvSecret(adminConfig.password.replace("ENV:", ""))
+      : adminConfig.password;
 
-    // Resolve admin email from ENV
-    let adminEmail = adminConfig.email;
-    if (adminEmail.startsWith("ENV:")) {
-      const envKey = adminEmail.replace("ENV:", "");
-      const envPath = join(process.cwd(), ".env");
-      const envContent = readFileSync(envPath, "utf-8");
-      const match = envContent.match(new RegExp(`${envKey}=[\"']?([^\"'\\r\\n]+)[\"']?`));
-      adminEmail = match ? match[1] : "";
+    if (email === bootstrapEmail && password === bootstrapPassword) {
+      const token = signAdminToken({ email, isSuperAdmin: true });
+      const response = NextResponse.json({
+        success: true,
+        admin: { email, isSuperAdmin: true },
+      });
+      response.cookies.set("admin-token", token, {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: "lax",
+        maxAge: 8 * 60 * 60,
+        path: "/",
+      });
+      return response;
     }
 
-    // Resolve admin password from ENV
-    let adminPassword = adminConfig.password;
-    if (adminPassword.startsWith("ENV:")) {
-      const envKey = adminPassword.replace("ENV:", "");
-      const envPath = join(process.cwd(), ".env");
-      const envContent = readFileSync(envPath, "utf-8");
-      const match = envContent.match(new RegExp(`${envKey}=(?:FERNET:)?[\"']?([^\"'\\r\\n]+)[\"']?`));
-      const rawValue = match ? match[1] : "";
-
-      if (rawValue.startsWith("gAAAAA")) {
-        const keyPath = join(process.cwd(), "scripts", ".encryption_key");
-        try {
-          adminPassword = execSync(
-            `python -c "import sys; from cryptography.fernet import Fernet; key = open(r'${keyPath}','rb').read(); f = Fernet(key); print(f.decrypt(b'${rawValue}').decode(), end='')"`,
-            { encoding: "utf-8", timeout: 10000 }
-          ).trim();
-        } catch {
-          console.error("[Admin] Failed to decrypt admin password");
-          adminPassword = rawValue;
-        }
-      } else {
-        adminPassword = rawValue;
-      }
+    // ── admin_users account ──
+    const adminUser = await queryOne<AdminUserRow>(
+      "SELECT id, email, password_hash, is_active FROM admin_users WHERE email = ? LIMIT 1",
+      [email]
+    );
+    if (!adminUser || !adminUser.is_active) {
+      return NextResponse.json({ error: "Invalid admin credentials" }, { status: 401 });
     }
 
-    // Verify credentials
-    if (email !== adminEmail || password !== adminPassword) {
-      return NextResponse.json(
-        { error: "Invalid admin credentials" },
-        { status: 401 }
-      );
+    const passwordValid = await bcrypt.compare(password, adminUser.password_hash);
+    if (!passwordValid) {
+      return NextResponse.json({ error: "Invalid admin credentials" }, { status: 401 });
     }
 
-    // Set admin cookie
+    const token = signAdminToken({ email: adminUser.email, isSuperAdmin: false, adminId: adminUser.id });
     const response = NextResponse.json({
       success: true,
-      admin: { email: adminEmail },
+      admin: { email: adminUser.email, isSuperAdmin: false },
     });
-
-    response.cookies.set("admin-token", adminEmail, {
+    response.cookies.set("admin-token", token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
-      maxAge: 8 * 60 * 60, // 8 hours
+      maxAge: 8 * 60 * 60,
       path: "/",
     });
-
     return response;
   } catch (error) {
     console.error("[API] Admin login error:", error);

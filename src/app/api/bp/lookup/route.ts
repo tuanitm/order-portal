@@ -27,6 +27,10 @@ export async function POST(request: NextRequest) {
         cardName: bp.CardName,
         email: bp.EmailAddress || null,
         mstCode: bp.FederalTaxID || mstCode.trim(),
+        priceListNum: bp.PriceListNum ?? null,
+        cusGrp01: bp.U_CusGrp01 || null,
+        cusGrp02: bp.U_CusGrp02 || null,
+        cusGrp03: bp.U_CusGrp03 || null,
       });
     } else {
       console.log(`[API] BP not found for MST ${mstCode}`);

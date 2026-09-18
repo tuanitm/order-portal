@@ -160,7 +160,7 @@
   },
   "admin": {
     "title": "Administration",
-    "customers": "Customer Management",
+    "customers": "Customers Approval",
     "customerList": "Customer List",
     "pendingCustomers": "Pending",
     "approvedCustomers": "Approved",

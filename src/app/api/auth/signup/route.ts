@@ -16,6 +16,10 @@ export async function POST(request: NextRequest) {
       mstCode,
       sapCardCode,
       sapCardName,
+      sapPriceListNum,
+      sapCusGrp01,
+      sapCusGrp02,
+      sapCusGrp03,
       password,
       emailVerified,
     } = body;
@@ -92,10 +96,14 @@ export async function POST(request: NextRequest) {
     // Hash password
     const passwordHash = await bcrypt.hash(password, 12);
 
+    // Note: customer_groups is populated only by the manual custgroup.json
+    // import, never automatically here — this just links the user to
+    // whatever group codes SAP reports for them.
+
     // Insert user with pending approval status
     const result = await query<{ insertId: number }>(
-      `INSERT INTO users (email, phone, password_hash, full_name, mst_code, sap_card_code, sap_card_name, approval_status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')`,
+      `INSERT INTO users (email, phone, password_hash, full_name, mst_code, sap_card_code, sap_card_name, sap_price_list_num, sap_cus_grp01, sap_cus_grp02, sap_cus_grp03, approval_status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
       [
         email.trim().toLowerCase(),
         phone?.trim() || null,
@@ -104,6 +112,10 @@ export async function POST(request: NextRequest) {
         mstCode?.trim() || null,
         sapCardCode || null,
         sapCardName || null,
+        sapPriceListNum ?? null,
+        sapCusGrp01 || null,
+        sapCusGrp02 || null,
+        sapCusGrp03 || null,
       ]
     );
 

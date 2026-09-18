@@ -1,0 +1,58 @@
+{
+    "itemGrpList": [
+        {
+            "itemgrpcode1": "D1",
+            "itemgrpname1": "PIGEON",
+            "itemgrpcode2": "D11",
+            "itemgrpname2": "IMPORT BOTTLE"
+        },
+        {
+            "itemgrpcode1": "D1",
+            "itemgrpname1": "PIGEON",
+            "itemgrpcode2": "D12",
+            "itemgrpname2": "LOCAL BOTTLE"
+        },
+        {
+            "itemgrpcode1": "D1",
+            "itemgrpname1": "PIGEON",
+            "itemgrpcode2": "D13",
+            "itemgrpname2": "IMPORT NIPPLE"
+        },
+        {
+            "itemgrpcode1": "D1",
+            "itemgrpname1": "PIGEON",
+            "itemgrpcode2": "D14",
+            "itemgrpname2": "LOCAL NIPPLE"
+        },
+        {
+            "itemgrpcode1": "D1",
+            "itemgrpname1": "PIGEON",
+            "itemgrpcode2": "D15",
+            "itemgrpname2": "LOCAL TOILETRIES"
+        },
+        {
+            "itemgrpcode1": "D1",
+            "itemgrpname1": "PIGEON",
+            "itemgrpcode2": "D16",
+            "itemgrpname2": "IMPORT TOILETRIES"
+        },
+        {
+            "itemgrpcode1": "D1",
+            "itemgrpname1": "PIGEON",
+            "itemgrpcode2": "D17",
+            "itemgrpname2": "IMPORT ACCESSORIES"
+        },
+        {
+            "itemgrpcode1": "L1",
+            "itemgrpname1": "ETSUKO",
+            "itemgrpcode2": "L11",
+            "itemgrpname2": "BABY PANTS"
+        },
+        {
+            "itemgrpcode1": "L1",
+            "itemgrpname1": "ETSUKO",
+            "itemgrpcode2": "L15",
+            "itemgrpname2": "TOILETRIES ETSUKO"
+        }
+    ]
+}
