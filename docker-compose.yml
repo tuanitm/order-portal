@@ -1,5 +1,5 @@
 # Order Portal — Next.js app. MySQL is NOT part of this file: it runs in its
-# own container, which joins this file's network ("order-portal-net") and is
+# own container, which joins this file's network ("order-network") and is
 # reached by container name (default "mysql8") on its internal port 3306.
 #
 #   docker compose up -d --build            # build + start the portal (http://<server>:5005)
@@ -9,10 +9,10 @@
 #
 # Put the MySQL container on the network (once the portal is up, so the
 # network exists):
-#   docker network connect order-portal-net <mysql-container-name>
+#   docker network connect order-network <mysql-container-name>
 # and make it permanent in MySQL's own compose file:
-#   services: { mysql8: { networks: [order-portal-net] } }
-#   networks: { order-portal-net: { external: true } }
+#   services: { mysql8: { networks: [order-network] } }
+#   networks: { order-network: { external: true } }
 # If its container name isn't "mysql8" (or it listens on another internal port),
 # set MYSQL_HOST / MYSQL_PORT in the .env file next to this one.
 #
@@ -39,7 +39,7 @@ services:
       - ./.env:/app/.env:ro
       - ./scripts/.encryption_key:/app/scripts/.encryption_key:ro
     networks:
-      - order-portal-net
+      - order-network
 
   # Optional: calls the portal's own admin sync endpoints every day at 03:00
   # (replaces the Windows scheduled task). Enable with `--profile sync`.
@@ -64,8 +64,8 @@ services:
       - >-
         echo '0 3 * * * cd /app && node scripts/daily-sync.mjs > /proc/1/fd/1 2>&1' > /etc/crontabs/root && exec crond -f -l 8
     networks:
-      - order-portal-net
+      - order-network
 
 networks:
-  order-portal-net:
-    name: order-portal-net
+  order-network:
+    name: order-network
