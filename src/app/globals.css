@@ -7,6 +7,10 @@
 
 /* ── CSS Custom Properties ── */
 :root {
+  /* Always light, whatever the OS theme is set to (also keeps native form
+     controls and scrollbars light). */
+  color-scheme: light;
+
   /* Brand Colors */
   --color-primary: #2BBCB3;
   --color-primary-light: #4DD9D0;
@@ -139,18 +143,20 @@
   --sidebar-width: 420px;
 }
 
-/* ── Dark Mode ── */
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg-primary: #0F172A;
-    --bg-secondary: #1E293B;
-    --bg-tertiary: #334155;
-    --bg-glass: rgba(30, 41, 59, 0.85);
-    --text-primary: #F1F5F9;
-    --text-secondary: #94A3B8;
-    --text-tertiary: #64748B;
-    --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.3), 0 1px 2px rgba(0, 0, 0, 0.2);
-  }
+/* ── Dark Mode ──
+   Not tied to the OS theme any more (the portal is light by default). Kept as
+   an opt-in: it only applies when <html data-theme="dark"> is set, which
+   nothing does yet — a future theme switch could. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg-primary: #0F172A;
+  --bg-secondary: #1E293B;
+  --bg-tertiary: #334155;
+  --bg-glass: rgba(30, 41, 59, 0.85);
+  --text-primary: #F1F5F9;
+  --text-secondary: #94A3B8;
+  --text-tertiary: #64748B;
+  --shadow-card: 0 2px 8px rgba(0, 0, 0, 0.3), 0 1px 2px rgba(0, 0, 0, 0.2);
 }
 
 /* ── Global Reset ── */
