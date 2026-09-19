@@ -175,7 +175,7 @@ export async function syncItems(): Promise<{ itemsSynced: number }> {
             item.U_ItemCat05 || null,
             item.U_ItemCat06 || null,
             basePrice,
-            item.U_ImageUrl || null,
+            item.U_ImageURL?.trim() || null,
           ]
         );
 

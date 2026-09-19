@@ -47,7 +47,7 @@ export interface SapItem {
   QuantityOnStock: number;
   SalesUnit: string;
   ItemPrices: SapItemPrice[];
-  U_ImageUrl?: string; // UDF for item image
+  U_ImageURL?: string | null; // UDF for item image (SAP field name is case-sensitive)
   ItemsGroupCode: number;
   Valid: string;
   U_ItemCat01?: string;
@@ -353,10 +353,38 @@ export class SapB1Client {
   }): Promise<SapItem[]> {
     await this.ensureSession();
     try {
+      // U_ImageURL is a UDF: until Service Layer has picked it up (it caches
+      // metadata, so a freshly-added UDF is rejected as "invalid property"
+      // until it's restarted) selecting it fails the whole request. Retry
+      // without it rather than syncing nothing.
+      try {
+        return await this.fetchItems(params, true);
+      } catch (error) {
+        if (!String(error instanceof Error ? error.message : error).includes('U_ImageURL')) throw error;
+        console.warn('[SAP] Items.U_ImageURL not available in Service Layer yet — syncing without item images');
+        return await this.fetchItems(params, false);
+      }
+    } catch (error) {
+      console.error('[SAP] Failed to get items:', error);
+      return [];
+    }
+  }
+
+  private async fetchItems(
+    params: {
+      top?: number;
+      skip?: number;
+      filter?: string;
+      search?: string;
+      itemCatPairs?: { cat1: string; cat2: string }[];
+    } | undefined,
+    withImage: boolean
+  ): Promise<SapItem[]> {
+    {
       const queryParts: string[] = [];
-      // Note: no image field selected — this SAP instance has no UDF for item images.
       const select =
         "ItemCode,ItemName,SalesUnit,ItemPrices,ItemsGroupCode,Valid," +
+        (withImage ? "U_ImageURL," : "") +
         "U_ItemCat01,U_ItemCat02,U_ItemCat03,U_ItemCat04,U_ItemCat05,U_ItemCat06";
       queryParts.push(`$select=${encodeURIComponent(select)}`);
 
@@ -385,9 +413,6 @@ export class SapB1Client {
         `/Items?${queryString}`
       );
       return result.value || [];
-    } catch (error) {
-      console.error('[SAP] Failed to get items:', error);
-      return [];
     }
   }
 

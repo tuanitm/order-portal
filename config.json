@@ -7,7 +7,7 @@
     "smtpUser": "agent@imv.com.vn",
     "smtpPass": "ENV:SMTP_PASS",
     "senderEmail": "agent@imv.com.vn",
-    "senderName": "IMV Order Portal"
+    "senderName": "Order Portal Admin"
   },
   "sapb1": {
     "baseUrl": "https://sapsld.imv.com.vn:50000/b1s/v1",
