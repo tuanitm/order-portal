@@ -5,6 +5,7 @@
 #   docker compose up -d --build            # build + start the portal (http://<server>:5005)
 #   docker compose logs -f order-portal
 #   docker compose --profile sync up -d     # also start the 03:00 SAP daily sync
+#   docker compose --profile proxy up -d    # also start HTTPS on https://order.imv.com.vn (Caddy)
 #   docker compose run --rm daily-sync node scripts/daily-sync.mjs   # run a sync now
 #
 # Put the MySQL container on the network (once the portal is up, so the
@@ -16,6 +17,12 @@
 # If its container name isn't "mysql8" (or it listens on another internal port),
 # set MYSQL_HOST / MYSQL_PORT in the .env file next to this one.
 #
+# Domain / HTTPS: the "proxy" profile runs Caddy on ports 80/443, which gets a
+# Let's Encrypt certificate for PORTAL_DOMAIN (default order.imv.com.vn) and
+# forwards to the portal. Needs DNS for the domain pointing at this server and
+# ports 80/443 reachable. With the proxy in front, hide the direct port by
+# adding PORTAL_BIND=127.0.0.1 to the .env file next to this one.
+#
 # Secrets stay outside the image: config.json, .env and
 # scripts/.encryption_key must exist next to this file on the server.
 
@@ -26,7 +33,7 @@ services:
     container_name: order-portal
     restart: unless-stopped
     ports:
-      - "${PORTAL_PORT:-5005}:5005"
+      - "${PORTAL_BIND:-0.0.0.0}:${PORTAL_PORT:-5005}:5005"
     environment:
       TZ: Asia/Ho_Chi_Minh
       # Override config.json's dbIp/dbPort (those are for local dev: the host
@@ -66,6 +73,31 @@ services:
     networks:
       - order-network
 
+  # Optional HTTPS front door — see "Domain / HTTPS" above. Enable with `--profile proxy`.
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["proxy"]
+    container_name: order-caddy
+    restart: unless-stopped
+    depends_on:
+      - order-portal
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      PORTAL_DOMAIN: ${PORTAL_DOMAIN:-order.imv.com.vn}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - order-network
+
 networks:
   order-network:
     name: order-network
+
+volumes:
+  caddy_data:
+  caddy_config:

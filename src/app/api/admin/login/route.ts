@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { isHttpsRequest } from "@/lib/auth/cookies";
 import bcrypt from "bcryptjs";
 import { loadConfig, resolveEnvSecret } from "@/lib/config";
 import { queryOne } from "@/lib/db/connection";
@@ -46,7 +47,7 @@ export async function POST(request: NextRequest) {
       });
       response.cookies.set("admin-token", token, {
         httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
+        secure: isHttpsRequest(request),
         sameSite: "lax",
         maxAge: 8 * 60 * 60,
         path: "/",
@@ -75,7 +76,7 @@ export async function POST(request: NextRequest) {
     });
     response.cookies.set("admin-token", token, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
+      secure: isHttpsRequest(request),
       sameSite: "lax",
       maxAge: 8 * 60 * 60,
       path: "/",

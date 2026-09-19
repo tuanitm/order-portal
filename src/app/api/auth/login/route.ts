@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { isHttpsRequest } from "@/lib/auth/cookies";
 import { queryOne } from "@/lib/db/connection";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
@@ -144,7 +145,7 @@ export async function POST(request: NextRequest) {
 
     response.cookies.set("auth-token", token, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
+      secure: isHttpsRequest(request),
       sameSite: "lax",
       maxAge: 7 * 24 * 60 * 60, // 7 days
       path: "/",

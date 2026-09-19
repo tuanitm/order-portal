@@ -1,0 +1,16 @@
+# Reverse proxy for the "proxy" profile in docker-compose.yml.
+# Caddy obtains and renews the HTTPS certificate for the domain by itself and
+# sends X-Forwarded-Proto/-For/-Host to the portal (needed for the login cookie
+# to be marked Secure only when the browser really used https).
+{$PORTAL_DOMAIN:order.imv.com.vn} {
+	encode zstd gzip
+	reverse_proxy order-portal:5005
+
+	# Domain only reachable inside your LAN (Let's Encrypt can't validate it)?
+	# Use Caddy's own internal CA instead — browsers will warn until its root
+	# certificate is trusted — by uncommenting:
+	# tls internal
+	#
+	# Or use a certificate you already have:
+	# tls /certs/order.imv.com.vn.crt /certs/order.imv.com.vn.key
+}

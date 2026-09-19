@@ -16,3 +16,4 @@ gen_smtp_pass.py
 *.bat
 docker-compose.yml
 Dockerfile
+Caddyfile
