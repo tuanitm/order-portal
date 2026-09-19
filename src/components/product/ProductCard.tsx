@@ -5,7 +5,7 @@ import { useCart, CartItem } from "@/hooks/useCart";
 import type { ProductWithPricing } from "@/types/product";
 
 function formatPrice(amount: number): string {
-  return new Intl.NumberFormat("vi-VN").format(amount) + "₫";
+  return new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 0 }).format(amount) + "₫";
 }
 
 interface ProductCardProps {
@@ -35,6 +35,10 @@ export default function ProductCard({ product }: ProductCardProps) {
       uom: product.uom || "PCS",
       imageUrl: product.imageUrl,
       discountPercent: discountPercent,
+      promoBuyQty: product.promoBuyQty,
+      promoGiveQty: product.promoGiveQty,
+      promoGiveItemCode: product.promoGiveItemCode,
+      promoGiveItemName: product.promoGiveItemName,
     };
     addItem(cartItem);
   };
@@ -59,8 +63,8 @@ export default function ProductCard({ product }: ProductCardProps) {
             📦
           </div>
         )}
-        {/* Promo badge */}
-        {product.hasPromotion && (
+        {/* Promo badge — any deal at all (percent off and/or a bonus-item promo) */}
+        {(product.hasPromotion || product.hasBuyGivePromo) && (
           <div className="product-card__badge">
             <span className="badge badge-primary">{t("product.promotion")}</span>
           </div>
@@ -70,7 +74,17 @@ export default function ProductCard({ product }: ProductCardProps) {
       {/* Body */}
       <div className="product-card__body">
         <h3 className="product-card__name">{name || product.sapItemCode}</h3>
-        <div className="product-card__code">{product.sapItemCode}</div>
+
+        <div className="product-card__meta-row">
+          <span className="product-card__code">{product.sapItemCode}</span>
+          <span className="product-card__uom">{product.uom || "PCS"}</span>
+        </div>
+
+        {product.packSize && (
+          <div className="product-card__pack-size">
+            {t("product.packSize")}: {product.packSize}
+          </div>
+        )}
 
         {/* Pricing */}
         <div className="product-card__pricing">
@@ -85,10 +99,26 @@ export default function ProductCard({ product }: ProductCardProps) {
           )}
         </div>
 
-        <div className="product-card__uom">
-          {t("product.uom")}: {product.uom || "PCS"}
-          {product.packSize && ` · ${t("product.packSize")}: ${product.packSize}`}
-        </div>
+        {/* Buy-X-Get-Y bonus item — kept visually distinct (green "gift" box)
+            from the orange percent-discount badge above, so both benefits
+            are legible at a glance without being confused for one another. */}
+        {product.hasBuyGivePromo && (
+          <div className="product-card__gift">
+            <span aria-hidden>🎁</span>
+            <span>
+              {product.promoGiveItemCode === product.sapItemCode
+                ? t("product.buyGetSamePromo", {
+                    buyQty: product.promoBuyQty ?? 1,
+                    giveQty: product.promoGiveQty ?? 1,
+                  })
+                : t("product.buyGetPromo", {
+                    buyQty: product.promoBuyQty ?? 1,
+                    giveQty: product.promoGiveQty ?? 1,
+                    giveItem: product.promoGiveItemName || product.promoGiveItemCode || "",
+                  })}
+            </span>
+          </div>
+        )}
 
         {/* Actions */}
         <div className="product-card__actions" style={{ marginTop: "0.75rem" }}>

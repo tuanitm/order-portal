@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { styles, SyncButton, LoadingOrEmpty } from "../adminUi";
+import { styles, SyncButton, LoadingOrEmpty, Toggle } from "../adminUi";
 
 interface SapCustomer {
   id: number;
@@ -14,6 +14,7 @@ interface SapCustomer {
   cus_grp03: string | null;
   phone: string | null;
   account: string | null;
+  is_enabled: number;
   last_synced: string | null;
 }
 
@@ -27,6 +28,7 @@ export default function SapCustomersPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [sortKey, setSortKey] = useState<SortKey>("sap_card_code");
   const [sortDir, setSortDir] = useState<SortDir>("ASC");
+  const [savingCode, setSavingCode] = useState<string | null>(null);
 
   const load = useCallback(async (q: string, sort: SortKey, order: SortDir) => {
     setIsLoading(true);
@@ -43,6 +45,17 @@ export default function SapCustomersPage() {
     const timer = setTimeout(() => load(search, sortKey, sortDir), 250);
     return () => clearTimeout(timer);
   }, [search, sortKey, sortDir, load]);
+
+  const toggleEnabled = async (cardCode: string, isEnabled: boolean) => {
+    setSavingCode(cardCode);
+    await fetch(`/api/admin/sap-customers/${cardCode}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ isEnabled }),
+    });
+    setCustomers((prev) => prev.map((c) => (c.sap_card_code === cardCode ? { ...c, is_enabled: isEnabled ? 1 : 0 } : c)));
+    setSavingCode(null);
+  };
 
   const handleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -82,7 +95,8 @@ export default function SapCustomersPage() {
             <h1 style={styles.title}>SAP Customers</h1>
             <p style={styles.subtitle}>
               {total} customers cached. Scoped to customer groups in the database.
-              Double-click a column header to sort.
+              Double-click a column header to sort. Untick <strong>Enable</strong> to block a customer from signing
+              in or placing orders — they&apos;ll be shown a message to contact Admin at 0908404678.
             </p>
           </div>
           <SyncButton url="/api/admin/sap-customers/sync" label="Sync from SAP" onDone={() => load(search, sortKey, sortDir)} />
@@ -111,11 +125,12 @@ export default function SapCustomersPage() {
                     <SortTh colKey="price_list_num" label="Price List" />
                     <SortTh colKey="phone" label="Phone" />
                     <SortTh colKey="account" label="Account" />
+                    <th style={styles.th}>Enable</th>
                   </tr>
                 </thead>
                 <tbody>
                   {customers.map((c) => (
-                    <tr key={c.sap_card_code}>
+                    <tr key={c.sap_card_code} style={!c.is_enabled ? { opacity: 0.55 } : undefined}>
                       <td style={{ ...styles.td, fontFamily: "monospace", fontSize: "0.75rem" }}>{c.sap_card_code}</td>
                       <td style={styles.td}>{c.card_name || "—"}</td>
                       <td style={{ ...styles.td, fontFamily: "monospace", fontSize: "0.75rem" }}>{c.mst_code || "—"}</td>
@@ -129,6 +144,13 @@ export default function SapCustomersPage() {
                           ? <span style={{ color: "#059669", fontWeight: 600, fontSize: "0.8125rem" }}>{c.account}</span>
                           : <span style={{ color: "var(--text-tertiary, #94A3B8)", fontSize: "0.75rem" }}>—</span>
                         }
+                      </td>
+                      <td style={styles.td}>
+                        <Toggle
+                          checked={!!c.is_enabled}
+                          disabled={savingCode === c.sap_card_code}
+                          onChange={(v) => toggleEnabled(c.sap_card_code, v)}
+                        />
                       </td>
                     </tr>
                   ))}

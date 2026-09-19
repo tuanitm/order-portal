@@ -19,6 +19,12 @@ export interface ProductWithPricing extends Product {
   discountPercent: number | null;
   hasPromotion: boolean;
   promotionTitle?: string;
+  /** Buy-X-get-Y ("bonus item") promotion, independent of the percent discount above. */
+  hasBuyGivePromo: boolean;
+  promoBuyQty?: number;
+  promoGiveItemCode?: string;
+  promoGiveItemName?: string;
+  promoGiveQty?: number;
 }
 
 export interface ProductQuery {

@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useParams } from "next/navigation";
-import { styles, Badge, BackLink } from "../../adminUi";
+import { styles, Badge, BackLink, SyncButton, ORDER_STATUS_LABELS } from "../../adminUi";
 
 const STATUSES = ["draft", "submitted", "processing", "sap_draft_created", "approved", "rejected", "completed"];
 const STATUS_TONE: Record<string, "success" | "warning" | "error" | "neutral"> = {
@@ -14,15 +14,15 @@ interface OrderDetail {
   id: number; order_number: string; customer_name: string | null; customer_email: string | null;
   delivery_address: string | null; contact_phone: string | null; subtotal: string; discount_total: string;
   grand_total: string; remark: string | null; status: string; sap_doc_entry: number | null;
-  sap_doc_num: number | null; created_at: string;
+  sap_doc_num: number | null; created_at: string; sap_card_code: string | null;
 }
 interface OrderLine {
   id: number; sap_item_code: string; item_name: string; quantity: number; uom: string;
-  unit_price: string; discount_percent: string; line_total: string;
+  base_unit_price: string; unit_price: string; discount_percent: string; line_total: string;
 }
 
 function formatPrice(v: string) {
-  return new Intl.NumberFormat("vi-VN").format(Number(v)) + "₫";
+  return new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 0 }).format(Number(v)) + "₫";
 }
 
 export default function AdminOrderDetailPage() {
@@ -71,17 +71,33 @@ export default function AdminOrderDetailPage() {
 
         <div style={{ ...styles.cardPadded }}>
           <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", marginBottom: "1rem" }}>
-            <Badge label={order.status} tone={STATUS_TONE[order.status] || "neutral"} />
+            <Badge label={ORDER_STATUS_LABELS[order.status] || order.status} tone={STATUS_TONE[order.status] || "neutral"} />
             <select
               value={order.status}
               disabled={isSaving}
               onChange={(e) => updateStatus(e.target.value)}
               style={styles.input}
             >
-              {STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
+              {STATUSES.map((s) => <option key={s} value={s}>{ORDER_STATUS_LABELS[s] || s}</option>)}
             </select>
-            {order.sap_doc_num && <span style={{ fontSize: "0.8125rem", color: "var(--text-tertiary, #94A3B8)" }}>SAP Doc #{order.sap_doc_num}</span>}
+            {order.sap_doc_num ? (
+              <span style={{ fontSize: "0.8125rem", color: "var(--color-primary, #2BBCB3)", fontWeight: 600 }}>
+                ✓ Pushed to SAP — Doc #{order.sap_doc_num}
+              </span>
+            ) : (
+              <SyncButton
+                url={`/api/admin/orders/${params.id}/confirm`}
+                label="Confirm & Push to SAP"
+                loadingLabel="Pushing to SAP..."
+                onDone={load}
+              />
+            )}
           </div>
+          {!order.sap_doc_num && !order.sap_card_code && (
+            <p style={{ fontSize: "0.75rem", color: "#DC2626", marginBottom: "1rem" }}>
+              This customer has no linked SAP BP code — confirming will fail until one is set.
+            </p>
+          )}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "1rem", fontSize: "0.8125rem" }}>
             <div><strong>Address:</strong> {order.delivery_address || "—"}</div>
             <div><strong>Phone:</strong> {order.contact_phone || "—"}</div>
@@ -96,6 +112,7 @@ export default function AdminOrderDetailPage() {
                 <tr>
                   <th style={styles.th}>Item</th>
                   <th style={styles.th}>Qty</th>
+                  <th style={styles.th}>Base Unit Price</th>
                   <th style={styles.th}>Unit Price</th>
                   <th style={styles.th}>Discount %</th>
                   <th style={styles.th}>Line Total</th>
@@ -106,6 +123,7 @@ export default function AdminOrderDetailPage() {
                   <tr key={l.id}>
                     <td style={styles.td}>{l.item_name} <span style={{ color: "var(--text-tertiary, #94A3B8)", fontSize: "0.75rem" }}>({l.sap_item_code})</span></td>
                     <td style={styles.td}>{l.quantity} {l.uom}</td>
+                    <td style={styles.td}>{formatPrice(l.base_unit_price)}</td>
                     <td style={styles.td}>{formatPrice(l.unit_price)}</td>
                     <td style={styles.td}>{l.discount_percent}%</td>
                     <td style={styles.td}>{formatPrice(l.line_total)}</td>

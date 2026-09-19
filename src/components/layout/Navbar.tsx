@@ -4,6 +4,8 @@ import { useState, useEffect, useCallback } from "react";
 import { useTranslations, useLocale } from "next-intl";
 import { useRouter, usePathname } from "@/i18n/navigation";
 import { useCart } from "@/hooks/useCart";
+import { useSearch } from "@/hooks/useSearch";
+import { useAppName } from "@/hooks/useAppName";
 import { Link } from "@/i18n/navigation";
 
 interface AuthUser {
@@ -17,6 +19,8 @@ export default function Navbar() {
   const router = useRouter();
   const pathname = usePathname();
   const { totalItems, toggleCart } = useCart();
+  const { searchQuery, setSearchQuery } = useSearch();
+  const appName = useAppName();
   const [user, setUser] = useState<AuthUser | null>(null);
   const [showMenu, setShowMenu] = useState(false);
 
@@ -48,6 +52,13 @@ export default function Navbar() {
     }
   };
 
+  // Products are only listed on the home page — searching from anywhere else
+  // (orders, checkout...) takes the customer there to see the results.
+  const handleSearchChange = (value: string) => {
+    setSearchQuery(value);
+    if (value && pathname !== "/") router.push("/");
+  };
+
   const switchLocale = () => {
     const newLocale = locale === "vi" ? "en" : "vi";
     router.replace(pathname, { locale: newLocale });
@@ -65,7 +76,7 @@ export default function Navbar() {
               <path d="M16 10a4 4 0 0 1-8 0" />
             </svg>
           </div>
-          <span>{t("common.appName")}</span>
+          <span>{appName}</span>
         </Link>
 
         {/* Search Bar */}
@@ -78,6 +89,8 @@ export default function Navbar() {
             type="text"
             className="navbar__search-input"
             placeholder={t("product.searchPlaceholder")}
+            value={searchQuery}
+            onChange={(e) => handleSearchChange(e.target.value)}
             id="navbar-search-input"
           />
         </div>

@@ -1,11 +1,32 @@
 "use client";
 
 import { useTranslations } from "next-intl";
-import { useCart } from "@/hooks/useCart";
+import { useCart, calculateFreeQty, type CartItem } from "@/hooks/useCart";
 import { Link } from "@/i18n/navigation";
 
 function formatPrice(amount: number): string {
-  return new Intl.NumberFormat("vi-VN").format(amount) + "₫";
+  return new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 0 }).format(amount) + "₫";
+}
+
+/**
+ * Free/bonus item quantity for a buy-give promo, recalculated live from the
+ * line's current quantity (see calculateFreeQty) — updates immediately as
+ * the customer changes quantity in the cart.
+ */
+function FreeGiftLine({ item }: { item: CartItem }) {
+  const t = useTranslations();
+  const freeQty = calculateFreeQty(item);
+  if (freeQty <= 0) return null;
+
+  const isSameItem = item.promoGiveItemCode === item.sapItemCode;
+  return (
+    <div className="cart-item__free-gift">
+      🎁{" "}
+      {isSameItem
+        ? t("cart.freeGiftSame", { qty: freeQty })
+        : t("cart.freeGift", { qty: freeQty, item: item.promoGiveItemName || item.promoGiveItemCode || "" })}
+    </div>
+  );
 }
 
 export default function CartSidebar() {
@@ -95,6 +116,7 @@ export default function CartSidebar() {
                       / {item.uom}
                     </span>
                   </div>
+                  <FreeGiftLine item={item} />
                   <div className="cart-item__controls">
                     <button
                       className="cart-item__qty-btn"

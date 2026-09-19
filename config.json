@@ -16,6 +16,7 @@
     "passWrd": "ENV:SAPB1_PASSWORD"
   },
   "admin": {
+    "companyPrefix": "IMV",
     "email": "ENV:ADMIN_EMAIL",
     "password": "ENV:USER_PASSWORD"
   },

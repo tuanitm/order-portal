@@ -106,7 +106,9 @@
     "itemCode": "Item Code",
     "searchPlaceholder": "Search products by name or code...",
     "noProducts": "No products available",
-    "viewDetail": "View Details"
+    "viewDetail": "View Details",
+    "buyGetPromo": "Buy {buyQty} get {giveQty} {giveItem} free",
+    "buyGetSamePromo": "Buy {buyQty} get {giveQty} free (same item)"
   },
   "cart": {
     "title": "Shopping Cart",
@@ -122,7 +124,9 @@
     "checkout": "Checkout",
     "remove": "Remove",
     "updateQty": "Update",
-    "itemCount": "{count} items"
+    "itemCount": "{count} items",
+    "freeGift": "Free gift: {qty} {item}",
+    "freeGiftSame": "Free gift: {qty} (same item)"
   },
   "checkout": {
     "title": "Place Order",
@@ -134,6 +138,7 @@
     "remark": "Order Remarks",
     "remarkPlaceholder": "Enter order notes (optional)...",
     "orderSummary": "Order Summary",
+    "giftLine": "Free Gift",
     "submitOrder": "Submit Order",
     "submitting": "Submitting order...",
     "orderSuccess": "Order placed successfully!",
@@ -148,12 +153,17 @@
     "status": "Status",
     "detail": "Details",
     "noOrders": "You have no orders yet",
+    "statusHistory": "Order status updates",
+    "reorder": "Reorder",
+    "reordering": "Adding...",
+    "reorderUnavailable": "{count} item(s) are no longer available and were not added: {items}",
+    "reorderFailed": "Could not reorder this order",
     "statusLabels": {
       "draft": "Draft",
-      "submitted": "Submitted",
+      "submitted": "Pending Confirmation",
       "processing": "Processing",
-      "sap_draft_created": "SAP Draft Created",
-      "approved": "Approved",
+      "sap_draft_created": "Pushed to SAP",
+      "approved": "Confirmed",
       "rejected": "Rejected",
       "completed": "Completed"
     }

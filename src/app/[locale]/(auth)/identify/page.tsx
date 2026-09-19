@@ -4,9 +4,11 @@ import { useState } from "react";
 import { useTranslations } from "next-intl";
 import { useRouter } from "@/i18n/navigation";
 import { Link } from "@/i18n/navigation";
+import { useAppName } from "@/hooks/useAppName";
 
 export default function IdentifyPage() {
   const t = useTranslations();
+  const appName = useAppName();
   const router = useRouter();
   const [identifier, setIdentifier] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -122,7 +124,7 @@ export default function IdentifyPage() {
         </form>
 
         <div className="auth-form__footer" style={{ marginTop: "1.5rem" }}>
-          {t("common.appName")}
+          {appName}
         </div>
       </div>
     </div>

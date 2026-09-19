@@ -177,7 +177,7 @@ export default function ItemGroupsPage() {
           <div>
             <h1 style={styles.title}>Item Groups</h1>
             <p style={styles.subtitle}>
-              Import from <code>SAP_Item_Group.xlsx</code> at the project root, or add groups manually below.
+              Import from <code>SAP_Item_Group</code> or add groups manually below.
               That file also defines the sync scope: only items whose (ItemCat01, ItemCat02) matches a pair listed
               there get pulled into the Items sync. Re-import after updating the file; any code not yet in it can
               still be named directly below. Turn a group <strong>Active</strong> off to stop syncing master data
@@ -190,7 +190,7 @@ export default function ItemGroupsPage() {
           </div>
           <SyncButton
             url="/api/admin/item-groups/import"
-            label="Import from SAP_Item_Group.xlsx"
+            label="Import from SAP_Item_Group"
             onDone={load}
           />
         </div>

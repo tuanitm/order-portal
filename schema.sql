@@ -178,6 +178,13 @@ CREATE TABLE IF NOT EXISTS contract_discount (
 
 -- Promotion Discounts (synced from SAP B1 via custom SQL query).
 -- Flat rows mapping a Promotion -> BP/Group -> Item/Group -> Discount/Free Item.
+-- bp_type/it_type are the AUTHORITATIVE way to read bp_code/selling_item_code:
+--   bp_type='2' -> bp_code is an exact BP card code.
+--   bp_type='CG1'/'CG2'/'CG3' -> bp_code is a customer_groups code at that level.
+--   it_type='4' -> selling_item_code is an exact item code.
+--   it_type='IC1'..'IC6' -> selling_item_code is an item_groups code at that level.
+-- bp_grp_code/selling_grp_code are NOT item_groups/customer_groups codes —
+-- they're free-text labels (e.g. "GT.TOILETRIES") and are display-only.
 CREATE TABLE IF NOT EXISTS promotion_discount (
   id INT AUTO_INCREMENT PRIMARY KEY,
   doc_entry INT NOT NULL,
@@ -189,10 +196,12 @@ CREATE TABLE IF NOT EXISTS promotion_discount (
   end_date DATE,
   bp_grp_code VARCHAR(50),
   bp_grp_name VARCHAR(255),
+  bp_type VARCHAR(10),
   bp_code VARCHAR(50),
   bp_name VARCHAR(255),
   selling_grp_code VARCHAR(50),
   selling_grp_name VARCHAR(255),
+  it_type VARCHAR(10),
   selling_item_code VARCHAR(50),
   selling_item_name VARCHAR(255),
   disc_pct DECIMAL(6,2),
@@ -205,6 +214,9 @@ CREATE TABLE IF NOT EXISTS promotion_discount (
   INDEX idx_selling_item_code (selling_item_code),
   INDEX idx_active_dates (begin_date, end_date)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- Migration for an existing DB:
+-- ALTER TABLE promotion_discount ADD COLUMN bp_type VARCHAR(10) NULL AFTER bp_grp_name;
+-- ALTER TABLE promotion_discount ADD COLUMN it_type VARCHAR(10) NULL AFTER selling_grp_name;
 
 -- Promotions
 CREATE TABLE IF NOT EXISTS promotions (
@@ -229,7 +241,7 @@ CREATE TABLE IF NOT EXISTS promotions (
 -- Orders
 CREATE TABLE IF NOT EXISTS orders (
   id INT AUTO_INCREMENT PRIMARY KEY,
-  order_number VARCHAR(30) UNIQUE NOT NULL,
+  order_number VARCHAR(64) UNIQUE NOT NULL, -- SO-{BP code}-{yymmdd}-{3 digits}
   user_id INT NOT NULL,
   customer_name VARCHAR(255),
   delivery_address TEXT,
@@ -260,9 +272,28 @@ CREATE TABLE IF NOT EXISTS order_lines (
   item_name VARCHAR(255),
   quantity INT NOT NULL,
   uom VARCHAR(20),
+  -- Item channel price BEFORE contract/promotion discounts — this (not
+  -- unit_price) is what gets pushed to the SAP draft sales order; SAP B1
+  -- applies its own discount structure on top. 0 on free-gift lines.
+  base_unit_price DECIMAL(18,2) NOT NULL DEFAULT 0,
+  -- Net price after discounts, as the customer saw it (informational for SAP).
   unit_price DECIMAL(18,2) NOT NULL,
   discount_percent DECIMAL(5,2) DEFAULT 0,
   line_total DECIMAL(18,2) NOT NULL,
+  FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
+  INDEX idx_order (order_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- Migration for an existing DB:
+-- ALTER TABLE order_lines ADD COLUMN base_unit_price DECIMAL(18,2) NOT NULL DEFAULT 0 AFTER uom;
+
+-- Order Status History — one row per status an order has entered (including
+-- the initial 'submitted'), so the customer's "Đơn hàng của tôi" status popup
+-- can show a timeline with the time of each step.
+CREATE TABLE IF NOT EXISTS order_status_history (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  order_id INT NOT NULL,
+  status VARCHAR(30) NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
   INDEX idx_order (order_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -364,6 +395,7 @@ CREATE TABLE IF NOT EXISTS customers (
   email VARCHAR(255) NULL,
   address TEXT NULL,
   account VARCHAR(255) NULL,
+  is_enabled BOOLEAN NOT NULL DEFAULT TRUE,
   last_synced TIMESTAMP NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_mst_code (mst_code),
@@ -373,3 +405,4 @@ CREATE TABLE IF NOT EXISTS customers (
 
 -- Migration for existing databases:
 -- ALTER TABLE customers ADD COLUMN account VARCHAR(255) NULL AFTER address;
+-- ALTER TABLE customers ADD COLUMN is_enabled BOOLEAN NOT NULL DEFAULT TRUE AFTER account;

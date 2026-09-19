@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, createContext, useContext } from "rea
 import { useTranslations, useLocale } from "next-intl";
 import { usePathname } from "next/navigation";
 import type { AdminPermission } from "@/lib/auth/adminSession";
+import { useAppName, usePageTitle } from "@/hooks/useAppName";
 
 interface AdminSessionInfo {
   email: string;
@@ -40,6 +41,7 @@ export default function AdminLayout({
   const t = useTranslations();
   const locale = useLocale();
   const pathname = usePathname();
+  const appName = useAppName(true);
   const [session, setSession] = useState<AdminSessionInfo | null>(null);
   const [isChecking, setIsChecking] = useState(true);
   const [adminEmail, setAdminEmail] = useState("");
@@ -64,6 +66,11 @@ export default function AdminLayout({
   useEffect(() => {
     checkAuth();
   }, [checkAuth]);
+
+  // The tab title comes from the root layout ("IMV - Ordering Portal"); this
+  // layout is a client component so it can't export metadata — mark the admin
+  // area by setting the "(Admin)" title here instead (always English).
+  usePageTitle(true);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -193,7 +200,7 @@ export default function AdminLayout({
           padding: "1.5rem 0.75rem", display: "flex", flexDirection: "column",
         }}>
           <div style={{ padding: "0 0.75rem 1.25rem", fontWeight: 800, fontSize: "1rem", color: "var(--text-primary, #0F172A)" }}>
-            IMV Admin
+            {appName}
           </div>
           <nav style={{ display: "flex", flexDirection: "column", gap: "0.125rem", flex: 1 }}>
             {visibleNav.map((item) => {

@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "@/i18n/navigation";
 import { CartProvider } from "@/hooks/useCart";
+import { SearchProvider } from "@/hooks/useSearch";
 import Navbar from "@/components/layout/Navbar";
 import CartSidebar from "@/components/layout/CartSidebar";
 import Footer from "@/components/layout/Footer";
@@ -62,10 +63,12 @@ export default function PortalLayout({
 
   return (
     <CartProvider>
-      <Navbar />
-      <main>{children}</main>
-      <CartSidebar />
-      <Footer />
+      <SearchProvider>
+        <Navbar />
+        <main>{children}</main>
+        <CartSidebar />
+        <Footer />
+      </SearchProvider>
     </CartProvider>
   );
 }

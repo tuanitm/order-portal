@@ -79,19 +79,20 @@ export default function PromotionsPage() {
               SAP Promotion Programs (@PM_HEADER) — flat rows mapping a promotion to a Business Partner
               (or BP group) and a selling item (or item group), with either a discount % or a free/bonus item.
               Direct SAP sync currently fails (the API user lacks Query Generator authorization on the
-              promotion tables) — use &quot;Import from Excel&quot; to load GT_Promotion_Detail.xlsx instead.
+              promotion tables) — Import from promotion from SAP.
             </p>
           </div>
           <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
             <SyncButton
               url="/api/admin/promotions/import"
-              label="Import from Excel (GT_Promotion_Detail.xlsx)"
+              label="Sync promotion discounts from SAP"
               loadingLabel="Importing..."
               onDone={() => load(searchFilter, bpCodeFilter, itemCodeFilter, typeFilter, activeOnly, validDate)}
             />
             <SyncButton
               url="/api/admin/promotions/sync"
-              label="Sync promotions from SAP"
+              label="Sync promotions from Json file"
+              disabled
               onDone={() => load(searchFilter, bpCodeFilter, itemCodeFilter, typeFilter, activeOnly, validDate)}
             />
           </div>

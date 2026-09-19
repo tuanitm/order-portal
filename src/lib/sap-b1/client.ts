@@ -437,7 +437,10 @@ export class SapB1Client {
    */
   async createDraftSalesOrder(draft: SapSalesOrderDraft): Promise<SapDocumentResponse> {
     await this.ensureSession();
-    return this.request<SapDocumentResponse>('POST', '/Drafts', draft);
+    // /Drafts is shared by every document type — SAP rejects the request
+    // ("Object type for draft is missing") unless DocObjectCode says which;
+    // 'oOrders' = Sales Order.
+    return this.request<SapDocumentResponse>('POST', '/Drafts', { DocObjectCode: 'oOrders', ...draft });
   }
 
   /**

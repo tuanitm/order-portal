@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query, queryOne } from "@/lib/db/connection";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
+import { recordOrderStatus } from "@/lib/orderHistory";
 
 const VALID_STATUSES = ["draft", "submitted", "processing", "sap_draft_created", "approved", "rejected", "completed"];
 
@@ -16,7 +17,8 @@ export async function GET(
   if (isNaN(orderId)) return NextResponse.json({ error: "Invalid order ID" }, { status: 400 });
 
   const order = await queryOne(
-    `SELECT o.*, u.email AS customer_email FROM orders o LEFT JOIN users u ON u.id = o.user_id WHERE o.id = ?`,
+    `SELECT o.*, u.email AS customer_email, u.sap_card_code
+     FROM orders o LEFT JOIN users u ON u.id = o.user_id WHERE o.id = ?`,
     [orderId]
   );
   if (!order) return NextResponse.json({ error: "Order not found" }, { status: 404 });
@@ -46,6 +48,10 @@ export async function PATCH(
     return NextResponse.json({ error: `status must be one of: ${VALID_STATUSES.join(", ")}` }, { status: 400 });
   }
 
+  const current = await queryOne<{ status: string }>(`SELECT status FROM orders WHERE id = ?`, [orderId]);
+  if (!current) return NextResponse.json({ error: "Order not found" }, { status: 404 });
+
   await query(`UPDATE orders SET status = ? WHERE id = ?`, [body.status, orderId]);
+  if (current.status !== body.status) await recordOrderStatus(orderId, body.status);
   return NextResponse.json({ success: true });
 }

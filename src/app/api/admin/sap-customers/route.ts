@@ -47,7 +47,7 @@ export async function GET(request: NextRequest) {
   const total = totalRows[0]?.cnt ?? 0;
 
   const customers = await query(
-    `SELECT id, sap_card_code, card_name, mst_code, price_list_num, cus_grp01, cus_grp02, cus_grp03, phone, email, account, last_synced
+    `SELECT id, sap_card_code, card_name, mst_code, price_list_num, cus_grp01, cus_grp02, cus_grp03, phone, email, account, is_enabled, last_synced
      FROM customers ${whereSql}
      ORDER BY ${sortCol} ${sortDir}
      LIMIT ? OFFSET ?`,

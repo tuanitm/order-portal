@@ -1,12 +1,24 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useTranslations, useLocale } from "next-intl";
-import { useCart } from "@/hooks/useCart";
+import { useCart, calculateFreeQty } from "@/hooks/useCart";
 import { Link } from "@/i18n/navigation";
 
 function formatPrice(amount: number): string {
-  return new Intl.NumberFormat("vi-VN").format(amount) + "₫";
+  return new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 0 }).format(amount) + "₫";
+}
+
+interface OrderLine {
+  key: string;
+  sapItemCode: string;
+  itemName: string;
+  quantity: number;
+  uom: string;
+  unitPrice: number;
+  originalPrice: number;
+  discountPercent: number;
+  isGift: boolean;
 }
 
 export default function CheckoutPage() {
@@ -22,6 +34,61 @@ export default function CheckoutPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [orderResult, setOrderResult] = useState<{ orderNumber: string } | null>(null);
   const [error, setError] = useState("");
+
+  // Prefill from the customer's own BP master data (SAP customer master),
+  // still freely editable — the customer can override any of these before
+  // submitting.
+  useEffect(() => {
+    fetch("/api/auth/me")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        const user = data?.user;
+        if (!user) return;
+        if (user.sapCardName || user.fullName) setCustomerName(user.sapCardName || user.fullName);
+        if (user.address) setDeliveryAddress(user.address);
+        if (user.email) setContactEmail(user.email);
+        // BP master phone first; if the BP has none, fall back to the portal user's own phone.
+        if (user.bpPhone || user.phone) setContactPhone(user.bpPhone || user.phone);
+      })
+      .catch(() => {
+        // Not fatal — the customer can just fill the form in manually.
+      });
+  }, []);
+
+  // "Buy item / give item, line by line" — a buy-give promo's free quantity
+  // (recalculated live from cart quantity, see calculateFreeQty) shows as
+  // its own line at 0₫, right under the paid item it came from.
+  const orderLines: OrderLine[] = items.flatMap((item) => {
+    const lines: OrderLine[] = [
+      {
+        key: item.sapItemCode,
+        sapItemCode: item.sapItemCode,
+        itemName: item.itemName,
+        quantity: item.quantity,
+        uom: item.uom,
+        unitPrice: item.unitPrice,
+        originalPrice: item.originalPrice,
+        discountPercent: item.discountPercent,
+        isGift: false,
+      },
+    ];
+    const freeQty = calculateFreeQty(item);
+    if (freeQty > 0) {
+      const isSameItem = item.promoGiveItemCode === item.sapItemCode;
+      lines.push({
+        key: `${item.sapItemCode}-gift`,
+        sapItemCode: item.promoGiveItemCode || item.sapItemCode,
+        itemName: isSameItem ? item.itemName : (item.promoGiveItemName || item.promoGiveItemCode || ""),
+        quantity: freeQty,
+        uom: item.uom,
+        unitPrice: 0,
+        originalPrice: 0,
+        discountPercent: 0,
+        isGift: true,
+      });
+    }
+    return lines;
+  });
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -39,13 +106,14 @@ export default function CheckoutPage() {
           contactEmail,
           remark,
           language: locale,
-          lines: items.map((item) => ({
-            sapItemCode: item.sapItemCode,
-            itemName: item.itemName,
-            quantity: item.quantity,
-            uom: item.uom,
-            unitPrice: item.unitPrice,
-            discountPercent: item.discountPercent,
+          lines: orderLines.map((line) => ({
+            sapItemCode: line.sapItemCode,
+            itemName: line.itemName,
+            quantity: line.quantity,
+            uom: line.uom,
+            unitPrice: line.unitPrice,
+            originalPrice: line.originalPrice,
+            discountPercent: line.discountPercent,
           })),
         }),
       });
@@ -202,20 +270,33 @@ export default function CheckoutPage() {
             </h2>
 
             <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem", marginBottom: "1.5rem" }}>
-              {items.map((item) => (
-                <div key={item.sapItemCode} style={{
+              {orderLines.map((line) => (
+                <div key={line.key} style={{
                   display: "flex", justifyContent: "space-between", alignItems: "center",
                   fontSize: "0.875rem", paddingBottom: "0.75rem",
                   borderBottom: "1px solid var(--color-gray-100)",
+                  ...(line.isGift ? { paddingLeft: "1rem" } : {}),
                 }}>
                   <div>
-                    <div style={{ fontWeight: 500 }}>{item.itemName}</div>
+                    <div style={{ fontWeight: 500, display: "flex", alignItems: "center", gap: "0.375rem" }}>
+                      {line.isGift && <span aria-hidden>🎁</span>}
+                      {line.itemName}
+                      {line.isGift && (
+                        <span style={{
+                          fontSize: "0.6875rem", fontWeight: 700, color: "#065F46",
+                          background: "var(--color-success-light)", borderRadius: "var(--radius-sm)",
+                          padding: "1px 6px",
+                        }}>
+                          {t("checkout.giftLine")}
+                        </span>
+                      )}
+                    </div>
                     <div style={{ color: "var(--text-tertiary)", fontSize: "0.75rem" }}>
-                      {item.quantity} × {formatPrice(item.unitPrice)}
+                      {line.quantity} × {formatPrice(line.unitPrice)}
                     </div>
                   </div>
-                  <div style={{ fontWeight: 600 }}>
-                    {formatPrice(item.unitPrice * item.quantity)}
+                  <div style={{ fontWeight: 600, color: line.isGift ? "var(--color-success)" : undefined }}>
+                    {formatPrice(line.unitPrice * line.quantity)}
                   </div>
                 </div>
               ))}

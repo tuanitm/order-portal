@@ -52,6 +52,17 @@ export function btn(variant: "primary" | "secondary" | "danger" | "success" = "s
   return { ...base, ...variants[variant] };
 }
 
+/** Display titles for the `orders.status` ENUM values (the raw values stay lowercase in the DB/API). */
+export const ORDER_STATUS_LABELS: Record<string, string> = {
+  draft: "Draft",
+  submitted: "Submitted",
+  processing: "Processing",
+  sap_draft_created: "SAP Draft Created",
+  approved: "Approved",
+  rejected: "Rejected",
+  completed: "Completed",
+};
+
 export function Badge({ label, tone }: { label: string; tone: "success" | "warning" | "error" | "neutral" }) {
   const tones: Record<string, { bg: string; color: string }> = {
     success: { bg: "#D1FAE5", color: "#065F46" },
@@ -90,12 +101,13 @@ export function Toggle({ checked, onChange, disabled }: { checked: boolean; onCh
  * reports the result. Used across item-groups/price-lists/items/contract-discounts.
  */
 export function SyncButton({
-  url, label, loadingLabel, onDone,
+  url, label, loadingLabel, onDone, disabled = false,
 }: {
   url: string;
   label: string;
   loadingLabel?: string;
   onDone?: (result: Record<string, unknown>) => void;
+  disabled?: boolean;
 }) {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
@@ -106,7 +118,8 @@ export function SyncButton({
     try {
       const res = await fetch(url, { method: "POST" });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Sync failed");
+      // Some endpoints (e.g. the SAP push) return the underlying reason in `message`.
+      if (!res.ok) throw new Error([data.error || "Sync failed", data.message].filter(Boolean).join(" — "));
       setMessage(JSON.stringify(data));
       onDone?.(data);
     } catch (err) {
@@ -118,7 +131,7 @@ export function SyncButton({
 
   return (
     <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
-      <button onClick={handleClick} disabled={loading} style={btn("primary", loading)}>
+      <button onClick={handleClick} disabled={loading || disabled} style={btn("primary", loading || disabled)}>
         {loading ? (loadingLabel || "Syncing...") : label}
       </button>
       {message && <span style={{ fontSize: "0.75rem", color: "var(--text-tertiary, #94A3B8)" }}>{message}</span>}

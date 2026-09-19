@@ -110,7 +110,7 @@ export default function CustomerGroupsPage() {
           <div>
             <h1 style={styles.title}>Customer Groups</h1>
             <p style={styles.subtitle}>
-              Import from <code>SAP_Customer_Group.xlsx</code> at the project root, or add groups manually below.
+              Import from <code>SAP_Customer_Group</code> or add groups manually below.
               That file also defines the sync scope: only customers whose (CusGrp01, CusGrp02) matches a pair listed
               there get pulled into the SAP Customers sync. Re-import after updating the file; any code not yet in it
               can still be named directly below. Turn a group <strong>Active</strong> off to stop syncing customers
@@ -119,7 +119,7 @@ export default function CustomerGroupsPage() {
               switching it back on re-ticks them too.
             </p>
           </div>
-          <SyncButton url="/api/admin/customer-groups/import" label="Import from SAP_Customer_Group.xlsx" onDone={load} />
+          <SyncButton url="/api/admin/customer-groups/import" label="Import from SAP_Customer_Group" onDone={load} />
         </div>
 
         {/* ── Add manually ── */}

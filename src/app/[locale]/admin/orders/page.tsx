@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useLocale } from "next-intl";
-import { styles, Badge, LoadingOrEmpty } from "../adminUi";
+import { styles, Badge, LoadingOrEmpty, ORDER_STATUS_LABELS } from "../adminUi";
 
 interface Order {
   id: number;
@@ -69,7 +69,7 @@ export default function AdminOrdersPage() {
                 border: status === s ? "none" : "1px solid var(--color-gray-200, #E2E8F0)",
               }}
             >
-              {s || "All"}
+              {s ? ORDER_STATUS_LABELS[s] || s : "All"}
             </button>
           ))}
         </div>
@@ -96,7 +96,7 @@ export default function AdminOrdersPage() {
                       <td style={styles.td}>{o.customer_name || o.customer_email || "—"}</td>
                       <td style={styles.td}>{formatPrice(o.grand_total)}</td>
                       <td style={{ ...styles.td, fontFamily: "monospace" }}>{o.sap_doc_num || "—"}</td>
-                      <td style={styles.td}><Badge label={o.status} tone={STATUS_TONE[o.status] || "neutral"} /></td>
+                      <td style={styles.td}><Badge label={ORDER_STATUS_LABELS[o.status] || o.status} tone={STATUS_TONE[o.status] || "neutral"} /></td>
                       <td style={{ ...styles.td, fontSize: "0.75rem", color: "var(--text-tertiary, #94A3B8)" }}>
                         {new Date(o.created_at).toLocaleString()}
                       </td>

@@ -100,6 +100,22 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Check the linked SAP customer's Enable toggle (admin > SAP Customers)
+    if (user.sap_card_code) {
+      const customer = await queryOne<{ is_enabled: number }>(
+        "SELECT is_enabled FROM customers WHERE sap_card_code = ? LIMIT 1",
+        [user.sap_card_code]
+      );
+      if (customer && !customer.is_enabled) {
+        return NextResponse.json(
+          {
+            error: "This account was blocked, please contact Admin 0908404678 to enable account again.",
+          },
+          { status: 403 }
+        );
+      }
+    }
+
     // Generate JWT token
     const token = jwt.sign(
       {

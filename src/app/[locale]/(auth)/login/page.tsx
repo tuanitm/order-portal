@@ -4,9 +4,11 @@ import { useState } from "react";
 import { useTranslations, useLocale } from "next-intl";
 import { Link } from "@/i18n/navigation";
 import { useSearchParams } from "next/navigation";
+import { useAppName } from "@/hooks/useAppName";
 
 export default function LoginPage() {
   const t = useTranslations();
+  const appName = useAppName();
   const locale = useLocale();
   const searchParams = useSearchParams();
 
@@ -70,7 +72,7 @@ export default function LoginPage() {
           </div>
           <h1 className="auth-card__title">{t("auth.loginTitle")}</h1>
           <p className="auth-card__subtitle">
-            {t("common.appName")}
+            {appName}
           </p>
         </div>
 

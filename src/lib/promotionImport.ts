@@ -9,10 +9,16 @@ import { getPool } from "@/lib/db/connection";
  * classification columns like disc_type/bp_linetype/it_linetype appeared,
  * and the item-group column was renamed selling_grp_code -> selling_itgrp_code).
  * Each DB field lists its acceptable header aliases, tried in order; columns
- * present in the file but not listed here (e.g. disc_type, bp_linetype,
- * bp_type, it_linetype, it_type) are simply not imported — the app doesn't
- * use them today, and dropping unknown columns keeps this resilient to the
- * source file gaining more of them later.
+ * present in the file but not listed here (disc_type, bp_linetype, it_linetype)
+ * are simply not imported — the app doesn't use them today, and dropping
+ * unknown columns keeps this resilient to the source file gaining more later.
+ *
+ * bp_type/it_type ARE imported (unlike bp_linetype/it_linetype) — they're the
+ * authoritative key for how to read bp_code/selling_item_code: bp_type='2' ->
+ * bp_code is an exact BP; bp_type='CG1'/'CG2'/'CG3' -> bp_code is a
+ * customer_groups code at that level. it_type='4' -> selling_item_code is an
+ * exact item; it_type='IC1'..'IC6' -> selling_item_code is an item_groups
+ * code at that level. See src/app/api/products/route.ts for the matching.
  */
 const COLUMN_ALIASES: Record<string, string[]> = {
   doc_entry: ["doc_entry"],
@@ -24,10 +30,12 @@ const COLUMN_ALIASES: Record<string, string[]> = {
   end_date: ["end_date"],
   bp_grp_code: ["bp_grp_code"],
   bp_grp_name: ["bp_grp_name"],
+  bp_type: ["bp_type"],
   bp_code: ["bp_code"],
   bp_name: ["bp_name"],
   selling_grp_code: ["selling_itgrp_code", "selling_grp_code"],
   selling_grp_name: ["selling_itgrp_name", "selling_grp_name"],
+  it_type: ["it_type"],
   selling_item_code: ["selling_item_code"],
   selling_item_name: ["selling_item_name"],
   disc_pct: ["disc_pct"],
@@ -116,10 +124,12 @@ export async function importPromotionDiscountsFromXlsx(
     excelSerialToDateStr(r[columnIndex.end_date]),
     strOrNull(r[columnIndex.bp_grp_code]),
     strOrNull(r[columnIndex.bp_grp_name]),
+    strOrNull(r[columnIndex.bp_type]),
     strOrNull(r[columnIndex.bp_code]),
     strOrNull(r[columnIndex.bp_name]),
     strOrNull(r[columnIndex.selling_grp_code]),
     strOrNull(r[columnIndex.selling_grp_name]),
+    strOrNull(r[columnIndex.it_type]),
     strOrNull(r[columnIndex.selling_item_code]),
     strOrNull(r[columnIndex.selling_item_name]),
     numOrNull(r[columnIndex.disc_pct]),
@@ -147,10 +157,12 @@ export async function importPromotionDiscountsFromXlsx(
         end_date DATE,
         bp_grp_code VARCHAR(50),
         bp_grp_name VARCHAR(255),
+        bp_type VARCHAR(10),
         bp_code VARCHAR(50),
         bp_name VARCHAR(255),
         selling_grp_code VARCHAR(50),
         selling_grp_name VARCHAR(255),
+        it_type VARCHAR(10),
         selling_item_code VARCHAR(50),
         selling_item_name VARCHAR(255),
         disc_pct DECIMAL(6,2),
@@ -174,8 +186,8 @@ export async function importPromotionDiscountsFromXlsx(
       await conn.query(
         `INSERT INTO promotion_discount (
            doc_entry, promotion_code, promotion_name, create_date, update_date, begin_date, end_date,
-           bp_grp_code, bp_grp_name, bp_code, bp_name,
-           selling_grp_code, selling_grp_name, selling_item_code, selling_item_name,
+           bp_grp_code, bp_grp_name, bp_type, bp_code, bp_name,
+           selling_grp_code, selling_grp_name, it_type, selling_item_code, selling_item_name,
            disc_pct, selling_qty, giving_item_code, giving_item_name, giving_qty, last_synced)
          VALUES ?`,
         [chunk]

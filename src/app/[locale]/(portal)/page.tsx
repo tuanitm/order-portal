@@ -3,13 +3,18 @@
 import { useState, useEffect } from "react";
 import { useTranslations, useLocale } from "next-intl";
 import ProductCard from "@/components/product/ProductCard";
+import { useSearch } from "@/hooks/useSearch";
 import type { ProductWithPricing, ProductListResponse } from "@/types/product";
+
+/** Sentinel for the special "Khuyến mãi" filter chip — distinct from a real category string or `null` ("Tất cả"). */
+const PROMO_FILTER = "__promo__";
 
 export default function HomePage() {
   const t = useTranslations();
   const locale = useLocale();
-  const [searchQuery, setSearchQuery] = useState("");
-  const [activeCategory, setActiveCategory] = useState<string | null>(null);
+  const { searchQuery, setSearchQuery } = useSearch();
+  // Auto-focused on "Khuyến mãi" when the page opens, to surface deals first.
+  const [activeCategory, setActiveCategory] = useState<string | null>(PROMO_FILTER);
   const [products, setProducts] = useState<ProductWithPricing[]>([]);
   const [categories, setCategories] = useState<string[]>([]);
   const [total, setTotal] = useState(0);
@@ -23,7 +28,16 @@ export default function HomePage() {
       try {
         const params = new URLSearchParams();
         if (searchQuery) params.set("search", searchQuery);
-        if (activeCategory) params.set("category", activeCategory);
+        if (activeCategory === PROMO_FILTER) {
+          params.set("promoOnly", "true");
+          params.set("sort", "discount");
+        } else if (activeCategory) {
+          params.set("category", activeCategory);
+          // A brand/category tab still shows every item in it, but ranks
+          // the ones with a discount first (highest % first, e.g. 33% then
+          // 27% then 24%), same "sort=discount" the API already supports.
+          params.set("sort", "discount");
+        }
         params.set("limit", "100");
 
         const res = await fetch(`/api/products?${params.toString()}`, {
@@ -128,10 +142,17 @@ export default function HomePage() {
         {categories.length > 0 && (
           <div className="category-filter" style={{ marginBottom: "1.5rem" }} id="category-filter">
             <button
-              className={`category-chip ${!activeCategory ? "active" : ""}`}
+              className={`category-chip ${activeCategory === null ? "active" : ""}`}
               onClick={() => setActiveCategory(null)}
             >
               {t("common.all")}
+            </button>
+            <button
+              id="promo-filter-chip"
+              className={`category-chip category-chip--promo ${activeCategory === PROMO_FILTER ? "active" : ""}`}
+              onClick={() => setActiveCategory(PROMO_FILTER)}
+            >
+              🔥 {t("product.promotion")}
             </button>
             {categories.map((cat) => (
               <button

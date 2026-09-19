@@ -18,6 +18,22 @@ export interface CartItem {
   uom: string;
   imageUrl: string | null;
   discountPercent: number;
+  /** Buy-X-get-Y bonus-item promo, if any — the free quantity for this line
+   * is recalculated from `quantity` (see calculateFreeQty), not stored. */
+  promoBuyQty?: number;
+  promoGiveQty?: number;
+  promoGiveItemCode?: string;
+  promoGiveItemName?: string;
+}
+
+/**
+ * Free ("give") quantity a cart line currently earns, recomputed from its
+ * live quantity — e.g. "buy 2 get 1" at quantity 5 gives floor(5/2)*1 = 2,
+ * and updates immediately as the customer changes quantity in the cart.
+ */
+export function calculateFreeQty(item: CartItem): number {
+  if (!item.promoBuyQty || !item.promoGiveQty) return 0;
+  return Math.floor(item.quantity / item.promoBuyQty) * item.promoGiveQty;
 }
 
 // ── Cart State ──

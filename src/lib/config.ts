@@ -20,6 +20,8 @@ export interface AppConfig {
     passWrd: string;
   };
   admin: {
+    /** Shown in front of the portal name, e.g. "IMV - Ordering Portal". Optional. */
+    companyPrefix?: string;
     email: string;
     password: string;
   };
