@@ -11,8 +11,11 @@ function loadDbConfig(): PoolOptions {
   const dbPassword = resolveEnvSecret('MYSQL_DB_PASS');
 
   return {
-    host: mysqlConfig.dbIp || 'localhost',
-    port: mysqlConfig.dbPort || 3306,
+    // MYSQL_HOST / MYSQL_PORT (set by docker-compose) override config.json:
+    // inside the shared Docker network MySQL is reached by container name on
+    // its internal port, not the host-published one config.json uses for dev.
+    host: process.env.MYSQL_HOST || mysqlConfig.dbIp || 'localhost',
+    port: Number(process.env.MYSQL_PORT) || mysqlConfig.dbPort || 3306,
     database: mysqlConfig.dbName || 'orderdatasource',
     user: mysqlConfig.dpUser || 'orderdata',
     password: dbPassword,

@@ -1,11 +1,20 @@
-﻿# Order Portal — Next.js app. MySQL is NOT part of this file: it already runs
-# in its own container (published on the Docker host as mysql8:3386 in
-# config.json), so the app just needs to be able to reach it.
+# Order Portal — Next.js app. MySQL is NOT part of this file: it runs in its
+# own container, which joins this file's network ("order-portal-net") and is
+# reached by container name (default "mysql8") on its internal port 3306.
 #
 #   docker compose up -d --build            # build + start the portal (http://<server>:5005)
 #   docker compose logs -f order-portal
 #   docker compose --profile sync up -d     # also start the 03:00 SAP daily sync
 #   docker compose run --rm daily-sync node scripts/daily-sync.mjs   # run a sync now
+#
+# Put the MySQL container on the network (once the portal is up, so the
+# network exists):
+#   docker network connect order-portal-net <mysql-container-name>
+# and make it permanent in MySQL's own compose file:
+#   services: { mysql8: { networks: [order-portal-net] } }
+#   networks: { order-portal-net: { external: true } }
+# If its container name isn't "mysql8" (or it listens on another internal port),
+# set MYSQL_HOST / MYSQL_PORT in the .env file next to this one.
 #
 # Secrets stay outside the image: config.json, .env and
 # scripts/.encryption_key must exist next to this file on the server.
@@ -20,23 +29,23 @@ services:
       - "${PORTAL_PORT:-5005}:5005"
     environment:
       TZ: Asia/Ho_Chi_Minh
-    # config.json points at the host name "mysql8" and the port the MySQL
-    # container publishes on the Docker host (3386). Resolve that name to the
-    # Docker host itself. If MySQL runs on ANOTHER machine, set MYSQL_HOST_IP
-    # to its IP (e.g. in a .compose env file: MYSQL_HOST_IP=192.168.30.91).
-    # (MySQL's published port must listen on more than 127.0.0.1 for this to work.)
-    extra_hosts:
-      - "mysql8:${MYSQL_HOST_IP:-host-gateway}"
+      # Override config.json's dbIp/dbPort (those are for local dev: the host
+      # name + published port 3386). On the Docker network, use the MySQL
+      # container's name and its internal port.
+      MYSQL_HOST: ${MYSQL_HOST:-mysql8}
+      MYSQL_PORT: ${MYSQL_PORT:-3306}
     volumes:
       - ./config.json:/app/config.json:ro
       - ./.env:/app/.env:ro
       - ./scripts/.encryption_key:/app/scripts/.encryption_key:ro
+    networks:
+      - order-portal-net
 
   # Optional: calls the portal's own admin sync endpoints every day at 03:00
   # (replaces the Windows scheduled task). Enable with `--profile sync`.
   daily-sync:
     image: order-portal:latest
-    profiles: ["sync"]
+    profiles: [ "sync" ]
     restart: unless-stopped
     user: root
     depends_on:
@@ -53,5 +62,10 @@ services:
       - sh
       - -c
       - >-
-        echo '0 3 * * * cd /app && node scripts/daily-sync.mjs > /proc/1/fd/1 2>&1' > /etc/crontabs/root
-        && exec crond -f -l 8
+        echo '0 3 * * * cd /app && node scripts/daily-sync.mjs > /proc/1/fd/1 2>&1' > /etc/crontabs/root && exec crond -f -l 8
+    networks:
+      - order-portal-net
+
+networks:
+  order-portal-net:
+    name: order-portal-net
