@@ -452,7 +452,6 @@ export class SapB1Client {
       return result.value || [];
     } catch (error: any) {
       console.error('[SAP] Failed to get contract discounts:', error);
-      require('fs').writeFileSync('d:\\Project\\Order-Portal\\sap_error.txt', String(error?.stack || error?.message || error));
       throw error;
     }
   }

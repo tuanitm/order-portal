@@ -39,7 +39,7 @@ interface HierarchyImportOptions {
 export async function importHierarchyFromFile(options: HierarchyImportOptions): Promise<ImportResult> {
   const { fileName, listKey, fieldPrefix, tableName, maxLevels } = options;
 
-  const filePath = join(process.cwd(), fileName);
+  const filePath = join(/*turbopackIgnore: true*/ process.cwd(), fileName);
   if (!existsSync(filePath)) {
     throw new Error(`${fileName} not found in project root`);
   }

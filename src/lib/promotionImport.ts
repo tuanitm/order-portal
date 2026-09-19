@@ -80,7 +80,7 @@ function numOrNull(value: unknown): number | null {
 export async function importPromotionDiscountsFromXlsx(
   fileName = "GT_Promotion_Detail.xlsx"
 ): Promise<{ rowsImported: number }> {
-  const filePath = join(process.cwd(), fileName);
+  const filePath = join(/*turbopackIgnore: true*/ process.cwd(), fileName);
   if (!existsSync(filePath)) {
     throw new Error(`${fileName} not found in project root`);
   }

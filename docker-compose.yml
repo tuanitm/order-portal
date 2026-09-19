@@ -1,24 +1,57 @@
-version: '3.8'
+# Order Portal — Next.js app. MySQL is NOT part of this file: it already runs
+# in its own container (published on the Docker host as mysql8:3386 in
+# config.json), so the app just needs to be able to reach it.
+#
+#   docker compose up -d --build            # build + start the portal
+#   docker compose logs -f order-portal
+#   docker compose --profile sync up -d     # also start the 03:00 SAP daily sync
+#   docker compose run --rm daily-sync node scripts/daily-sync.mjs   # run a sync now
+#
+# Secrets stay outside the image: config.json, .env and
+# scripts/.encryption_key must exist next to this file on the server.
 
 services:
   order-portal:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    build: .
+    image: order-portal:latest
     container_name: order-portal
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "${PORTAL_PORT:-3000}:3000"
     environment:
-      - NODE_ENV=production
-      - NEXT_TELEMETRY_DISABLED=1
+      TZ: Asia/Ho_Chi_Minh
+    # config.json points at the host name "mysql8" and the port the MySQL
+    # container publishes on the Docker host (3386). Resolve that name to the
+    # Docker host itself. If MySQL runs on ANOTHER machine, set MYSQL_HOST_IP
+    # to its IP (e.g. in a .compose env file: MYSQL_HOST_IP=192.168.30.91).
+    # (MySQL's published port must listen on more than 127.0.0.1 for this to work.)
+    extra_hosts:
+      - "mysql8:${MYSQL_HOST_IP:-host-gateway}"
     volumes:
       - ./config.json:/app/config.json:ro
       - ./.env:/app/.env:ro
       - ./scripts/.encryption_key:/app/scripts/.encryption_key:ro
-    networks:
-      - app-network
 
-networks:
-  app-network:
-    external: true  # Assumes mysql8 is on a shared Docker network
+  # Optional: calls the portal's own admin sync endpoints every day at 03:00
+  # (replaces the Windows scheduled task). Enable with `--profile sync`.
+  daily-sync:
+    image: order-portal:latest
+    profiles: ["sync"]
+    restart: unless-stopped
+    user: root
+    depends_on:
+      order-portal:
+        condition: service_healthy
+    environment:
+      TZ: Asia/Ho_Chi_Minh
+      PORTAL_BASE_URL: http://order-portal:3000
+    volumes:
+      - ./config.json:/app/config.json:ro
+      - ./.env:/app/.env:ro
+      - ./scripts/.encryption_key:/app/scripts/.encryption_key:ro
+    command:
+      - sh
+      - -c
+      - >-
+        echo '0 3 * * * cd /app && node scripts/daily-sync.mjs > /proc/1/fd/1 2>&1' > /etc/crontabs/root
+        && exec crond -f -l 8

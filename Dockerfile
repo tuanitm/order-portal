@@ -1,60 +1,51 @@
-# ── Stage 1: Dependencies ──
-FROM node:20-alpine AS deps
+# ── Stage 1: build ──
+FROM node:22-alpine AS builder
 WORKDIR /app
-
-# Install Python for Fernet decryption
-RUN apk add --no-cache python3 py3-pip
-RUN pip3 install cryptography --break-system-packages
-
-COPY package.json package-lock.json ./
-RUN npm ci --only=production
-
-# ── Stage 2: Build ──
-FROM node:20-alpine AS builder
-WORKDIR /app
-
-RUN apk add --no-cache python3 py3-pip
-RUN pip3 install cryptography --break-system-packages
+ENV NEXT_TELEMETRY_DISABLED=1
 
 COPY package.json package-lock.json ./
 RUN npm ci
 
 COPY . .
+# The app has no public/ folder; the runner stage copies one, so make sure it exists.
+RUN mkdir -p public && npm run build
 
-# Build the Next.js application
-RUN npm run build
-
-# ── Stage 3: Production ──
-FROM node:20-alpine AS runner
+# ── Stage 2: run ──
+FROM node:22-alpine AS runner
 WORKDIR /app
 
-ENV NODE_ENV=production
-ENV NEXT_TELEMETRY_DISABLED=1
+ENV NODE_ENV=production \
+    NEXT_TELEMETRY_DISABLED=1 \
+    PORT=3000 \
+    HOSTNAME=0.0.0.0 \
+    TZ=Asia/Ho_Chi_Minh
 
-# Install Python for Fernet decryption at runtime
-RUN apk add --no-cache python3 py3-pip
-RUN pip3 install cryptography --break-system-packages
+# The app decrypts its Fernet-encrypted .env secrets by shelling out to
+# `python -c "from cryptography.fernet import Fernet ..."` — it needs a
+# `python` binary (Alpine only ships python3) with `cryptography`.
+RUN apk add --no-cache python3 py3-cryptography tzdata \
+    && ln -sf /usr/bin/python3 /usr/bin/python
 
-# Create non-root user
-RUN addgroup --system --gid 1001 nodejs
-RUN adduser --system --uid 1001 nextjs
+RUN addgroup --system --gid 1001 nodejs && adduser --system --uid 1001 nextjs
 
-# Copy necessary files
-COPY --from=builder /app/public ./public
-COPY --from=builder /app/.next/standalone ./
-COPY --from=builder /app/.next/static ./.next/static
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+COPY --from=builder --chown=nextjs:nodejs /app/public ./public
 
-# Copy config and encryption files
-COPY config.json ./
-COPY .env ./
-COPY scripts/.encryption_key ./scripts/.encryption_key
-COPY messages ./messages
+# Files the app reads from its working directory at runtime (hierarchy /
+# promotion imports) and the daily-sync script used by the optional
+# "daily-sync" compose service.
+COPY --chown=nextjs:nodejs itemgroup.json custgroup.json ./
+COPY --chown=nextjs:nodejs SAP_Item_Group.xlsx SAP_Customer_Group.xlsx GT_Promotion_Detail.xlsx ./
+COPY --chown=nextjs:nodejs scripts/daily-sync.mjs ./scripts/daily-sync.mjs
+
+# config.json, .env and scripts/.encryption_key hold secrets: they are NOT
+# baked into the image — docker-compose.yml mounts them read-only.
 
 USER nextjs
-
 EXPOSE 3000
 
-ENV PORT=3000
-ENV HOSTNAME="0.0.0.0"
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:3000/api/app-info').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 CMD ["node", "server.js"]
