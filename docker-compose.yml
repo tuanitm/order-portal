@@ -1,8 +1,8 @@
-# Order Portal — Next.js app. MySQL is NOT part of this file: it already runs
+﻿# Order Portal — Next.js app. MySQL is NOT part of this file: it already runs
 # in its own container (published on the Docker host as mysql8:3386 in
 # config.json), so the app just needs to be able to reach it.
 #
-#   docker compose up -d --build            # build + start the portal
+#   docker compose up -d --build            # build + start the portal (http://<server>:5005)
 #   docker compose logs -f order-portal
 #   docker compose --profile sync up -d     # also start the 03:00 SAP daily sync
 #   docker compose run --rm daily-sync node scripts/daily-sync.mjs   # run a sync now
@@ -17,7 +17,7 @@ services:
     container_name: order-portal
     restart: unless-stopped
     ports:
-      - "${PORTAL_PORT:-3000}:3000"
+      - "${PORTAL_PORT:-5005}:5005"
     environment:
       TZ: Asia/Ho_Chi_Minh
     # config.json points at the host name "mysql8" and the port the MySQL
@@ -44,7 +44,7 @@ services:
         condition: service_healthy
     environment:
       TZ: Asia/Ho_Chi_Minh
-      PORTAL_BASE_URL: http://order-portal:3000
+      PORTAL_BASE_URL: http://order-portal:5005
     volumes:
       - ./config.json:/app/config.json:ro
       - ./.env:/app/.env:ro

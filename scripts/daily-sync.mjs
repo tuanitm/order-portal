@@ -8,7 +8,7 @@
  * Schedule with Windows Task Scheduler to run this daily — see
  * scripts/register-daily-sync-task.ps1 for a ready-made registration script.
  *
- * Requires the app to already be running (defaults to http://localhost:3000,
+ * Requires the app to already be running (defaults to http://localhost:5005,
  * override with PORTAL_BASE_URL env var) and logs in with the config.json
  * bootstrap admin credential — the same one used for the "/admin" login.
  */
@@ -19,7 +19,7 @@ import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const rootDir = join(__dirname, '..');
-const baseUrl = process.env.PORTAL_BASE_URL || 'http://localhost:3000';
+const baseUrl = process.env.PORTAL_BASE_URL || 'http://localhost:5005';
 const logFile = join(rootDir, 'daily-sync.log');
 
 function log(message) {

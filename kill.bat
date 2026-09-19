@@ -1,10 +1,10 @@
 @echo off
 
 echo ====================================
-echo Kill process on port 3000
+echo Kill process on port 5005
 echo ====================================
 
-call :killPort 3000
+call :killPort 5005
 
 echo.
 echo Finished.
