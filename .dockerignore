@@ -17,3 +17,4 @@ gen_smtp_pass.py
 docker-compose.yml
 Dockerfile
 Caddyfile
+docs
