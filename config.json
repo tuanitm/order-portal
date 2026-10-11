@@ -26,5 +26,16 @@
     "dbName": "orderdatasource",
     "dpUser": "orderdata",
     "encrypted": true
+  },
+  "hanadb": {
+    "hostname": "saphana.imv.com.vn:30015",
+    "schema": "IMV",
+    "userId": "IMV_REPORT_RO",
+    "passWrd": "ENV:HANA_PASSWORD"
+  },
+  "masterdata": {
+    "customerGroup": "'GT'",
+    "itemGroup": "'D1','L1'",
+    "wareHouse": "'1000','1001','1003','1002','1010','1012','1013'"
   }
 }

@@ -78,21 +78,21 @@ export default function PromotionsPage() {
             <p style={styles.subtitle}>
               SAP Promotion Programs (@PM_HEADER) — flat rows mapping a promotion to a Business Partner
               (or BP group) and a selling item (or item group), with either a discount % or a free/bonus item.
-              Direct SAP sync currently fails (the API user lacks Query Generator authorization on the
-              promotion tables) — Import from promotion from SAP.
+              Synced directly from SAP HANA (promotion_program.sql) — the SAP Service Layer has no accessible
+              route to these promotion tables at all. The Excel import below remains as a manual fallback.
             </p>
           </div>
           <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
             <SyncButton
-              url="/api/admin/promotions/import"
-              label="Sync promotion discounts from SAP"
-              loadingLabel="Importing..."
+              url="/api/admin/promotions/sync"
+              label="Sync promotion discounts from SAP (HANA)"
+              loadingLabel="Syncing..."
               onDone={() => load(searchFilter, bpCodeFilter, itemCodeFilter, typeFilter, activeOnly, validDate)}
             />
             <SyncButton
-              url="/api/admin/promotions/sync"
-              label="Sync promotions from Json file"
-              disabled
+              url="/api/admin/promotions/import"
+              label="Import from Excel file (fallback)"
+              loadingLabel="Importing..."
               onDone={() => load(searchFilter, bpCodeFilter, itemCodeFilter, typeFilter, activeOnly, validDate)}
             />
           </div>

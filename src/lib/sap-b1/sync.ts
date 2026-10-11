@@ -2,7 +2,17 @@ import { getSapClient } from "@/lib/sap-b1/client";
 import { getPool, query, queryOne } from "@/lib/db/connection";
 import { getItemCategoryPairsFromDB, getInactiveItemGroupCodesByLevel } from "@/lib/itemCategories";
 import { getCustomerGroupPairsFromDB } from "@/lib/customerGroups";
+import { loadConfig } from "@/lib/config";
 import type { PoolConnection } from "mysql2/promise";
+
+/** Parse a ready-made SQL IN-list literal from config.json (e.g. "'1000','1001'") into plain codes. */
+function parseSqlInList(sqlInList: string): Set<string> {
+  const codes = new Set<string>();
+  const re = /'([^']*)'/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(sqlInList))) codes.add(m[1]);
+  return codes;
+}
 
 const PAGE_SIZE = 200;
 
@@ -56,6 +66,91 @@ export async function syncPriceLists(): Promise<{ listsSynced: number }> {
     }
     await conn.commit();
     return { listsSynced: lists.length };
+  } catch (error) {
+    await conn.rollback();
+    throw error;
+  } finally {
+    conn.release();
+  }
+}
+
+/**
+ * Pull the warehouse list from SAP B1, restricted to the codes in
+ * config.json's masterdata.wareHouse, and make `warehouses` match exactly:
+ * upserts every listed code found in SAP, and deletes any existing row
+ * whose code is no longer listed (cascading to that warehouse's rows in
+ * customer_group_warehouses, which already only ever offers Included
+ * warehouses — see schema.sql). `is_included` is simply "active in SAP",
+ * since every row in the table is, by construction, one masterdata.wareHouse
+ * already named as wanted. Admins can still uncheck one as a temporary
+ * override on the Warehouses admin page; that holds until the next sync.
+ */
+export async function syncWarehouses(): Promise<{ warehousesSynced: number }> {
+  const sap = getSapClient();
+  const pool = getPool();
+  const includedCodes = parseSqlInList(loadConfig().masterdata.wareHouse);
+  const warehouses = (await sap.getWarehouses()).filter((w) => includedCodes.has(w.WarehouseCode));
+
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    const codes = warehouses.map((w) => w.WarehouseCode);
+    await conn.query(
+      codes.length > 0 ? `DELETE FROM warehouses WHERE sap_warehouse_code NOT IN (?)` : `DELETE FROM warehouses`,
+      codes.length > 0 ? [codes] : undefined
+    );
+
+    for (const w of warehouses) {
+      await conn.execute(
+        `INSERT INTO warehouses (sap_warehouse_code, warehouse_name, is_inactive_in_sap, is_included, last_synced)
+         VALUES (?, ?, ?, ?, NOW())
+         ON DUPLICATE KEY UPDATE warehouse_name = VALUES(warehouse_name), is_inactive_in_sap = VALUES(is_inactive_in_sap), is_included = VALUES(is_included), last_synced = NOW()`,
+        [w.WarehouseCode, w.WarehouseName, w.Inactive === "tYES", w.Inactive !== "tYES"]
+      );
+    }
+    await conn.commit();
+    return { warehousesSynced: warehouses.length };
+  } catch (error) {
+    await conn.rollback();
+    throw error;
+  } finally {
+    conn.release();
+  }
+}
+
+/**
+ * Pull per-item, per-warehouse on-hand/committed/on-order stock from SAP
+ * (OITW via SQLQueries — see client.getInventoryStock) and replace the
+ * `item_warehouse_stock` cache wholesale. This is what the storefront's
+ * stock gate (src/app/api/products/route.ts) reads — see
+ * defaultWarehouseIncluded/syncWarehouses for which warehouses count.
+ */
+export async function syncInventoryStock(): Promise<{ rowsSynced: number }> {
+  const sap = getSapClient();
+  const pool = getPool();
+  const rows = await sap.getInventoryStock();
+
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    // Not TRUNCATE: that's DDL and implicitly commits in MySQL, which would
+    // break rollback-on-error for the rest of this transaction.
+    await conn.execute(`DELETE FROM item_warehouse_stock`);
+
+    const CHUNK = 500;
+    for (let i = 0; i < rows.length; i += CHUNK) {
+      const chunk = rows.slice(i, i + CHUNK);
+      const values = chunk.map((r) => [r.item_code, r.warehouse_code, r.in_stock, r.committed, r.ordered]);
+      await conn.query(
+        `INSERT INTO item_warehouse_stock (sap_item_code, warehouse_code, in_stock, committed, ordered, last_synced)
+         VALUES ?`,
+        [values.map((v) => [...v, new Date()])]
+      );
+    }
+
+    await conn.commit();
+    return { rowsSynced: rows.length };
   } catch (error) {
     await conn.rollback();
     throw error;
@@ -264,6 +359,138 @@ export async function syncSpecialPricesForCard(cardCode: string): Promise<{ pric
 }
 
 /**
+ * Flatten one SAP SpecialPrices row into its per-period discount tiers. A
+ * price-list-wide row (CardCode = '*NN') always carries its real data in
+ * SpecialPriceDataAreas; a normal per-customer row usually has an empty
+ * SpecialPriceDataAreas and carries its one discount on the row's own
+ * top-level fields instead — fall back to those when there are no areas.
+ */
+function expandSpecialPriceTiers(sp: {
+  ItemCode: string;
+  Price: number;
+  DiscountPercent: number;
+  ValidFrom: string | null;
+  ValidTo: string | null;
+  SpecialPriceDataAreas?: { DateFrom: string | null; Dateto: string | null; Discount: number | null; SpecialPrice: number }[];
+}): { itemCode: string; basePrice: number | null; specialPrice: number; discountPercent: number | null; from: string | null; to: string | null }[] {
+  const areas = sp.SpecialPriceDataAreas ?? [];
+  if (areas.length === 0) {
+    // No nested areas: SAP's own top-level Price IS the resolved special
+    // price here (that's how a normal per-customer row works), not a
+    // separate "before discount" baseline — there's no baseline in this
+    // object to report, so leave basePrice null rather than duplicate it.
+    return [{ itemCode: sp.ItemCode, basePrice: null, specialPrice: sp.Price, discountPercent: sp.DiscountPercent ?? null, from: toMySQLDate(sp.ValidFrom), to: toMySQLDate(sp.ValidTo) }];
+  }
+  // sp.Price is the row's own (undiscounted) price on this price list — one
+  // value per item, shared by every date-tier under it.
+  return areas.map((a) => ({
+    itemCode: sp.ItemCode,
+    basePrice: sp.Price,
+    specialPrice: a.SpecialPrice,
+    discountPercent: a.Discount ?? null,
+    from: toMySQLDate(a.DateFrom),
+    to: toMySQLDate(a.Dateto),
+  }));
+}
+
+/**
+ * Pull "period discounts" for a price list — SAP SpecialPrices rows SAP
+ * itself scopes to the whole list (CardCode = '*{priceListNum}', e.g. '*12'
+ * for "S02. GT Price List") rather than to one customer — and upsert them
+ * into `period_discount`. Not yet wired into the live storefront price
+ * calculation (see src/app/api/products/route.ts); this just caches what
+ * SAP has.
+ */
+export async function syncPeriodDiscounts(priceListNum: number): Promise<{ rowsSynced: number }> {
+  const sap = getSapClient();
+  const pool = getPool();
+
+  const rows = await sap.getPriceListSpecialPrices(priceListNum);
+
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    await conn.execute(`DELETE FROM period_discount WHERE price_list_num = ?`, [priceListNum]);
+
+    let rowsSynced = 0;
+    for (const sp of rows) {
+      if (sp.Valid !== "tYES") continue;
+      for (const tier of expandSpecialPriceTiers(sp)) {
+        await conn.execute(
+          `INSERT INTO period_discount (price_list_num, sap_item_code, base_price, discount_percent, special_price, date_from, date_to, last_synced)
+           VALUES (?, ?, ?, ?, ?, ?, ?, NOW())`,
+          [priceListNum, tier.itemCode, tier.basePrice, tier.discountPercent, tier.specialPrice, tier.from, tier.to]
+        );
+        rowsSynced++;
+      }
+    }
+
+    await conn.commit();
+    return { rowsSynced };
+  } catch (error) {
+    await conn.rollback();
+    throw error;
+  } finally {
+    conn.release();
+  }
+}
+
+/**
+ * Pull "special discounts" (negotiated SAP SpecialPrices, the normal
+ * per-customer form) for every local customer currently assigned the given
+ * channel price list — e.g. all "GT Channel" customers on "S02. GT Price
+ * List" — in one bulk run, rather than one card code at a time like
+ * syncSpecialPricesForCard. Upserts into `special_discount`. One SAP round
+ * trip per customer, so this can take a while for a large channel. Not yet
+ * wired into the live storefront price calculation; this just caches what
+ * SAP has.
+ */
+export async function syncSpecialDiscountsForChannel(
+  priceListNum: number
+): Promise<{ customersProcessed: number; rowsSynced: number }> {
+  const sap = getSapClient();
+  const pool = getPool();
+
+  const customers = await query<{ sap_card_code: string }[]>(
+    `SELECT DISTINCT sap_card_code FROM customers WHERE price_list_num = ? AND sap_card_code IS NOT NULL AND sap_card_code != ''`,
+    [priceListNum]
+  );
+  const cardCodes = customers.map((c) => c.sap_card_code);
+
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    if (cardCodes.length > 0) {
+      await conn.query(`DELETE FROM special_discount WHERE sap_card_code IN (?)`, [cardCodes]);
+    }
+
+    let rowsSynced = 0;
+    for (const cardCode of cardCodes) {
+      const rows = await sap.getSpecialPrices(cardCode);
+      for (const sp of rows) {
+        if (sp.Valid !== "tYES") continue;
+        for (const tier of expandSpecialPriceTiers(sp)) {
+          await conn.execute(
+            `INSERT INTO special_discount (sap_card_code, sap_item_code, special_price, discount_percent, valid_from, valid_to, last_synced)
+             VALUES (?, ?, ?, ?, ?, ?, NOW())`,
+            [cardCode, tier.itemCode, tier.specialPrice, tier.discountPercent, tier.from, tier.to]
+          );
+          rowsSynced++;
+        }
+      }
+    }
+
+    await conn.commit();
+    return { customersProcessed: cardCodes.length, rowsSynced };
+  } catch (error) {
+    await conn.rollback();
+    throw error;
+  } finally {
+    conn.release();
+  }
+}
+
+/**
  * Refresh one customer's SAP card code / channel price list / customer
  * group codes from BusinessPartners. Only updates that customer's own
  * `users` row — never writes to `customer_groups`, which is populated only
@@ -415,6 +642,109 @@ export async function syncContractDiscounts(): Promise<{ headersSynced: number; 
 }
 
 /**
+ * Pull Customer Required Shelf Life (CSL — same "[CD]" module as Contract
+ * Discounts) from SAP and flatten header+lines into `customer_require_shelflife`,
+ * mirroring:
+ *   SELECT t1.DocEntry, t1.U_Code CustGroupCode, t1.U_Name CustGroupName,
+ *          t1.U_ValidFrom, t1.U_ValidTo,
+ *          t2.U_Code ItemGroupCode, t2.U_Name ItemGroupName,
+ *          t2.U_ReqSLFrom, t2.U_ReqSLTo
+ *   FROM "@MDM_CD_CSL_H" t1 INNER JOIN "@MDM_CD_CSL_L" t2 ON t1.DocEntry = t2.DocEntry
+ * — done in JS against /CSL (see getCustomerRequiredShelfLife) rather than
+ * as a literal SQLQuery, since SAP blocks raw SQL access to these two
+ * tables for this account ("not accessible") but /CSL is a dedicated,
+ * accessible Service Layer binding for the same UDO.
+ *
+ * Scope: only rows whose customer code AND item code are both already
+ * known `customer_groups`/`item_groups` codes are kept — a header naming a
+ * specific customer (not a group), or a group this portal doesn't track at
+ * all, is dropped. Unlike syncContractDiscounts, customers.sap_card_code /
+ * items.sap_item_code are deliberately NOT part of the scope (per the
+ * admin's request — only customer_groups/item_groups).
+ */
+export async function syncCustomerRequiredShelfLife(): Promise<{ rowsSynced: number; rowsSkipped: number }> {
+  const sap = getSapClient();
+  const pool = getPool();
+
+  const cgRows = await query<{ code: string }[]>(`SELECT DISTINCT code FROM customer_groups`);
+  const customerGroupCodes = new Set(cgRows.map((r) => r.code.trim()));
+  const igRows = await query<{ code: string }[]>(`SELECT DISTINCT code FROM item_groups`);
+  const itemGroupCodes = new Set(igRows.map((r) => r.code.trim()));
+
+  if (customerGroupCodes.size === 0 || itemGroupCodes.size === 0) {
+    console.warn("[Sync CSL] No customer_groups or item_groups in DB yet — import them first.");
+    return { rowsSynced: 0, rowsSkipped: 0 };
+  }
+
+  const headers = await sap.getCustomerRequiredShelfLife();
+
+  const rows: {
+    docEntry: number; custGroupCode: string; custGroupName: string | null;
+    validFrom: string | null; validTo: string | null;
+    itemGroupCode: string; itemGroupName: string | null;
+    shelfLifeFrom: number | null; shelfLifeTo: number | null;
+  }[] = [];
+  let rowsSkipped = 0;
+
+  for (const h of headers) {
+    if (h.Canceled === "Y") continue;
+    const custGroupCode = h.U_Code?.trim();
+    if (!custGroupCode || !customerGroupCodes.has(custGroupCode)) {
+      rowsSkipped += (h.MDM_CD_CSL_LCollection ?? []).length;
+      continue;
+    }
+    for (const l of h.MDM_CD_CSL_LCollection ?? []) {
+      const itemGroupCode = l.U_Code?.trim();
+      if (!itemGroupCode || !itemGroupCodes.has(itemGroupCode)) {
+        rowsSkipped++;
+        continue;
+      }
+      rows.push({
+        docEntry: h.DocEntry,
+        custGroupCode,
+        custGroupName: h.U_Name,
+        validFrom: toMySQLDate(h.U_ValidFrom),
+        validTo: toMySQLDate(h.U_ValidTo),
+        itemGroupCode,
+        itemGroupName: l.U_Name,
+        shelfLifeFrom: l.U_ReqSLFrom,
+        shelfLifeTo: l.U_ReqSLTo,
+      });
+    }
+  }
+
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    await conn.execute(`DELETE FROM customer_require_shelflife`);
+
+    const CHUNK = 500;
+    for (let i = 0; i < rows.length; i += CHUNK) {
+      const chunk = rows.slice(i, i + CHUNK).map((r) => [
+        r.docEntry, r.custGroupCode, r.custGroupName, r.validFrom, r.validTo,
+        r.itemGroupCode, r.itemGroupName, r.shelfLifeFrom, r.shelfLifeTo, new Date(),
+      ]);
+      if (chunk.length === 0) continue;
+      await conn.query(
+        `INSERT INTO customer_require_shelflife
+           (doc_entry, cust_group_code, cust_group_name, valid_from, valid_to,
+            item_group_code, item_group_name, shelf_life_from, shelf_life_to, last_synced)
+         VALUES ?`,
+        [chunk]
+      );
+    }
+
+    await conn.commit();
+    return { rowsSynced: rows.length, rowsSkipped };
+  } catch (error) {
+    await conn.rollback();
+    throw error;
+  } finally {
+    conn.release();
+  }
+}
+
+/**
  * Pull SAP customers (BusinessPartners) into the local `customers`
  * cache — one row per real SAP customer, scoped to the (U_CusGrp01,
  * U_CusGrp02) pairs from the `customer_groups` table in MySQL
@@ -481,51 +811,3 @@ export async function syncSapCustomers(): Promise<{ customersSynced: number }> {
   return { customersSynced };
 }
 
-/**
- * Pull active Promotion Discounts from SAP B1 (via the custom `executePromotionSql`
- * SQLQuery — see client.ts) and replace the local `promotion_discount` cache with
- * the current snapshot. The SAP query already filters to released, non-canceled,
- * "GT" prefix promotions, so each sync is a full replace rather than an upsert —
- * there's no stable natural key across syncs (a header can gain/lose BP or item
- * rows), and rows dropped from SAP (expired/canceled) must not linger.
- */
-export async function syncPromotionDiscounts(): Promise<{ rowsSynced: number }> {
-  const sap = getSapClient();
-  const pool = getPool();
-
-  const rows = await sap.executePromotionSql();
-
-  const conn = await pool.getConnection();
-  try {
-    await conn.beginTransaction();
-
-    await conn.execute(`DELETE FROM promotion_discount`);
-
-    for (const r of rows) {
-      await conn.execute(
-        `INSERT INTO promotion_discount (
-           doc_entry, promotion_code, promotion_name, create_date, update_date, begin_date, end_date,
-           bp_grp_code, bp_grp_name, bp_code, bp_name,
-           selling_grp_code, selling_grp_name, selling_item_code, selling_item_name,
-           disc_pct, selling_qty, giving_item_code, giving_item_name, giving_qty, last_synced)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
-        [
-          r.doc_entry, r.promotion_code, r.promotion_name,
-          toMySQLDate(r.create_date), toMySQLDate(r.update_date), toMySQLDate(r.begin_date), toMySQLDate(r.end_date),
-          r.bp_grp_code || null, r.bp_grp_name || null, r.bp_code || null, r.bp_name || null,
-          r.selling_grp_code || null, r.selling_grp_name || null, r.selling_item_code || null, r.selling_item_name || null,
-          r.disc_pct ?? null, r.selling_qty ?? null,
-          r.giving_item_code || null, r.giving_item_name || null, r.giving_qty ?? null,
-        ]
-      );
-    }
-
-    await conn.commit();
-    return { rowsSynced: rows.length };
-  } catch (error) {
-    await conn.rollback();
-    throw error;
-  } finally {
-    conn.release();
-  }
-}

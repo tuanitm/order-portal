@@ -76,7 +76,7 @@ export default function AdminRolesPage() {
         <div style={styles.header}>
           <div>
             <h1 style={styles.title}>Admin Roles</h1>
-            <p style={styles.subtitle}>Each role grants access to whole sections (not per-action). The config.json bootstrap admin is always a super-admin with everything.</p>
+            <p style={styles.subtitle}>Each role grants access to whole sections (not per-action). Root (an admin_users row with is_root=TRUE) is always unrestricted, regardless of any role.</p>
           </div>
           <button onClick={() => setShowNew(!showNew)} style={btn("primary")}>{showNew ? "Cancel" : "+ New Role"}</button>
         </div>

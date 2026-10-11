@@ -13,6 +13,7 @@ export const ALL_ADMIN_PERMISSIONS = [
   "items",
   "item-groups",
   "price-lists",
+  "warehouses",
   "contract-discounts",
   "promotions",
   "orders",
@@ -21,6 +22,23 @@ export const ALL_ADMIN_PERMISSIONS = [
 ] as const;
 
 export type AdminPermission = (typeof ALL_ADMIN_PERMISSIONS)[number];
+
+/**
+ * Permissions no role can ever grant — only an `admin_users` row with
+ * `is_root = TRUE` ("root", isSuperAdmin in the session) may have them,
+ * regardless of what a role's own `permissions` JSON contains. Managing
+ * admin accounts and the roles that define everyone else's access is
+ * itself the thing access control protects; a role-scoped admin who could
+ * grant themselves (or any role) "admin-users"/"admin-roles" would be able
+ * to escalate to full control, so these are checked by identity
+ * (isSuperAdmin), not by the role's permission list — see hasPermission.
+ */
+export const ROOT_ONLY_PERMISSIONS: AdminPermission[] = ["admin-users", "admin-roles"];
+
+/** ALL_ADMIN_PERMISSIONS minus ROOT_ONLY_PERMISSIONS — what a role can actually be given (see the Admin Roles page). */
+export const ASSIGNABLE_ADMIN_PERMISSIONS = ALL_ADMIN_PERMISSIONS.filter(
+  (p) => !ROOT_ONLY_PERMISSIONS.includes(p)
+) as AdminPermission[];
 
 export interface AdminSession {
   email: string;
@@ -32,21 +50,25 @@ export interface AdminSession {
 interface AdminTokenPayload {
   email: string;
   isSuperAdmin: boolean;
-  adminId?: number;
+  adminId: number;
 }
 
 interface AdminUserRow {
   id: number;
   email: string;
   full_name: string;
+  is_root: number;
   is_active: number;
-  permissions: string | AdminPermission[]; // JSON column — mysql2 usually auto-parses to an array
+  permissions: string | AdminPermission[] | null; // JSON column — mysql2 usually auto-parses to an array; null for a root row (LEFT JOIN, no role)
 }
 
 /**
  * Resolve the currently logged-in admin from the `admin-token` cookie (a
- * signed JWT, not the raw email string the old implementation stored).
- * Returns null if there is no valid session.
+ * signed JWT). Always re-checked against the DB on every request — root
+ * included — rather than trusting the JWT's claims for its whole 8h
+ * lifetime, so deactivating an account (root or not) takes effect
+ * immediately, not just on next login. Returns null if there is no valid
+ * session.
  */
 export async function getAdminSession(request: NextRequest): Promise<AdminSession | null> {
   const token = request.cookies.get("admin-token")?.value;
@@ -59,31 +81,31 @@ export async function getAdminSession(request: NextRequest): Promise<AdminSessio
     return null;
   }
 
-  if (decoded.isSuperAdmin) {
-    return {
-      email: decoded.email,
-      isSuperAdmin: true,
-      adminId: null,
-      permissions: [...ALL_ADMIN_PERMISSIONS],
-    };
-  }
-
   if (!decoded.adminId) return null;
 
   const row = await queryOne<AdminUserRow>(
-    `SELECT au.id, au.email, au.full_name, au.is_active, ar.permissions
+    `SELECT au.id, au.email, au.full_name, au.is_root, au.is_active, ar.permissions
      FROM admin_users au
-     JOIN admin_roles ar ON ar.id = au.role_id
+     LEFT JOIN admin_roles ar ON ar.id = au.role_id
      WHERE au.id = ?`,
     [decoded.adminId]
   );
   if (!row || !row.is_active) return null;
 
+  if (row.is_root) {
+    return {
+      email: row.email,
+      isSuperAdmin: true,
+      adminId: row.id,
+      permissions: [...ALL_ADMIN_PERMISSIONS],
+    };
+  }
+
   // mysql2 auto-deserializes JSON columns, so row.permissions may already be
   // an array (typical) or, depending on driver config, a raw string.
   let permissions: AdminPermission[] = [];
   try {
-    permissions = Array.isArray(row.permissions) ? row.permissions : JSON.parse(row.permissions);
+    permissions = Array.isArray(row.permissions) ? row.permissions : JSON.parse(row.permissions || "[]");
   } catch {
     permissions = [];
   }
@@ -101,6 +123,7 @@ export function signAdminToken(payload: AdminTokenPayload): string {
 }
 
 export function hasPermission(session: AdminSession, permission: AdminPermission): boolean {
+  if (ROOT_ONLY_PERMISSIONS.includes(permission)) return session.isSuperAdmin;
   return session.isSuperAdmin || session.permissions.includes(permission);
 }
 

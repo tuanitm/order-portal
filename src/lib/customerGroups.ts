@@ -1,6 +1,8 @@
 import { readFileSync, existsSync } from "fs";
 import { join } from "path";
 import { getPool } from "@/lib/db/connection";
+import { loadConfig } from "@/lib/config";
+import { queryHana, getHanaSchema } from "@/lib/hana/client";
 
 export interface ImportWarning {
   index: number;
@@ -35,6 +37,80 @@ export async function importCustomerGroupsFromFile(): Promise<ImportResult> {
     tableName: "customer_groups",
     maxLevels: 3,
   });
+}
+
+interface HanaCustomerGroupRow {
+  CustGrpCode1: string;
+  CustGrpName1: string | null;
+  CustGrpCode2: string;
+  CustGrpName2: string | null;
+  CustGrpCode3: string;
+  CustGrpName3: string | null;
+}
+
+/**
+ * Pull the CustGrp01->02->03 name hierarchy straight from SAP HANA (the
+ * @AMDM_CD_CUSGRP01/02/03 UDTs — Master-Data-type UDOs, same as the
+ * Promotion tables, so SAP B1's own Query Generator Authorization blocks
+ * them via Service Layer SQLQueries regardless of grants; confirmed
+ * empirically, error 702 "not accessible") and upsert into
+ * `customer_groups`. Supersedes the SAP_Customer_Group.xlsx import as the
+ * primary source; that importer remains as a manual fallback.
+ *
+ * Same upsert semantics as importFromXlsx (ON DUPLICATE KEY UPDATE
+ * parent_code/name only) rather than a full replace: `is_active` toggles
+ * made on the admin page, and any group added manually there, must survive
+ * a re-sync untouched.
+ *
+ * Scoped by config.json's masterdata.customerGroup (a ready-made SQL IN-list
+ * literal, e.g. "'GT'") — only level-1/2 groups matching it are pulled.
+ */
+export async function syncCustomerGroupsFromHana(): Promise<{ rowsRead: number; levelsImported: number }> {
+  const schema = getHanaSchema();
+  const customerGroupFilter = loadConfig().masterdata.customerGroup;
+
+  const sqlText = `SELECT T1."Code" "CustGrpCode1", T1."Name" "CustGrpName1", T2."Code" "CustGrpCode2", T2."Name" "CustGrpName2", T3."Code" "CustGrpCode3", T3."Name" "CustGrpName3" FROM "${schema}"."@AMDM_CD_CUSGRP03" T3 INNER JOIN "${schema}"."@AMDM_CD_CUSGRP02" T2 ON T3."U_CusGrp02"=T2."Code" INNER JOIN "${schema}"."@AMDM_CD_CUSGRP01" T1 ON T2."U_CusGrp01"=T1."Code" WHERE T1."Code" IN (${customerGroupFilter}) OR T2."Code" IN (${customerGroupFilter}) ORDER BY T1."Code",T2."Code",T3."Code"`;
+
+  const rows = await queryHana<HanaCustomerGroupRow>(sqlText);
+
+  let levelsImported = 0;
+
+  const pool = getPool();
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    for (const row of rows) {
+      // Every level is guaranteed present — INNER JOINs all the way down
+      // mean a row without a complete 1->2->3 chain is never returned.
+      const levels = [
+        { code: row.CustGrpCode1, name: row.CustGrpName1 },
+        { code: row.CustGrpCode2, name: row.CustGrpName2 },
+        { code: row.CustGrpCode3, name: row.CustGrpName3 },
+      ];
+
+      let parent: string | null = null;
+      for (let i = 0; i < levels.length; i++) {
+        const lvl = levels[i];
+        await conn.execute(
+          `INSERT INTO customer_groups (level, code, parent_code, name) VALUES (?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE parent_code = VALUES(parent_code), name = VALUES(name)`,
+          [i + 1, lvl.code.trim(), parent, lvl.name ? lvl.name.trim() : null]
+        );
+        levelsImported++;
+        parent = lvl.code.trim();
+      }
+    }
+
+    await conn.commit();
+  } catch (error) {
+    await conn.rollback();
+    throw error;
+  } finally {
+    conn.release();
+  }
+
+  return { rowsRead: rows.length, levelsImported };
 }
 
 /**

@@ -7,7 +7,10 @@ interface Item {
   id: number;
   sap_item_code: string;
   item_name_vi: string;
-  category: string;
+  uom: string | null;
+  sales_uom: string | null;
+  brand: string | null;
+  item_group_l2: string | null;
   item_cat01: string | null;
   item_cat02: string | null;
   item_cat03: string | null;
@@ -43,6 +46,8 @@ export default function ItemsPage() {
   const [savingCode, setSavingCode] = useState<string | null>(null);
   const [sortKey, setSortKey] = useState<SortKey>("sap_item_code");
   const [sortDir, setSortDir] = useState<SortDir>("ASC");
+  const [salesUomInputs, setSalesUomInputs] = useState<Record<string, string>>({});
+  const [savingSalesUomCode, setSavingSalesUomCode] = useState<string | null>(null);
 
   const load = useCallback(async (q: string, sort: SortKey, order: SortDir) => {
     setIsLoading(true);
@@ -50,8 +55,14 @@ export default function ItemsPage() {
     if (q) params.set("search", q);
     const res = await fetch(`/api/admin/items?${params}`);
     const data = await res.json();
-    setItems(data.items || []);
+    const loaded: Item[] = data.items || [];
+    setItems(loaded);
     setTotal(data.total || 0);
+    setSalesUomInputs((prev) => {
+      const next = { ...prev };
+      for (const i of loaded) if (!(i.sap_item_code in next)) next[i.sap_item_code] = i.sales_uom || "";
+      return next;
+    });
     setIsLoading(false);
   }, []);
 
@@ -69,6 +80,18 @@ export default function ItemsPage() {
     });
     setItems((prev) => prev.map((i) => (i.sap_item_code === code ? { ...i, is_manually_hidden: value ? 0 : 1 } : i)));
     setSavingCode(null);
+  };
+
+  const saveSalesUom = async (code: string) => {
+    setSavingSalesUomCode(code);
+    const salesUom = (salesUomInputs[code] || "").trim();
+    await fetch(`/api/admin/items/${code}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ salesUom: salesUom || null }),
+    });
+    setItems((prev) => prev.map((i) => (i.sap_item_code === code ? { ...i, sales_uom: salesUom || null } : i)));
+    setSavingSalesUomCode(null);
   };
 
   const handleSort = (key: SortKey) => {
@@ -110,7 +133,9 @@ export default function ItemsPage() {
             <p style={styles.subtitle}>
               {total} items cached. Double-click a column header to sort.
               The toggle hides/shows an individual item without changing its item group —
-              that choice survives future syncs.
+              that choice survives future syncs. <strong>Sales UOM</strong> overrides the unit of
+              measure shown to customers (storefront, cart, orders) when set — leave it blank to use
+              the synced <strong>UOM</strong>; this also survives future syncs.
             </p>
           </div>
           <SyncButton url="/api/admin/items/sync" label="Sync from SAP" loadingLabel="Syncing (can take a minute)..." onDone={() => load(search, sortKey, sortDir)} />
@@ -132,9 +157,13 @@ export default function ItemsPage() {
               <table style={styles.table}>
                 <thead>
                   <tr>
+                    <SortTh colKey="category" label="Brand" />
+                    <th style={styles.th}>Item Group</th>
                     <SortTh colKey="sap_item_code" label="Item Code" />
                     <SortTh colKey="item_name_vi" label="Name" />
-                    <SortTh colKey="category" label="Item Group" />
+                    <th style={styles.th}>UOM</th>
+                    <th style={styles.th}>Sales UOM</th>
+                    <th style={styles.th}>Item Group Path</th>
                     <SortTh colKey="base_price" label="Base Price" />
                     <SortTh colKey="is_active" label="Visible" />
                   </tr>
@@ -142,8 +171,33 @@ export default function ItemsPage() {
                 <tbody>
                   {items.map((i) => (
                     <tr key={i.sap_item_code} style={{ opacity: i.is_active ? 1 : 0.5 }}>
+                      <td style={styles.td}>{i.brand || "—"}</td>
+                      <td style={styles.td}>{i.item_group_l2 || "—"}</td>
                       <td style={{ ...styles.td, fontFamily: "monospace", fontSize: "0.75rem" }}>{i.sap_item_code}</td>
                       <td style={styles.td}>{i.item_name_vi}</td>
+                      <td style={{ ...styles.td, color: "var(--text-tertiary, #94A3B8)" }}>{i.uom || "—"}</td>
+                      <td style={styles.td}>
+                        <div style={{ display: "flex", gap: "0.375rem" }}>
+                          <input
+                            type="text"
+                            value={salesUomInputs[i.sap_item_code] ?? ""}
+                            onChange={(e) => setSalesUomInputs((m) => ({ ...m, [i.sap_item_code]: e.target.value }))}
+                            onKeyDown={(e) => e.key === "Enter" && saveSalesUom(i.sap_item_code)}
+                            placeholder={i.uom || "—"}
+                            style={{ ...styles.input, width: "90px", padding: "0.25rem 0.5rem", fontSize: "0.75rem" }}
+                          />
+                          <button
+                            onClick={() => saveSalesUom(i.sap_item_code)}
+                            disabled={savingSalesUomCode === i.sap_item_code}
+                            style={{
+                              fontSize: "0.7rem", padding: "0 0.5rem", border: "1px solid var(--color-gray-200, #E2E8F0)",
+                              borderRadius: "var(--radius-md, 6px)", background: "var(--bg-primary, #fff)", cursor: "pointer",
+                            }}
+                          >
+                            {savingSalesUomCode === i.sap_item_code ? "..." : "Save"}
+                          </button>
+                        </div>
+                      </td>
                       <td style={{ ...styles.td, fontFamily: "monospace", fontSize: "0.75rem", color: "var(--text-tertiary, #94A3B8)" }}>{itemGroupChain(i)}</td>
                       <td style={styles.td}>{formatPrice(i.base_price)}</td>
                       <td style={styles.td}>

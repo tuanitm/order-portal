@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isHttpsRequest } from "@/lib/auth/cookies";
 import bcrypt from "bcryptjs";
-import { loadConfig, resolveEnvSecret } from "@/lib/config";
 import { queryOne } from "@/lib/db/connection";
 import { signAdminToken } from "@/lib/auth/adminSession";
 
@@ -9,14 +8,18 @@ interface AdminUserRow {
   id: number;
   email: string;
   password_hash: string;
+  is_root: number;
   is_active: number;
 }
 
 /**
- * POST /api/admin/login — Admin authentication.
- * Accepts either the config.json bootstrap super-admin credential, or an
- * `admin_users` account (bcrypt-verified). Issues a signed JWT in the
- * `admin-token` cookie either way.
+ * POST /api/admin/login — Admin authentication. One unified lookup against
+ * `admin_users` (bcrypt-verified) — root is a real row there too
+ * (is_root=TRUE, see scripts/migrate_root_admin.mjs), not a config.json
+ * comparison; config.json/.env are no longer read here. Issues a signed JWT
+ * in the `admin-token` cookie, with `adminId` always populated now (root
+ * included), so getAdminSession can re-verify is_root/is_active against the
+ * DB on every request rather than trusting an old JWT's claim for 8h.
  */
 export async function POST(request: NextRequest) {
   try {
@@ -30,35 +33,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // ── Bootstrap super-admin (config.json) ──
-    const adminConfig = loadConfig().admin;
-    const bootstrapEmail = adminConfig.email.startsWith("ENV:")
-      ? resolveEnvSecret(adminConfig.email.replace("ENV:", ""))
-      : adminConfig.email;
-    const bootstrapPassword = adminConfig.password.startsWith("ENV:")
-      ? resolveEnvSecret(adminConfig.password.replace("ENV:", ""))
-      : adminConfig.password;
-
-    if (email === bootstrapEmail && password === bootstrapPassword) {
-      const token = signAdminToken({ email, isSuperAdmin: true });
-      const response = NextResponse.json({
-        success: true,
-        admin: { email, isSuperAdmin: true },
-      });
-      response.cookies.set("admin-token", token, {
-        httpOnly: true,
-        secure: isHttpsRequest(request),
-        sameSite: "lax",
-        maxAge: 8 * 60 * 60,
-        path: "/",
-      });
-      return response;
-    }
-
-    // ── admin_users account ──
     const adminUser = await queryOne<AdminUserRow>(
-      "SELECT id, email, password_hash, is_active FROM admin_users WHERE email = ? LIMIT 1",
-      [email]
+      "SELECT id, email, password_hash, is_root, is_active FROM admin_users WHERE email = ? LIMIT 1",
+      [email.trim().toLowerCase()]
     );
     if (!adminUser || !adminUser.is_active) {
       return NextResponse.json({ error: "Invalid admin credentials" }, { status: 401 });
@@ -69,10 +46,11 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Invalid admin credentials" }, { status: 401 });
     }
 
-    const token = signAdminToken({ email: adminUser.email, isSuperAdmin: false, adminId: adminUser.id });
+    const isSuperAdmin = !!adminUser.is_root;
+    const token = signAdminToken({ email: adminUser.email, isSuperAdmin, adminId: adminUser.id });
     const response = NextResponse.json({
       success: true,
-      admin: { email: adminUser.email, isSuperAdmin: false },
+      admin: { email: adminUser.email, isSuperAdmin },
     });
     response.cookies.set("admin-token", token, {
       httpOnly: true,

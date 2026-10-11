@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { query } from "@/lib/db/connection";
+import { query, queryOne } from "@/lib/db/connection";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { cascadeDeactivateDescendants } from "@/lib/itemCategories";
+import { getAllowedItemGroupCodes } from "@/lib/adminScope";
 
 /**
  * PATCH /api/admin/item-groups/[id] — name a category, toggle whether it's
@@ -11,6 +12,8 @@ import { cascadeDeactivateDescendants } from "@/lib/itemCategories";
  * a group off also unticks every descendant group's own Active toggle
  * (cascadeDeactivateDescendants) — turning it back on does NOT re-tick them,
  * so the admin decides which children to bring back individually.
+ * A scoped (non-root) admin may only edit a group within their assigned
+ * item groups (and descendants) — see getAllowedItemGroupCodes.
  * Body: { name?: string, isSellable?: boolean, isActive?: boolean }
  */
 export async function PATCH(
@@ -24,6 +27,14 @@ export async function PATCH(
   const categoryId = parseInt(id, 10);
   if (isNaN(categoryId)) {
     return NextResponse.json({ error: "Invalid category ID" }, { status: 400 });
+  }
+
+  const allowed = await getAllowedItemGroupCodes(guard.session);
+  if (allowed !== null) {
+    const target = await queryOne<{ code: string }>(`SELECT code FROM item_groups WHERE id = ?`, [categoryId]);
+    if (!target || !allowed.has(target.code)) {
+      return NextResponse.json({ error: "Forbidden — this item group is outside your assigned scope" }, { status: 403 });
+    }
   }
 
   const body = await request.json();

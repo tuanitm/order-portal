@@ -4,8 +4,8 @@ import { requireAdminPermission } from "@/lib/auth/adminSession";
 
 /**
  * GET /api/admin/promotions — the cached Promotion Discount rows (SAP
- * "@PM_HEADER" via the executePromotionSql SQLQuery), one row per
- * Promotion -> BP/Group -> Item/Group combination. Optional filters:
+ * "@PM_HEADER" etc., synced straight from HANA — see src/lib/hana/sync.ts),
+ * one row per Promotion -> BP/Group -> Item/Group combination. Optional filters:
  * search (promotion_code or promotion_name, partial match), bpCode (partial
  * match against bp_code OR bp_name), itemCode (partial match against
  * selling_item_code OR selling_item_name), activeOnly (begin_date/end_date

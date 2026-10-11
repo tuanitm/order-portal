@@ -15,6 +15,8 @@ interface Rule {
   item_category_code: string;
   is_visible: number;
 }
+interface Warehouse { sap_warehouse_code: string; warehouse_name: string; is_included: number }
+interface WarehouseMapping { customer_group_id: number; warehouse_code: string }
 
 const labelFor = (code: string, name: string | null, level: number) =>
   `${code}${name ? ` — ${name}` : ""} (L${level})`;
@@ -32,14 +34,14 @@ export default function CatalogVisibilityPage() {
   const [addMsg, setAddMsg] = useState("");
   const [addSaving, setAddSaving] = useState(false);
 
-  // Per-customer override panel
-  const [customerId, setCustomerId] = useState("");
-  const [overrideInfo, setOverrideInfo] = useState<{
-    customer: { full_name: string; sap_card_code: string } | null;
-    overrides: { item_category_level: number; item_category_code: string; is_visible: number }[];
-  } | null>(null);
-  const [overrideMap, setOverrideMap] = useState<Map<string, boolean | null>>(new Map());
-  const catKey = (level: number, code: string) => `${level}:${code}`;
+  // Customer Group (level 2) <-> Warehouse mapping — one free-typed,
+  // comma-separated textbox of warehouse codes per group.
+  const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
+  const [warehouseMappings, setWarehouseMappings] = useState<WarehouseMapping[]>([]);
+  const [isLoadingWh, setIsLoadingWh] = useState(true);
+  const [whInputs, setWhInputs] = useState<Record<number, string>>({});
+  const [savingGroupId, setSavingGroupId] = useState<number | null>(null);
+  const [whMsg, setWhMsg] = useState<Record<number, string>>({});
 
   const load = useCallback(async () => {
     setIsLoading(true);
@@ -51,7 +53,53 @@ export default function CatalogVisibilityPage() {
     setIsLoading(false);
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  const loadWarehouseMatrix = useCallback(async () => {
+    setIsLoadingWh(true);
+    const res = await fetch("/api/admin/catalog-visibility/warehouses");
+    const data = await res.json();
+    const whs: Warehouse[] = data.warehouses || [];
+    const maps: WarehouseMapping[] = data.mappings || [];
+    setWarehouses(whs);
+    setWarehouseMappings(maps);
+    // Seed each group's textbox from its current mappings, so re-opening the
+    // page (or saving another group) doesn't lose what's already there.
+    setWhInputs((prev) => {
+      const next = { ...prev };
+      const byGroup = new Map<number, string[]>();
+      for (const m of maps) {
+        if (!byGroup.has(m.customer_group_id)) byGroup.set(m.customer_group_id, []);
+        byGroup.get(m.customer_group_id)!.push(m.warehouse_code);
+      }
+      for (const [gid, codes] of byGroup) next[gid] = codes.join(", ");
+      return next;
+    });
+    setIsLoadingWh(false);
+  }, []);
+
+  useEffect(() => { load(); loadWarehouseMatrix(); }, [load, loadWarehouseMatrix]);
+
+  const customerGroupsL2 = customerGroups.filter((cg) => cg.level === 2);
+
+  const saveGroupWarehouses = async (cgId: number) => {
+    setSavingGroupId(cgId);
+    setWhMsg((m) => ({ ...m, [cgId]: "" }));
+    const warehouseCodes = (whInputs[cgId] || "").split(",").map((c) => c.trim()).filter(Boolean);
+    try {
+      const res = await fetch("/api/admin/catalog-visibility/warehouses", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ customerGroupId: cgId, warehouseCodes }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error([data.error, data.message].filter(Boolean).join(" — "));
+      setWhMsg((m) => ({ ...m, [cgId]: "✓ Saved" }));
+      await loadWarehouseMatrix();
+    } catch (err) {
+      setWhMsg((m) => ({ ...m, [cgId]: err instanceof Error ? err.message : "Save failed" }));
+    } finally {
+      setSavingGroupId(null);
+    }
+  };
 
   // ── Add rule ──
   const handleAdd = async () => {
@@ -106,41 +154,6 @@ export default function CatalogVisibilityPage() {
     load();
   };
 
-  // ── Per-customer overrides ──
-  const loadCustomerOverrides = async () => {
-    if (!customerId) return;
-    const res = await fetch(`/api/admin/catalog-visibility/customers/${customerId}`);
-    if (!res.ok) { setOverrideInfo(null); return; }
-    const data = await res.json();
-    setOverrideInfo(data);
-    const m = new Map<string, boolean | null>();
-    for (const o of data.overrides) m.set(catKey(o.item_category_level, o.item_category_code), !!o.is_visible);
-    setOverrideMap(m);
-  };
-
-  const toggleOverride = (icLevel: number, icCode: string) => {
-    const k = catKey(icLevel, icCode);
-    const current = overrideMap.get(k);
-    const next = new Map(overrideMap);
-    if (current === undefined || current === null) next.set(k, false);
-    else if (current === false) next.set(k, true);
-    else next.delete(k);
-    setOverrideMap(next);
-  };
-
-  const saveOverrides = async () => {
-    const overrides = [...overrideMap.entries()].map(([k, isVisible]) => {
-      const [itemCategoryLevel, itemCategoryCode] = k.split(":");
-      return { itemCategoryLevel: Number(itemCategoryLevel), itemCategoryCode, isVisible };
-    });
-    await fetch(`/api/admin/catalog-visibility/customers/${customerId}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ overrides }),
-    });
-    await loadCustomerOverrides();
-  };
-
   // ── Helper ──
   const igLabel = (level: number, code: string) => {
     const ig = itemGroups.find((g) => g.level === level && g.code === code);
@@ -156,7 +169,6 @@ export default function CatalogVisibilityPage() {
             <p style={styles.subtitle}>
               Pair a Customer Group with an Item Group to control visibility. No rule = visible by default.
               Rules inherit downward automatically — all sub-groups and items underneath are included.
-              Per-customer overrides at the bottom always win.
             </p>
           </div>
         </div>
@@ -262,45 +274,73 @@ export default function CatalogVisibilityPage() {
           </div>
         )}
 
-        {/* ── Per-customer overrides ── */}
+        {/* ── Customer Group (L2) <-> Warehouse ── */}
         <div style={styles.cardPadded}>
-          <h2 style={{ fontSize: "1.125rem", fontWeight: 700, marginBottom: "0.5rem" }}>Per-customer Override</h2>
+          <h2 style={{ fontSize: "1.125rem", fontWeight: 700, marginBottom: "0.5rem" }}>Warehouse Visibility</h2>
           <p style={{ fontSize: "0.8125rem", color: "var(--text-tertiary, #94A3B8)", marginBottom: "1rem" }}>
-            Override group-level rules for a specific customer. Per-customer overrides always win.
+            Which warehouse(s) a Customer Group (level 2) draws stock from, for the storefront&apos;s available-quantity
+            check. Type the warehouse codes for that group, separated by commas, e.g. <code>1000, 1001, 1002</code>, then
+            Save. A group left blank falls back to every warehouse marked <strong>Included</strong> on the{" "}
+            <a href="warehouses">Warehouses</a> page (today&apos;s default).
           </p>
-          <div style={{ display: "flex", gap: "0.5rem", marginBottom: "1rem" }}>
-            <input
-              style={styles.input}
-              placeholder="Customer user ID (from Customers page)"
-              value={customerId}
-              onChange={(e) => setCustomerId(e.target.value)}
-            />
-            <button onClick={loadCustomerOverrides} style={btn("secondary")}>Look up</button>
-          </div>
 
-          {overrideInfo?.customer && (
+          <LoadingOrEmpty
+            isLoading={isLoadingWh}
+            isEmpty={!isLoadingWh && customerGroupsL2.length === 0}
+            emptyLabel="No level-2 customer groups yet — import from Customer Groups."
+          />
+
+          {!isLoadingWh && customerGroupsL2.length > 0 && (
             <>
-              <p style={{ fontSize: "0.8125rem", marginBottom: "1rem" }}>
-                <strong>{overrideInfo.customer.full_name}</strong> ({overrideInfo.customer.sap_card_code})
-              </p>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", marginBottom: "1rem" }}>
-                {itemGroups.map((ig) => {
-                  const state = overrideMap.get(catKey(ig.level, ig.code));
-                  const label = state === undefined ? "Group default" : state ? "Visible" : "Hidden";
-                  const bg = state === undefined ? "#F1F5F9" : state ? "#D1FAE5" : "#FEE2E2";
-                  const color = state === undefined ? "#475569" : state ? "#065F46" : "#991B1B";
-                  return (
-                    <button
-                      key={ig.id}
-                      onClick={() => toggleOverride(ig.level, ig.code)}
-                      style={{ padding: "0.375rem 0.75rem", borderRadius: "var(--radius-full)", border: "none", background: bg, color, fontSize: "0.75rem", fontWeight: 600, cursor: "pointer" }}
-                    >
-                      {ig.code} (L{ig.level}): {label}
-                    </button>
-                  );
-                })}
+              <div style={{ overflowX: "auto" }}>
+                <table style={styles.table}>
+                  <thead>
+                    <tr>
+                      <th style={styles.th}>Customer Group</th>
+                      <th style={styles.th}>Warehouse Codes</th>
+                      <th style={{ ...styles.th, width: 100 }}></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {customerGroupsL2.map((cg) => (
+                      <tr key={cg.id}>
+                        <td style={styles.td}>
+                          <span style={{ fontFamily: "monospace" }}>{cg.code}</span>
+                          {cg.name ? ` — ${cg.name}` : ""}
+                        </td>
+                        <td style={styles.td}>
+                          <input
+                            type="text"
+                            value={whInputs[cg.id] ?? ""}
+                            onChange={(e) => setWhInputs((m) => ({ ...m, [cg.id]: e.target.value }))}
+                            placeholder="e.g. 1000, 1001, 1002"
+                            style={{ ...styles.input, width: "100%" }}
+                          />
+                          {whMsg[cg.id] && (
+                            <p style={{ marginTop: "0.25rem", fontSize: "0.75rem", color: whMsg[cg.id].startsWith("✓") ? "#059669" : "#DC2626" }}>
+                              {whMsg[cg.id]}
+                            </p>
+                          )}
+                        </td>
+                        <td style={styles.td}>
+                          <button
+                            onClick={() => saveGroupWarehouses(cg.id)}
+                            disabled={savingGroupId === cg.id}
+                            style={btn("primary", savingGroupId === cg.id)}
+                          >
+                            {savingGroupId === cg.id ? "Saving..." : "Save"}
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
-              <button onClick={saveOverrides} style={btn("primary")}>Save overrides</button>
+              {warehouses.some((w) => w.is_included) && (
+                <p style={{ marginTop: "0.75rem", fontSize: "0.75rem", color: "var(--text-tertiary, #94A3B8)" }}>
+                  Included warehouse codes: {warehouses.filter((w) => w.is_included).map((w) => `${w.sap_warehouse_code} (${w.warehouse_name})`).join(", ")}
+                </p>
+              )}
             </>
           )}
         </div>

@@ -31,6 +31,19 @@ interface Discount {
   last_synced: string;
 }
 
+interface ShelfLifeRow {
+  doc_entry: number;
+  cust_group_code: string;
+  cust_group_name: string | null;
+  valid_from: string | null;
+  valid_to: string | null;
+  item_group_code: string;
+  item_group_name: string | null;
+  shelf_life_from: string | null;
+  shelf_life_to: string | null;
+  last_synced: string | null;
+}
+
 function formatPrice(v: string) {
   return new Intl.NumberFormat("vi-VN").format(Number(v)) + "₫";
 }
@@ -82,6 +95,22 @@ export default function ContractDiscountsPage() {
     await fetch(`/api/admin/contract-discounts/sync/${encodeURIComponent(cardCode.trim())}`, { method: "POST" });
     await search();
   };
+
+  // ── Customer Required Shelf Life (SAP CSL) ──
+  const [shelfLife, setShelfLife] = useState<ShelfLifeRow[]>([]);
+  const [isLoadingShelfLife, setIsLoadingShelfLife] = useState(true);
+
+  const loadShelfLife = useCallback(async () => {
+    setIsLoadingShelfLife(true);
+    const res = await fetch(`/api/admin/contract-discounts/shelf-life`);
+    const data = await res.json();
+    setShelfLife(data.rows || []);
+    setIsLoadingShelfLife(false);
+  }, []);
+
+  useEffect(() => {
+    loadShelfLife();
+  }, [loadShelfLife]);
 
   return (
     <div style={styles.page}>
@@ -218,6 +247,62 @@ export default function ContractDiscountsPage() {
             )}
           </div>
         )}
+
+        {/* Customer Required Shelf Life (SAP CSL — same "[CD]" module as the agreements above) */}
+        <h2 style={{ fontSize: "1.125rem", fontWeight: 700, marginBottom: "0.5rem", marginTop: "2rem" }}>Customer Required Shelf Life</h2>
+        <p style={{ fontSize: "0.8125rem", color: "var(--text-tertiary, #94A3B8)", marginBottom: "1rem" }}>
+          SAP CSL — the minimum remaining-shelf-life % a customer group requires for an item group (e.g. 70-100%).
+          Only rows whose customer group and item group are both already known here (Customer Groups / Item Groups
+          pages) are synced — a rule naming a specific customer rather than a group is skipped.
+        </p>
+        <div style={{ marginBottom: "1rem" }}>
+          <SyncButton
+            url="/api/admin/contract-discounts/shelf-life/sync"
+            label="Sync shelf life requirements from SAP"
+            onDone={loadShelfLife}
+          />
+        </div>
+        <div style={styles.card}>
+          <LoadingOrEmpty
+            isLoading={isLoadingShelfLife}
+            isEmpty={!isLoadingShelfLife && shelfLife.length === 0}
+            emptyLabel="No shelf life requirements synced yet"
+          />
+          {!isLoadingShelfLife && shelfLife.length > 0 && (
+            <div style={{ overflowX: "auto" }}>
+              <table style={styles.table}>
+                <thead>
+                  <tr>
+                    <th style={styles.th}>Customer Group</th>
+                    <th style={styles.th}>Item Group</th>
+                    <th style={styles.th}>Required Shelf Life %</th>
+                    <th style={styles.th}>Valid</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {shelfLife.map((r, i) => (
+                    <tr key={`${r.doc_entry}-${r.item_group_code}-${i}`}>
+                      <td style={styles.td}>
+                        <span style={{ fontFamily: "monospace" }}>{r.cust_group_code}</span>
+                        {r.cust_group_name ? ` — ${r.cust_group_name}` : ""}
+                      </td>
+                      <td style={styles.td}>
+                        <span style={{ fontFamily: "monospace" }}>{r.item_group_code}</span>
+                        {r.item_group_name ? ` — ${r.item_group_name}` : ""}
+                      </td>
+                      <td style={styles.td}>
+                        {r.shelf_life_from ?? "—"}% → {r.shelf_life_to ?? "—"}%
+                      </td>
+                      <td style={{ ...styles.td, fontSize: "0.75rem", color: "var(--text-tertiary, #94A3B8)" }}>
+                        {r.valid_from?.slice(0, 10) || "…"} → {r.valid_to?.slice(0, 10) || "…"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

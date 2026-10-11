@@ -108,7 +108,8 @@
     "noProducts": "No products available",
     "viewDetail": "View Details",
     "buyGetPromo": "Buy {buyQty} get {giveQty} {giveItem} free",
-    "buyGetSamePromo": "Buy {buyQty} get {giveQty} free (same item)"
+    "buyGetSamePromo": "Buy {buyQty} get {giveQty} free (same item)",
+    "stockAvailable": "In stock: {qty} {uom}"
   },
   "cart": {
     "title": "Shopping Cart",

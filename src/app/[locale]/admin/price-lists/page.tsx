@@ -25,6 +25,32 @@ interface PriceListItem {
   last_synced: string | null;
 }
 
+interface PeriodDiscountRow {
+  sap_item_code: string;
+  item_name_vi: string | null;
+  item_name_en: string | null;
+  uom: string | null;
+  base_price: string | null;
+  discount_percent: string | null;
+  special_price: string;
+  date_from: string | null;
+  date_to: string | null;
+  last_synced: string | null;
+}
+
+interface SpecialDiscountRow {
+  sap_card_code: string;
+  card_name: string | null;
+  sap_item_code: string;
+  item_name_vi: string | null;
+  item_name_en: string | null;
+  special_price: string;
+  discount_percent: string | null;
+  valid_from: string | null;
+  valid_to: string | null;
+  last_synced: string | null;
+}
+
 function formatPrice(v: string | null) {
   if (v === null) return "—";
   return new Intl.NumberFormat("vi-VN").format(Number(v)) + "₫";
@@ -98,6 +124,38 @@ export default function PriceListsPage() {
     const timer = setTimeout(() => loadItems(activeTab, search), 250);
     return () => clearTimeout(timer);
   }, [activeTab, search, loadItems]);
+
+  // ── Period Discounts (SAP SpecialPrices scoped to this whole price list,
+  // CardCode = '*NN') and Special Discounts (SAP SpecialPrices for every
+  // customer currently on this list — "channel customers"), both for the
+  // selected tab's price list. Sync/admin-visibility only for now — not yet
+  // part of the live storefront price calculation.
+  const [periodRows, setPeriodRows] = useState<PeriodDiscountRow[]>([]);
+  const [isLoadingPeriod, setIsLoadingPeriod] = useState(false);
+  const [specialRows, setSpecialRows] = useState<SpecialDiscountRow[]>([]);
+  const [isLoadingSpecial, setIsLoadingSpecial] = useState(false);
+
+  const loadPeriodDiscounts = useCallback(async (num: number) => {
+    setIsLoadingPeriod(true);
+    const res = await fetch(`/api/admin/price-lists/${num}/period-discounts`);
+    const data = await res.json();
+    setPeriodRows(data.rows || []);
+    setIsLoadingPeriod(false);
+  }, []);
+
+  const loadSpecialDiscounts = useCallback(async (num: number) => {
+    setIsLoadingSpecial(true);
+    const res = await fetch(`/api/admin/price-lists/${num}/special-discounts`);
+    const data = await res.json();
+    setSpecialRows(data.rows || []);
+    setIsLoadingSpecial(false);
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === null) return;
+    loadPeriodDiscounts(activeTab);
+    loadSpecialDiscounts(activeTab);
+  }, [activeTab, loadPeriodDiscounts, loadSpecialDiscounts]);
 
   return (
     <div style={styles.page}>
@@ -244,6 +302,121 @@ export default function PriceListsPage() {
                           <td style={styles.td}>{formatPrice(it.price)}</td>
                           <td style={{ ...styles.td, color: "var(--text-tertiary, #94A3B8)", fontSize: "0.75rem" }}>
                             {it.last_synced ? new Date(it.last_synced).toLocaleString() : "—"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            <h2 style={{ fontSize: "1.125rem", fontWeight: 700, marginBottom: "0.5rem", marginTop: "2rem" }}>Period Discounts</h2>
+            <p style={{ fontSize: "0.8125rem", color: "var(--text-tertiary, #94A3B8)", marginBottom: "1rem" }}>
+              SAP Special Prices scoped to this whole price list (SAP marks these with card code <code>*{activeTab}</code> instead
+              of a real customer) — a time-bound discount on specific items for everyone on this list. Not yet applied to prices
+              shown on the storefront.
+            </p>
+            <div style={{ marginBottom: "1rem" }}>
+              <SyncButton
+                url={`/api/admin/price-lists/${activeTab}/period-discounts/sync`}
+                label="Sync period discounts from SAP"
+                onDone={() => activeTab !== null && loadPeriodDiscounts(activeTab)}
+              />
+            </div>
+            <div style={{ ...styles.card, marginBottom: "2rem" }}>
+              <LoadingOrEmpty
+                isLoading={isLoadingPeriod}
+                isEmpty={!isLoadingPeriod && periodRows.length === 0}
+                emptyLabel="No period discounts synced yet for this price list"
+              />
+              {!isLoadingPeriod && periodRows.length > 0 && (
+                <div style={{ overflowX: "auto" }}>
+                  <table style={styles.table}>
+                    <thead>
+                      <tr>
+                        <th style={styles.th}>Item Code</th>
+                        <th style={styles.th}>Item Name</th>
+                        <th style={styles.th}>UOM</th>
+                        <th style={styles.th}>Price</th>
+                        <th style={styles.th}>Discount %</th>
+                        <th style={styles.th}>Price After Discount</th>
+                        <th style={styles.th}>Date From</th>
+                        <th style={styles.th}>Date To</th>
+                        <th style={styles.th}>Last Synced</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {periodRows.map((r, i) => (
+                        <tr key={`${r.sap_item_code}-${i}`}>
+                          <td style={{ ...styles.td, fontFamily: "monospace", fontSize: "0.75rem" }}>{r.sap_item_code}</td>
+                          <td style={styles.td}>{r.item_name_vi || r.item_name_en || "—"}</td>
+                          <td style={styles.td}>{r.uom || "—"}</td>
+                          <td style={styles.td}>{formatPrice(r.base_price)}</td>
+                          <td style={styles.td}>{r.discount_percent ? `${Number(r.discount_percent).toFixed(4)}%` : "—"}</td>
+                          <td style={{ ...styles.td, fontWeight: 600 }}>{formatPrice(r.special_price)}</td>
+                          <td style={styles.td}>{r.date_from?.slice(0, 10) || "—"}</td>
+                          <td style={styles.td}>{r.date_to?.slice(0, 10) || "open-ended"}</td>
+                          <td style={{ ...styles.td, color: "var(--text-tertiary, #94A3B8)", fontSize: "0.75rem" }}>
+                            {r.last_synced ? new Date(r.last_synced).toLocaleString() : "—"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            <h2 style={{ fontSize: "1.125rem", fontWeight: 700, marginBottom: "0.5rem" }}>Special Discounts</h2>
+            <p style={{ fontSize: "0.8125rem", color: "var(--text-tertiary, #94A3B8)", marginBottom: "1rem" }}>
+              SAP Special Prices negotiated per customer, bulk-synced for every customer currently assigned this price list.
+              Not yet applied to prices shown on the storefront.
+            </p>
+            <div style={{ marginBottom: "1rem" }}>
+              <SyncButton
+                url={`/api/admin/price-lists/${activeTab}/special-discounts/sync`}
+                label="Sync special discounts from SAP"
+                loadingLabel="Syncing (one request per customer — can take a while)..."
+                onDone={() => activeTab !== null && loadSpecialDiscounts(activeTab)}
+              />
+            </div>
+            <div style={{ ...styles.card }}>
+              <LoadingOrEmpty
+                isLoading={isLoadingSpecial}
+                isEmpty={!isLoadingSpecial && specialRows.length === 0}
+                emptyLabel="No special discounts synced yet for this price list's customers"
+              />
+              {!isLoadingSpecial && specialRows.length > 0 && (
+                <div style={{ overflowX: "auto" }}>
+                  <table style={styles.table}>
+                    <thead>
+                      <tr>
+                        <th style={styles.th}>Customer</th>
+                        <th style={styles.th}>Item Code</th>
+                        <th style={styles.th}>Item Name</th>
+                        <th style={styles.th}>Special Price</th>
+                        <th style={styles.th}>Discount %</th>
+                        <th style={styles.th}>Valid From</th>
+                        <th style={styles.th}>Valid To</th>
+                        <th style={styles.th}>Last Synced</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {specialRows.map((r, i) => (
+                        <tr key={`${r.sap_card_code}-${r.sap_item_code}-${i}`}>
+                          <td style={styles.td}>
+                            <div>{r.card_name || "—"}</div>
+                            <div style={{ fontFamily: "monospace", fontSize: "0.7rem", color: "var(--text-tertiary, #94A3B8)" }}>{r.sap_card_code}</div>
+                          </td>
+                          <td style={{ ...styles.td, fontFamily: "monospace", fontSize: "0.75rem" }}>{r.sap_item_code}</td>
+                          <td style={styles.td}>{r.item_name_vi || r.item_name_en || "—"}</td>
+                          <td style={styles.td}>{formatPrice(r.special_price)}</td>
+                          <td style={styles.td}>{r.discount_percent ? `${Number(r.discount_percent).toFixed(2)}%` : "—"}</td>
+                          <td style={styles.td}>{r.valid_from?.slice(0, 10) || "—"}</td>
+                          <td style={styles.td}>{r.valid_to?.slice(0, 10) || "open-ended"}</td>
+                          <td style={{ ...styles.td, color: "var(--text-tertiary, #94A3B8)", fontSize: "0.75rem" }}>
+                            {r.last_synced ? new Date(r.last_synced).toLocaleString() : "—"}
                           </td>
                         </tr>
                       ))}

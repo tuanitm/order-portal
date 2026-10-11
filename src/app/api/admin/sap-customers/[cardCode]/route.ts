@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { query } from "@/lib/db/connection";
+import { query, queryOne } from "@/lib/db/connection";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
+import { getAllowedCustomerGroupCodes, inScope } from "@/lib/adminScope";
 
 /**
  * PATCH /api/admin/sap-customers/[cardCode] — enable/disable a SAP customer.
@@ -20,6 +21,17 @@ export async function PATCH(
   const body = await request.json();
   if (typeof body.isEnabled !== "boolean") {
     return NextResponse.json({ error: "isEnabled (boolean) is required" }, { status: 400 });
+  }
+
+  const allowed = await getAllowedCustomerGroupCodes(guard.session);
+  if (allowed !== null) {
+    const target = await queryOne<{ cus_grp01: string | null; cus_grp02: string | null; cus_grp03: string | null }>(
+      `SELECT cus_grp01, cus_grp02, cus_grp03 FROM customers WHERE sap_card_code = ?`,
+      [cardCode]
+    );
+    if (!target || !inScope(allowed, [target.cus_grp01, target.cus_grp02, target.cus_grp03])) {
+      return NextResponse.json({ error: "Forbidden — this customer is outside your assigned scope" }, { status: 403 });
+    }
   }
 
   await query(`UPDATE customers SET is_enabled = ? WHERE sap_card_code = ?`, [body.isEnabled, cardCode]);

@@ -1,6 +1,8 @@
 import { readFileSync, existsSync } from "fs";
 import { join } from "path";
 import { getPool } from "@/lib/db/connection";
+import { loadConfig } from "@/lib/config";
+import { queryHana, getHanaSchema } from "@/lib/hana/client";
 
 export interface ImportWarning {
   index: number;
@@ -35,6 +37,106 @@ export async function importItemCategoriesFromFile(): Promise<ImportResult> {
     tableName: "item_groups",
     maxLevels: 6,
   });
+}
+
+interface HanaItemGroupRow {
+  ItemGrpCode1: string;
+  ItemGrpName1: string | null;
+  ItemGrpCode2: string;
+  ItemGrpName2: string | null;
+  ItemGrpCode3: string;
+  ItemGrpName3: string | null;
+  ItemGrpCode4: string;
+  ItemGrpName4: string | null;
+  ItemGrpCode5: string;
+  ItemGrpName5: string | null;
+  ItemGrpCode6: string;
+  ItemGrpName6: string | null;
+}
+
+/**
+ * Pull the ItemCat01->02->03->04->05->06 name hierarchy straight from SAP
+ * HANA (the @AMDM_ID_ITEMCAT01..06 UDTs — Master-Data-type UDOs, same as
+ * the Promotion and Customer Group tables, so SAP B1's own Query Generator
+ * Authorization blocks them via Service Layer SQLQueries regardless of
+ * grants; confirmed empirically, error 702 "not accessible") and upsert
+ * into `item_groups`. Supersedes the SAP_Item_Group.xlsx import as the
+ * primary source; that importer remains as a manual fallback.
+ *
+ * Same upsert semantics as importFromXlsx (ON DUPLICATE KEY UPDATE
+ * parent_code/name only) rather than a full replace: `is_active` toggles
+ * made on the admin page, and any group added manually there, must survive
+ * a re-sync untouched.
+ *
+ * Scoped by config.json's masterdata.itemGroup (a ready-made SQL IN-list
+ * literal, e.g. "'D1','L1'") — only level-1/2 groups matching it are
+ * pulled. Every level is INNER-joined all the way to 6, same as the
+ * source query — safe here because every item in this app's data has all
+ * 6 category levels populated (verified against the live `items` table).
+ */
+export async function syncItemGroupsFromHana(): Promise<{ rowsRead: number; levelsImported: number }> {
+  const schema = getHanaSchema();
+  const itemGroupFilter = loadConfig().masterdata.itemGroup;
+
+  const sqlText = `SELECT
+    T1."Code" "ItemGrpCode1", T1."Name" "ItemGrpName1",
+    T2."Code" "ItemGrpCode2", T2."Name" "ItemGrpName2",
+    T3."Code" "ItemGrpCode3", T3."Name" "ItemGrpName3",
+    T4."Code" "ItemGrpCode4", T4."Name" "ItemGrpName4",
+    T5."Code" "ItemGrpCode5", T5."Name" "ItemGrpName5",
+    T6."Code" "ItemGrpCode6", T6."Name" "ItemGrpName6"
+    FROM "${schema}"."@AMDM_ID_ITEMCAT06" T6
+    INNER JOIN "${schema}"."@AMDM_ID_ITEMCAT05" T5 ON T6."U_ItemCat05"=T5."Code"
+    INNER JOIN "${schema}"."@AMDM_ID_ITEMCAT04" T4 ON T5."U_ItemCat04"=T4."Code"
+    INNER JOIN "${schema}"."@AMDM_ID_ITEMCAT03" T3 ON T4."U_ItemCat03"=T3."Code"
+    INNER JOIN "${schema}"."@AMDM_ID_ITEMCAT02" T2 ON T3."U_ItemCat02"=T2."Code"
+    INNER JOIN "${schema}"."@AMDM_ID_ITEMCAT01" T1 ON T2."U_ItemCat01"=T1."Code"
+    WHERE T1."Code" IN (${itemGroupFilter}) OR T2."Code" IN (${itemGroupFilter})
+    ORDER BY T1."Code",T2."Code",T3."Code",T4."Code",T5."Code",T6."Code"`;
+
+  const rows = await queryHana<HanaItemGroupRow>(sqlText);
+
+  let levelsImported = 0;
+
+  const pool = getPool();
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    for (const row of rows) {
+      // Every level is guaranteed present — INNER JOINs all the way down
+      // mean a row without a complete 1->6 chain is never returned.
+      const levels = [
+        { code: row.ItemGrpCode1, name: row.ItemGrpName1 },
+        { code: row.ItemGrpCode2, name: row.ItemGrpName2 },
+        { code: row.ItemGrpCode3, name: row.ItemGrpName3 },
+        { code: row.ItemGrpCode4, name: row.ItemGrpName4 },
+        { code: row.ItemGrpCode5, name: row.ItemGrpName5 },
+        { code: row.ItemGrpCode6, name: row.ItemGrpName6 },
+      ];
+
+      let parent: string | null = null;
+      for (let i = 0; i < levels.length; i++) {
+        const lvl = levels[i];
+        await conn.execute(
+          `INSERT INTO item_groups (level, code, parent_code, name) VALUES (?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE parent_code = VALUES(parent_code), name = VALUES(name)`,
+          [i + 1, lvl.code.trim(), parent, lvl.name ? lvl.name.trim() : null]
+        );
+        levelsImported++;
+        parent = lvl.code.trim();
+      }
+    }
+
+    await conn.commit();
+  } catch (error) {
+    await conn.rollback();
+    throw error;
+  } finally {
+    conn.release();
+  }
+
+  return { rowsRead: rows.length, levelsImported };
 }
 
 /**

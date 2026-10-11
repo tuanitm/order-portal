@@ -25,6 +25,10 @@ export interface ProductWithPricing extends Product {
   promoGiveItemCode?: string;
   promoGiveItemName?: string;
   promoGiveQty?: number;
+  /** On-hand minus committed, summed across this customer's resolved warehouses (their
+   *  Customer Group's assigned warehouses, falling back to the globally Included ones).
+   *  null when stock tracking isn't active — distinct from 0 ("really out of stock"). */
+  availableQty?: number | null;
 }
 
 export interface ProductQuery {

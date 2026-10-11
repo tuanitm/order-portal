@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { query } from "@/lib/db/connection";
+import { query, queryOne } from "@/lib/db/connection";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { cascadeSetActiveDescendants } from "@/lib/customerGroups";
+import { getAllowedCustomerGroupCodes } from "@/lib/adminScope";
 
 /**
  * PATCH /api/admin/customer-groups/[id] — name a customer group (mainly for
@@ -9,7 +10,9 @@ import { cascadeSetActiveDescendants } from "@/lib/customerGroups";
  * and/or toggle it active (any level). Unlike item_groups, toggling active
  * here cascades to every descendant in BOTH directions — switching a group
  * off unticks its children, switching it back on re-ticks them too (see
- * cascadeSetActiveDescendants).
+ * cascadeSetActiveDescendants). A scoped (non-root) admin may only edit a
+ * group within their assigned customer groups (and descendants) — see
+ * getAllowedCustomerGroupCodes.
  * Body: { name?: string, isActive?: boolean }
  */
 export async function PATCH(
@@ -23,6 +26,14 @@ export async function PATCH(
   const groupId = parseInt(id, 10);
   if (isNaN(groupId)) {
     return NextResponse.json({ error: "Invalid customer group ID" }, { status: 400 });
+  }
+
+  const allowed = await getAllowedCustomerGroupCodes(guard.session);
+  if (allowed !== null) {
+    const target = await queryOne<{ code: string }>(`SELECT code FROM customer_groups WHERE id = ?`, [groupId]);
+    if (!target || !allowed.has(target.code)) {
+      return NextResponse.json({ error: "Forbidden — this customer group is outside your assigned scope" }, { status: 403 });
+    }
   }
 
   const body = await request.json();

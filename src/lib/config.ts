@@ -32,6 +32,24 @@ export interface AppConfig {
     dpUser: string;
     encrypted: boolean;
   };
+  /** Direct SAP HANA connection (bypasses SAP B1 Service Layer/the app-level
+   *  "Query Generator Authorization" restriction entirely) — read-only,
+   *  used only for data Service Layer has no access path for at all, e.g.
+   *  Promotion Discounts (see src/lib/hana). `hostname` is "host:port". */
+  hanadb: {
+    hostname: string;
+    schema: string;
+    userId: string;
+    passWrd: string;
+  };
+  /** SQL-literal filter lists (already comma-separated and quoted, e.g.
+   *  "'GT'" or "'D1','L1'") spliced directly into master-data sync queries'
+   *  WHERE clauses — see getCustomerGroupHierarchy in sap-b1/client.ts. */
+  masterdata: {
+    customerGroup: string;
+    itemGroup: string;
+    wareHouse: string;
+  };
 }
 
 let cachedConfig: AppConfig | null = null;

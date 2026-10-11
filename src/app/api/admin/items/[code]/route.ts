@@ -1,14 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
-import { query } from "@/lib/db/connection";
+import { query, queryOne } from "@/lib/db/connection";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
+import { getAllowedItemGroupCodes } from "@/lib/adminScope";
 
 /**
- * PATCH /api/admin/items/[code] — hide/unhide an individual item (e.g. an
- * item that doesn't belong in the catalog even though its item category is
- * otherwise sellable). This sets `is_manually_hidden`, a separate flag from
- * the sync-driven `is_active`, so it survives the next items sync — a
- * resync never silently un-hides an item an admin deliberately hid.
- * Body: { isActive: boolean } — true = visible, false = hidden.
+ * PATCH /api/admin/items/[code] — per-item admin overrides, each a separate
+ * flag/column from the sync-driven fields, so they survive the next items
+ * sync (neither is in syncItems' column list — a resync never touches them).
+ * A scoped (non-root) admin may only edit an item under one of their
+ * assigned item groups (and descendants) — see getAllowedItemGroupCodes.
+ * Body (either or both):
+ *   - { isActive: boolean } — hide/unhide (true = visible, false = hidden).
+ *     Sets `is_manually_hidden`, distinct from the sync-driven `is_active`.
+ *   - { salesUom: string | null } — override the unit of measure shown to
+ *     customers; null/empty clears the override back to the synced `uom`.
+ *     Effective UOM anywhere customer-facing = COALESCE(sales_uom, uom).
  */
 export async function PATCH(
   request: NextRequest,
@@ -18,11 +24,35 @@ export async function PATCH(
   if (guard.response) return guard.response;
 
   const { code } = await params;
-  const body = await request.json();
-  if (typeof body.isActive !== "boolean") {
-    return NextResponse.json({ error: "isActive (boolean) is required" }, { status: 400 });
+
+  const allowed = await getAllowedItemGroupCodes(guard.session);
+  if (allowed !== null) {
+    const target = await queryOne<{
+      item_cat01: string | null; item_cat02: string | null; item_cat03: string | null;
+      item_cat04: string | null; item_cat05: string | null; item_cat06: string | null;
+    }>(
+      `SELECT item_cat01, item_cat02, item_cat03, item_cat04, item_cat05, item_cat06 FROM items WHERE sap_item_code = ?`,
+      [code]
+    );
+    const cats = target ? [target.item_cat01, target.item_cat02, target.item_cat03, target.item_cat04, target.item_cat05, target.item_cat06] : [];
+    if (!cats.some((c) => c && allowed.has(c))) {
+      return NextResponse.json({ error: "Forbidden — this item is outside your assigned scope" }, { status: 403 });
+    }
   }
 
-  await query(`UPDATE items SET is_manually_hidden = ? WHERE sap_item_code = ?`, [!body.isActive, code]);
+  const body = await request.json();
+
+  if (typeof body.isActive !== "boolean" && !("salesUom" in body)) {
+    return NextResponse.json({ error: "isActive (boolean) or salesUom (string | null) is required" }, { status: 400 });
+  }
+
+  if (typeof body.isActive === "boolean") {
+    await query(`UPDATE items SET is_manually_hidden = ? WHERE sap_item_code = ?`, [!body.isActive, code]);
+  }
+  if ("salesUom" in body) {
+    const salesUom = typeof body.salesUom === "string" ? body.salesUom.trim() : null;
+    await query(`UPDATE items SET sales_uom = ? WHERE sap_item_code = ?`, [salesUom || null, code]);
+  }
+
   return NextResponse.json({ success: true });
 }

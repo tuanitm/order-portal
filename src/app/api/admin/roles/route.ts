@@ -1,13 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query } from "@/lib/db/connection";
-import { requireAdminPermission, ALL_ADMIN_PERMISSIONS } from "@/lib/auth/adminSession";
+import { requireAdminPermission, ALL_ADMIN_PERMISSIONS, ASSIGNABLE_ADMIN_PERMISSIONS } from "@/lib/auth/adminSession";
 
 export async function GET(request: NextRequest) {
   const guard = await requireAdminPermission(request, "admin-roles");
   if (guard.response) return guard.response;
 
   const roles = await query(`SELECT id, name, description, permissions, created_at FROM admin_roles ORDER BY id ASC`);
-  return NextResponse.json({ roles, availablePermissions: ALL_ADMIN_PERMISSIONS });
+  return NextResponse.json({ roles, availablePermissions: ASSIGNABLE_ADMIN_PERMISSIONS });
 }
 
 /** POST /api/admin/roles — create a role. Body: { name, description?, permissions: string[] } */

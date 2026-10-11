@@ -108,7 +108,8 @@
     "noProducts": "Không có sản phẩm nào",
     "viewDetail": "Xem chi tiết",
     "buyGetPromo": "Mua {buyQty} tặng {giveQty} {giveItem}",
-    "buyGetSamePromo": "Mua {buyQty} tặng {giveQty} cùng loại"
+    "buyGetSamePromo": "Mua {buyQty} tặng {giveQty} cùng loại",
+    "stockAvailable": "Còn {qty} {uom}"
   },
   "cart": {
     "title": "Giỏ hàng",

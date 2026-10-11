@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { query, queryOne } from "@/lib/db/connection";
 import { sendApprovalEmail } from "@/lib/email/sender";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
+import { getAllowedCustomerGroupCodes, inScope } from "@/lib/adminScope";
 
 /**
  * POST /api/admin/customers/[id]/approve — Approve a customer
@@ -30,10 +31,13 @@ export async function POST(
       email: string | null;
       full_name: string;
       sap_card_code: string | null;
+      sap_cus_grp01: string | null;
+      sap_cus_grp02: string | null;
+      sap_cus_grp03: string | null;
       approval_status: string;
       language: "vi" | "en";
     }>(
-      "SELECT id, email, full_name, sap_card_code, approval_status, language FROM users WHERE id = ?",
+      "SELECT id, email, full_name, sap_card_code, sap_cus_grp01, sap_cus_grp02, sap_cus_grp03, approval_status, language FROM users WHERE id = ?",
       [customerId]
     );
 
@@ -42,6 +46,11 @@ export async function POST(
         { error: "Customer not found" },
         { status: 404 }
       );
+    }
+
+    const allowed = await getAllowedCustomerGroupCodes(session);
+    if (!inScope(allowed, [customer.sap_cus_grp01, customer.sap_cus_grp02, customer.sap_cus_grp03])) {
+      return NextResponse.json({ error: "Forbidden — this customer is outside your assigned scope" }, { status: 403 });
     }
 
     if (customer.approval_status !== "pending") {

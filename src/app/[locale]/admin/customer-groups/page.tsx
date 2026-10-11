@@ -110,16 +110,19 @@ export default function CustomerGroupsPage() {
           <div>
             <h1 style={styles.title}>Customer Groups</h1>
             <p style={styles.subtitle}>
-              Import from <code>SAP_Customer_Group</code> or add groups manually below.
-              That file also defines the sync scope: only customers whose (CusGrp01, CusGrp02) matches a pair listed
-              there get pulled into the SAP Customers sync. Re-import after updating the file; any code not yet in it
-              can still be named directly below. Turn a group <strong>Active</strong> off to stop syncing customers
-              under it. Unlike Item Groups, toggling here cascades to children in <strong>both directions</strong>:
-              switching a group off unticks every child underneath it (labeled <strong>(parent off)</strong>), and
-              switching it back on re-ticks them too.
+              Synced directly from SAP B1 (CustGrp01/02/03), scoped to the group codes in config.json's
+              masterdata.customerGroup — or add groups manually below. That scope also defines which customers get
+              pulled into the SAP Customers sync: only customers whose (CusGrp01, CusGrp02) matches a pair here.
+              Turn a group <strong>Active</strong> off to stop syncing customers under it. Unlike Item Groups,
+              toggling here cascades to children in <strong>both directions</strong>: switching a group off unticks
+              every child underneath it (labeled <strong>(parent off)</strong>), and switching it back on re-ticks
+              them too.
             </p>
           </div>
-          <SyncButton url="/api/admin/customer-groups/import" label="Import from SAP_Customer_Group" onDone={load} />
+          <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
+            <SyncButton url="/api/admin/customer-groups/sync" label="Sync from SAP (HANA)" onDone={load} />
+            <SyncButton url="/api/admin/customer-groups/import" label="Import from Excel file (fallback)" onDone={load} />
+          </div>
         </div>
 
         {/* ── Add manually ── */}

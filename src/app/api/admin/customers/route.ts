@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query } from "@/lib/db/connection";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
+import { getAllowedCustomerGroupCodes, groupScopeClause } from "@/lib/adminScope";
 
 interface CustomerRow {
   id: number;
@@ -38,12 +39,21 @@ export async function GET(request: NextRequest) {
                approval_status, rejection_reason, approved_at, approved_by, created_at
                FROM users`;
     const params: string[] = [];
+    const whereClauses: string[] = [];
 
     if (status && ["pending", "approved", "rejected"].includes(status)) {
-      sql += " WHERE approval_status = ?";
+      whereClauses.push("approval_status = ?");
       params.push(status);
     }
 
+    // A scoped (non-root) admin only sees customers under their assigned
+    // customer groups (and descendants) — see getAllowedCustomerGroupCodes.
+    const allowed = await getAllowedCustomerGroupCodes(guard.session);
+    const scope = groupScopeClause(allowed, ["sap_cus_grp01", "sap_cus_grp02", "sap_cus_grp03"]);
+    whereClauses.push(scope.sql);
+    params.push(...scope.params);
+
+    if (whereClauses.length > 0) sql += ` WHERE ${whereClauses.join(" AND ")}`;
     sql += " ORDER BY created_at DESC";
 
     const rows = await query<CustomerRow[]>(sql, params);

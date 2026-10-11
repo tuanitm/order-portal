@@ -177,22 +177,20 @@ export default function ItemGroupsPage() {
           <div>
             <h1 style={styles.title}>Item Groups</h1>
             <p style={styles.subtitle}>
-              Import from <code>SAP_Item_Group</code> or add groups manually below.
-              That file also defines the sync scope: only items whose (ItemCat01, ItemCat02) matches a pair listed
-              there get pulled into the Items sync. Re-import after updating the file; any code not yet in it can
-              still be named directly below. Turn a group <strong>Active</strong> off to stop syncing master data
-              for items under it — items already synced are marked inactive instead of deleted. Turning a group
-              off also unticks every child group underneath it (labeled <strong>(parent off)</strong>); turning
-              the parent back on does not re-tick them — re-enable each child individually if needed.
-              Toggling Active/Inactive on any number of rows below just stages the change — click
-              <strong> Save Changes</strong> once to apply all of them together.
+              Synced directly from SAP B1 (ItemCat01-06), scoped to the group codes in config.json's
+              masterdata.itemGroup — or add groups manually below. That scope also defines which items get pulled
+              into the Items sync: only items whose (ItemCat01, ItemCat02) matches a pair here. Turn a group
+              <strong> Active</strong> off to stop syncing master data for items under it — items already synced are
+              marked inactive instead of deleted. Turning a group off also unticks every child group underneath it
+              (labeled <strong>(parent off)</strong>); turning the parent back on does not re-tick them — re-enable
+              each child individually if needed. Toggling Active/Inactive on any number of rows below just stages
+              the change — click <strong>Save Changes</strong> once to apply all of them together.
             </p>
           </div>
-          <SyncButton
-            url="/api/admin/item-groups/import"
-            label="Import from SAP_Item_Group"
-            onDone={load}
-          />
+          <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
+            <SyncButton url="/api/admin/item-groups/sync" label="Sync from SAP (HANA)" onDone={load} />
+            <SyncButton url="/api/admin/item-groups/import" label="Import from Excel file (fallback)" onDone={load} />
+          </div>
         </div>
 
         {pendingCount > 0 && (

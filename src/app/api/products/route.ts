@@ -10,17 +10,16 @@ interface HiddenCategory {
 }
 
 /**
- * Resolve which item categories (item_groups, levels 1-3) a customer
- * must NOT see: group-level defaults from `catalog_visibility` (checked at
- * each of the customer's group levels), then per-customer overrides from
- * `customer_item_group_overrides` (wins over the group default). No rule
- * configured for a category = visible.
+ * Resolve which item categories (item_groups, levels 1-3) a customer must
+ * NOT see: group-level defaults from `catalog_visibility`, checked at each
+ * of the customer's group levels. No rule configured for a category =
+ * visible. (Per-customer overrides were removed — group-level rules are now
+ * the only source.)
  */
 async function resolveHiddenItemCategories(
   cusGrp01: string | null,
   cusGrp02: string | null,
-  cusGrp03: string | null,
-  userId: number | null
+  cusGrp03: string | null
 ): Promise<HiddenCategory[]> {
   const visibility = new Map<string, HiddenCategory & { visible: boolean; explicit: boolean }>();
   const key = (level: number, code: string) => `${level}:${code}`;
@@ -45,23 +44,6 @@ async function resolveHiddenItemCategories(
         level: r.item_category_level,
         code: r.item_category_code,
         visible: !!r.is_visible,
-        explicit: true,
-      });
-    }
-  }
-
-  if (userId) {
-    const overrides = await query<
-      { item_category_level: number; item_category_code: string; is_visible: number }[]
-    >(
-      `SELECT item_category_level, item_category_code, is_visible FROM customer_item_group_overrides WHERE user_id = ?`,
-      [userId]
-    );
-    for (const o of overrides) {
-      visibility.set(key(o.item_category_level, o.item_category_code), {
-        level: o.item_category_level,
-        code: o.item_category_code,
-        visible: !!o.is_visible,
         explicit: true,
       });
     }
@@ -131,6 +113,7 @@ interface ProductRow {
   image_url: string | null;
   is_active: number;
   channel_price: string | null;
+  period_disc_pct: string | null;
   contract_disc_pct: string | null;
   promo_disc_pct: string | null;
   promo_name: string | null;
@@ -138,6 +121,7 @@ interface ProductRow {
   give_item_code: string | null;
   give_item_name: string | null;
   give_qty: string | null;
+  available_qty: string | null;
 }
 
 /**
@@ -180,19 +164,30 @@ function promotionMatchSql(alias: string): { bpSql: string; itSql: string; score
 /**
  * GET /api/products — List products with pricing.
  *
- * Price flow (sequential, not additive): Base Price -> Contract Discount
- * Price -> Promotion Discount Price (the final displayed price). "Base
- * Price" is the customer's applicable price-list price (their channel price
- * list, falling back to items.base_price if they have no channel price
- * cached). The Contract Discount Price is Base Price with the best-matching
- * contract_discount percent taken off; the Promotion Discount Price then
- * takes the best-matching promotion_discount percent off THAT
- * already-discounted price (compounding, not both computed off the
- * original base). The `basePrice`/strikethrough and `discountPercent`
- * returned to the client are this SAME reference price (priceBeforeDiscounts)
- * — never items.base_price (S01) when a channel price exists — so the
- * displayed "% off" always matches the price the discount was actually
- * taken from, even when a channel list prices an item above or below S01.
+ * Price flow (sequential, not additive — each step's output feeds the next
+ * step's input, none of them computed off the original Channel Price):
+ *   Step 1: Channel Price      = the customer's applicable price-list price
+ *                                 (their channel price list, falling back to
+ *                                 items.base_price if they have no channel
+ *                                 price cached).
+ *   Step 2: Period Discount    = Channel Price - Channel Price * (period
+ *                                 discount % / 100) — the best-matching,
+ *                                 currently-valid `period_discount` row for
+ *                                 the customer's own channel price list (SAP
+ *                                 scopes these to the whole price list, not
+ *                                 a customer — see syncPeriodDiscounts).
+ *   Step 3: Contract Discount  = Step 2's price - Step 2's price * (contract
+ *                                 discount % / 100) — best-matching
+ *                                 `contract_discount` row.
+ *   Step 4: Promotion Discount = Step 3's price - Step 3's price * (promotion
+ *                                 discount % / 100) — best-matching
+ *                                 `promotion_discount` row. This is the final
+ *                                 displayed price.
+ * The `basePrice`/strikethrough and `discountPercent` returned to the client
+ * are the Step 1 Channel Price (priceBeforeDiscounts) — never items.base_price
+ * (S01) when a channel price exists — so the displayed "% off" always matches
+ * the price the discounts were actually taken from, even when a channel list
+ * prices an item above or below S01.
  *
  * Resolving that channel price (`cp_base.price` below): find the customer's
  * own item_channel_prices row (price_list_num = users.sap_price_list_num for
@@ -254,6 +249,17 @@ function promotionMatchSql(alias: string): { bpSql: string; itSql: string; score
  * currently-valid promotion (percent OR buy-give) — the storefront's
  * "Khuyến mãi" tab. `sort=discount` orders by combined discount % (contract
  * + promotion) descending instead of by name; combine both for that tab.
+ *
+ * Stock gate: an item is only listed if it has positive available quantity
+ * (in_stock - committed, from `item_warehouse_stock`) summed across the
+ * warehouses that count for THIS customer — their level-2 customer group's
+ * mapped warehouses (`customer_group_warehouses`, set on the Catalog
+ * Visibility page) if any are mapped, otherwise every warehouse an admin has
+ * marked "Included" on the Warehouses admin page (`warehouses.is_included`).
+ * Entirely opt-in: if no warehouse is Included at all, this filter doesn't
+ * run, so turning inventory tracking on later never silently empties the
+ * storefront in the meantime; likewise an unmapped group just falls back to
+ * the Included set rather than losing visibility.
  */
 export async function GET(request: NextRequest) {
   try {
@@ -272,12 +278,49 @@ export async function GET(request: NextRequest) {
     const cusGrp03 = user?.approvalStatus === "approved" ? user.sapCusGrp03 : null;
 
     const hiddenCategories = user?.approvalStatus === "approved"
-      ? await resolveHiddenItemCategories(user.sapCusGrp01, user.sapCusGrp02, user.sapCusGrp03, user.id)
+      ? await resolveHiddenItemCategories(user.sapCusGrp01, user.sapCusGrp02, user.sapCusGrp03)
       : [];
     const { clauses: hiddenClauses, params: hiddenParams } = buildHiddenCategoryClauses(hiddenCategories);
 
     const whereClauses = ["i.is_active = TRUE", "i.is_manually_hidden = FALSE", ...hiddenClauses];
     const params: (string | number)[] = [...hiddenParams];
+
+    // Stock gate: only applies once an admin has marked at least one
+    // warehouse "Included" (see the Warehouses admin page) — until then this
+    // is a no-op, so turning the feature on is opt-in and never silently
+    // empties the storefront. "Available" = in_stock - committed.
+    //
+    // WHICH warehouses count for THIS customer: if their level-2 customer
+    // group has at least one mapping in `customer_group_warehouses` (set on
+    // the Catalog Visibility page), only those warehouses count; otherwise
+    // fall back to every globally Included warehouse (today's default) —
+    // same fail-open rule, so an unmapped group never loses visibility.
+    const includedWarehouseCodes = await query<{ sap_warehouse_code: string }[]>(
+      `SELECT sap_warehouse_code FROM warehouses WHERE is_included = TRUE`
+    );
+    let stockWarehouseCodes = includedWarehouseCodes.map((w) => w.sap_warehouse_code);
+    if (stockWarehouseCodes.length > 0 && cusGrp02) {
+      const groupWarehouses = await query<{ warehouse_code: string }[]>(
+        `SELECT cgw.warehouse_code
+         FROM customer_group_warehouses cgw
+         JOIN customer_groups cg ON cg.id = cgw.customer_group_id
+         WHERE cg.level = 2 AND cg.code = ?`,
+        [cusGrp02]
+      );
+      if (groupWarehouses.length > 0) {
+        stockWarehouseCodes = groupWarehouses.map((w) => w.warehouse_code);
+      }
+    }
+    if (stockWarehouseCodes.length > 0) {
+      whereClauses.push(`EXISTS (
+        SELECT 1 FROM item_warehouse_stock iws
+        WHERE iws.sap_item_code = i.sap_item_code
+          AND iws.warehouse_code IN (${stockWarehouseCodes.map(() => "?").join(",")})
+        GROUP BY iws.sap_item_code
+        HAVING SUM(iws.in_stock - iws.committed) > 0
+      )`);
+      params.push(...stockWarehouseCodes);
+    }
 
     if (search) {
       whereClauses.push("(i.item_name_vi LIKE ? OR i.item_name_en LIKE ? OR i.sap_item_code LIKE ?)");
@@ -334,19 +377,43 @@ export async function GET(request: NextRequest) {
     const giveMatch = promotionMatchSql("pd2");
     const promoOnlyClause = promoOnly ? " AND (promo_best.pct IS NOT NULL OR giveaway_best.give_code IS NOT NULL)" : "";
 
+    // Same resolved warehouse set as the stock gate above — the quantity
+    // shown to the customer must match the one the gate actually used,
+    // otherwise "in stock" and the number on the card could disagree. NULL
+    // (not 0) when the feature is off entirely, so the UI can tell "unknown/
+    // not tracked" apart from "really zero" and just not show a number.
+    const availableQtySql =
+      stockWarehouseCodes.length > 0
+        ? `(SELECT SUM(iws.in_stock - iws.committed) FROM item_warehouse_stock iws
+            WHERE iws.sap_item_code = i.sap_item_code
+              AND iws.warehouse_code IN (${stockWarehouseCodes.map(() => "?").join(",")}))`
+        : "NULL";
+
     const rows = await query<ProductRow[]>(
-      `SELECT i.id, i.sap_item_code, i.item_name_vi, i.item_name_en, i.uom, i.pack_size,
+      `SELECT i.id, i.sap_item_code, i.item_name_vi, i.item_name_en, COALESCE(i.sales_uom, i.uom) AS uom, i.pack_size,
               i.category, i.base_price, i.image_url, i.is_active,
               cp_base.price AS channel_price,
+              period_best.pct AS period_disc_pct,
               cd_best.pct AS contract_disc_pct,
               promo_best.pct AS promo_disc_pct, promo_best.name AS promo_name,
               giveaway_best.buy_qty AS buy_qty, giveaway_best.give_code AS give_item_code,
-              giveaway_best.give_name AS give_item_name, giveaway_best.give_qty AS give_qty
+              giveaway_best.give_name AS give_item_name, giveaway_best.give_qty AS give_qty,
+              ${availableQtySql} AS available_qty
        FROM items i
        LEFT JOIN item_channel_prices cp
          ON cp.sap_item_code = i.sap_item_code AND cp.price_list_num = ?
        LEFT JOIN item_channel_prices cp_base
          ON cp_base.sap_item_code = i.sap_item_code AND cp_base.price_list_num = cp.base_price_list_num
+       LEFT JOIN LATERAL (
+         SELECT pdisc.discount_percent AS pct
+         FROM period_discount pdisc
+         WHERE pdisc.price_list_num = ?
+           AND pdisc.sap_item_code = i.sap_item_code
+           AND (pdisc.date_from IS NULL OR pdisc.date_from <= CURDATE())
+           AND (pdisc.date_to IS NULL OR pdisc.date_to >= CURDATE())
+         ORDER BY pdisc.date_from DESC
+         LIMIT 1
+       ) period_best ON TRUE
        LEFT JOIN LATERAL (
          SELECT cd.u_base_disc_pct AS pct
          FROM contract_discount cd
@@ -401,7 +468,9 @@ export async function GET(request: NextRequest) {
        ORDER BY i.item_name_vi ASC
        LIMIT ?${sortByDiscount ? "" : " OFFSET ?"}`,
       [
-        priceListNum ?? basePriceListNum,
+        ...(stockWarehouseCodes.length > 0 ? stockWarehouseCodes : []), // available_qty subquery (SELECT list — comes first in the SQL text)
+        priceListNum ?? basePriceListNum, // cp.price_list_num
+        priceListNum ?? basePriceListNum, // period_discount.price_list_num (same list — SAP scopes these per price list, not per customer)
         custCode, grp01, grp02, grp03, // contract WHERE u_code_cust IN list
         custCode, grp03, grp02, grp01, // contract ORDER BY customer-specificity weights
         custCode, grp01, grp02, grp03, // promo WHERE bp_type='2'/'CG1'/'CG2'/'CG3' match
@@ -420,13 +489,16 @@ export async function GET(request: NextRequest) {
       // the displayed "% off" always matches the price that was really cut.
       const priceBeforeDiscounts = channelPrice && channelPrice > 0 ? channelPrice : sapBasePrice;
 
+      const periodDiscPct = row.period_disc_pct !== null ? Number(row.period_disc_pct) : 0;
       const contractDiscPct = row.contract_disc_pct !== null ? Number(row.contract_disc_pct) : 0;
       const promoDiscPct = row.promo_disc_pct !== null ? Number(row.promo_disc_pct) : 0;
 
-      // Sequential flow: Base Price -> Contract Discount Price -> Promotion
-      // Discount Price. The promotion discount is applied on top of the
-      // already contract-discounted price, not off the original base.
-      const contractPrice = priceBeforeDiscounts * (1 - contractDiscPct / 100);
+      // Sequential flow: Channel Price -> Period Discount Price -> Contract
+      // Discount Price -> Promotion Discount Price. Each step is taken off
+      // the PREVIOUS step's already-discounted price, not off the original
+      // Channel Price.
+      const periodPrice = priceBeforeDiscounts * (1 - periodDiscPct / 100);
+      const contractPrice = periodPrice * (1 - contractDiscPct / 100);
       const promotionPrice = contractPrice * (1 - promoDiscPct / 100);
 
       const displayPrice = Math.max(0, promotionPrice);
@@ -457,6 +529,11 @@ export async function GET(request: NextRequest) {
         promoGiveItemCode: row.give_item_code || undefined,
         promoGiveItemName: row.give_item_name || undefined,
         promoGiveQty: row.give_qty !== null ? Number(row.give_qty) : undefined,
+        // null = stock tracking is off (or no stock row at all) for this customer's
+        // resolved warehouse set — distinct from a real 0, which means "out of
+        // stock" (though a 0-or-below item wouldn't reach this far: the stock
+        // gate already excludes it from the result set entirely).
+        availableQty: row.available_qty !== null ? Math.floor(Number(row.available_qty)) : null,
       };
     });
 

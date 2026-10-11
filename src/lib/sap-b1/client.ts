@@ -33,6 +33,22 @@ export interface SapPriceList {
   PriceListName: string;
 }
 
+export interface SapWarehouse {
+  WarehouseCode: string;
+  WarehouseName: string;
+  Inactive: string; // BoYesNoEnum: 'tYES' | 'tNO'
+}
+
+/** One row of src.OITW (Item-Warehouse stock) via SQLQueries — see getInventoryStock. */
+export interface SapInventoryStockRow {
+  item_code: string;
+  warehouse_code: string;
+  in_stock: number;
+  committed: number;
+  ordered: number;
+}
+
+
 export interface SapItemPrice {
   PriceList: number;
   Price: number;
@@ -58,6 +74,24 @@ export interface SapItem {
   U_ItemCat06?: string;
 }
 
+/**
+ * A dated/quantified tier nested under a SpecialPrices row. For a normal
+ * per-customer row (real CardCode) this is usually empty and the discount
+ * lives on the row's own top-level fields instead; for a price-list-wide row
+ * (CardCode = '*{PriceListNum}') this is where the real data is — the row's
+ * own Price/DiscountPercent are just the undiscounted baseline.
+ */
+export interface SapSpecialPriceDataArea {
+  DateFrom: string | null;
+  Dateto: string | null;
+  Discount: number | null;
+  SpecialPrice: number;
+  BPCode: string;
+  PriceListNo: number;
+  ItemNo: string;
+  RowNumber: number;
+}
+
 export interface SapSpecialPrice {
   ItemCode: string;
   CardCode: string;
@@ -67,6 +101,7 @@ export interface SapSpecialPrice {
   Valid: string;
   ValidFrom: string | null;
   ValidTo: string | null;
+  SpecialPriceDataAreas?: SapSpecialPriceDataArea[];
 }
 
 export interface SapContractDiscountLine {
@@ -77,6 +112,33 @@ export interface SapContractDiscountLine {
   U_Code: string | null;
   U_Name: string | null;
   U_BaseDiscPct: number | null;
+}
+
+export interface SapCslLine {
+  DocEntry: number;
+  LineId: number;
+  U_Type: string | null;
+  U_TypeName: string | null;
+  U_Code: string | null;
+  U_Name: string | null;
+  U_ReqSLFrom: number | null;
+  U_ReqSLTo: number | null;
+  U_FreeTxt: string | null;
+}
+
+/** One SAP B1 "Customer Required Shelf Life" header (UDO @MDM_CD_CSL_H / @MDM_CD_CSL_L), via /CSL. */
+export interface SapCsl {
+  DocEntry: number;
+  DocNum: number;
+  Status: string | null;
+  Canceled: string | null;
+  U_Type: string | null;
+  U_TypeName: string | null;
+  U_Code: string | null;
+  U_Name: string | null;
+  U_ValidFrom: string | null;
+  U_ValidTo: string | null;
+  MDM_CD_CSL_LCollection: SapCslLine[];
 }
 
 export interface SapContractDiscount {
@@ -341,6 +403,76 @@ export class SapB1Client {
   }
 
   /**
+   * Get Warehouses from SAP B1 (for the admin's inventory-visibility
+   * warehouse list — see `warehouses` table / syncWarehouses).
+   */
+  async getWarehouses(): Promise<SapWarehouse[]> {
+    await this.ensureSession();
+    const out: SapWarehouse[] = [];
+    let path: string | null = '/Warehouses?$select=WarehouseCode,WarehouseName,Inactive';
+    while (path) {
+      const result: { value: SapWarehouse[]; 'odata.nextLink'?: string } = await this.request('GET', path);
+      out.push(...(result.value || []));
+      path = result['odata.nextLink'] ? `/${result['odata.nextLink']}` : null;
+    }
+    return out;
+  }
+
+  /**
+   * Get per-item, per-warehouse on-hand/committed/on-order stock straight
+   * from OITW via SQLQueries — the OData ItemWarehouseInfoCollection on
+   * /Items returns ~55 full GL-account-laden objects per item (one per
+   * warehouse), far too heavy to fold into the regular items sync, so this
+   * goes directly at the lean source table instead, same pattern as
+   * executePromotionSql. Rows where on-hand/committed/on-order are all zero
+   * are skipped server-side (most item×warehouse combinations are).
+   */
+  async getInventoryStock(): Promise<SapInventoryStockRow[]> {
+    await this.ensureSession();
+
+    const sqlText = `SELECT T0."ItemCode" AS "item_code", T0."WhsCode" AS "warehouse_code", T0."OnHand" AS "in_stock", T0."IsCommited" AS "committed", T0."OnOrder" AS "ordered" FROM "OITW" T0 WHERE T0."OnHand" <> 0 OR T0."IsCommited" <> 0 OR T0."OnOrder" <> 0 ORDER BY T0."ItemCode", T0."WhsCode"`;
+    const sqlCode = 'InventoryStockSync';
+
+    try {
+      try {
+        await this.request('POST', '/SQLQueries', {
+          SqlCode: sqlCode, SqlName: 'Inventory Stock Sync', SqlText: sqlText,
+        });
+        console.log('[SAP] Created SQLQuery', sqlCode);
+      } catch (createErr: any) {
+        if (createErr.message?.includes('400')) {
+          await this.request('PATCH', `/SQLQueries('${sqlCode}')`, { SqlText: sqlText });
+          console.log('[SAP] Updated SQLQuery', sqlCode);
+        } else {
+          throw createErr;
+        }
+      }
+
+      const allRows: SapInventoryStockRow[] = [];
+      let skip = 0;
+      const top = 500;
+      for (;;) {
+        const result = await this.request<{ value: SapInventoryStockRow[] }>(
+          'GET', `/SQLQueries('${sqlCode}')/List?$top=${top}&$skip=${skip}`
+        );
+        const rows = result.value || [];
+        if (rows.length === 0) break;
+        allRows.push(...rows);
+        // Service Layer caps the actual page size server-side (often 20)
+        // regardless of the requested $top, so advance by what came back,
+        // not by our requested page size, and stop only on an empty page —
+        // same gotcha as getItems' pagination (see its comment).
+        skip += rows.length;
+      }
+      console.log(`[SAP] Inventory stock query returned ${allRows.length} rows`);
+      return allRows;
+    } catch (error) {
+      console.error('[SAP] getInventoryStock failed:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Get Items from SAP B1
    */
   async getItems(params?: {
@@ -435,6 +567,17 @@ export class SapB1Client {
   }
 
   /**
+   * Get the SpecialPrices rows SAP scopes to a whole Price List rather than
+   * one customer — SAP's own convention for this is CardCode = '*{num}'
+   * (e.g. '*12' for price list 12). These are "period discounts": the real
+   * discount/period for each item is in each row's SpecialPriceDataAreas,
+   * not its own top-level fields. See SapSpecialPriceDataArea.
+   */
+  async getPriceListSpecialPrices(priceListNum: number): Promise<SapSpecialPrice[]> {
+    return this.getSpecialPrices(`*${priceListNum}`);
+  }
+
+  /**
    * Get Contract Discounts (CBD — Customer Based Discount headers, each
    * with its line collection nested automatically, no $expand needed).
    * Header targets a customer (specific CardCode or a customer-group
@@ -454,6 +597,37 @@ export class SapB1Client {
       console.error('[SAP] Failed to get contract discounts:', error);
       throw error;
     }
+  }
+
+  /**
+   * Get Customer Required Shelf Life headers (CSL — same "[CD]" custom
+   * module family as CBD/Contract Discounts), each with its line collection
+   * nested automatically. Header targets a customer (specific CardCode or a
+   * customer-group level); each line targets an item-group level with a
+   * required remaining-shelf-life % range (U_ReqSLFrom/U_ReqSLTo). Raw
+   * SQLQueries access to the underlying "@MDM_CD_CSL_H"/"@MDM_CD_CSL_L"
+   * tables is blocked for this SAP user ("not accessible") — /CSL works.
+   */
+  async getCustomerRequiredShelfLife(): Promise<SapCsl[]> {
+    await this.ensureSession();
+    const all: SapCsl[] = [];
+    let skip = 0;
+    const top = 20;
+    for (;;) {
+      const result = await this.request<{ value: SapCsl[] }>(
+        'GET',
+        `/CSL?$top=${top}&$skip=${skip}`
+      );
+      const rows = result.value || [];
+      if (rows.length === 0) break;
+      all.push(...rows);
+      // Service Layer caps the actual page size server-side regardless of
+      // the requested $top, so advance by what came back, not by our
+      // requested page size, and stop only on an empty page — same gotcha
+      // as getItems/getInventoryStock's pagination.
+      skip += rows.length;
+    }
+    return all;
   }
 
   /**
@@ -478,80 +652,6 @@ export class SapB1Client {
     );
   }
 
-  /**
-   * Fetch promotion discounts from SAP B1 via SQLQueries.
-   * SAP SQLQueries does not support CTEs (WITH), so we inline subqueries.
-   */
-  async executePromotionSql(): Promise<any[]> {
-    await this.ensureSession();
-
-    const BP_SUB = `(
-      SELECT DISTINCT A."DocEntry", CAST(NULL AS NVARCHAR(50)) AS "BPGrpCode", CAST(NULL AS NVARCHAR(254)) AS "BPGrpName", A."Code" AS "BPCode", IFNULL(BP."CardName", A."Name") AS "BPName"
-      FROM "PM_APPLYBP" A LEFT JOIN "OCRD" BP ON BP."CardCode" = A."Code"
-      WHERE A."Type" = '2' AND BP."U_CusGrp02" IN('GTSO','GTNO','GTSE','GTMK') AND BP."U_CusCCDept" = 'HCMD01'
-      UNION ALL
-      SELECT DISTINCT A."DocEntry", G."Code" AS "BPGrpCode", G."Name" AS "BPGrpName", BP."CardCode" AS "BPCode", IFNULL(BP."CardName", D."Name") AS "BPName"
-      FROM "PM_APPLYBP" A
-      INNER JOIN "@PM_GRP_BP" G ON G."Code" = A."Code"
-      INNER JOIN "PM_GRP_BP_DETAILS" D ON D."DocEntry" = G."DocEntry"
-      LEFT JOIN "OCRD" BP ON ((D."Type"='B' AND BP."CardCode"=D."Code") OR (D."Type"='CG1' AND BP."U_CusGrp01"=D."Code") OR (D."Type"='CG2' AND BP."U_CusGrp02"=D."Code") OR (D."Type"='CG3' AND BP."U_CusGrp03"=D."Code"))
-      WHERE A."Type" = 'UDO_PM_GRP_BP' AND IFNULL(D."Exclude",'N') <> 'Y' AND BP."U_CusGrp01"='GT' AND BP."U_CusGrp02" IN('GTSO','GTNO','GTSE','GTMK') AND BP."U_CusCCDept"='HCMD01'
-    )`;
-
-    const IT_SUB = `(
-      SELECT DISTINCT S."DocEntry", CAST(NULL AS NVARCHAR(50)) AS "SellingGrpCode", CAST(NULL AS NVARCHAR(254)) AS "SellingGrpName", S."Code" AS "SellingItemCode", IFNULL(I."ItemName", S."Name") AS "SellingItemName", S."BreakBy", S."FrSelling", S."DiscountType", S."DiscountValue", S."FreeItemCode", IFNULL(F."ItemName", S."FreeItemName") AS "FreeItemName"
-      FROM "PM_SELLING_ITEMS" S LEFT JOIN "OITM" I ON I."ItemCode"=S."Code" LEFT JOIN "OITM" F ON F."ItemCode"=S."FreeItemCode"
-      WHERE S."Type"='4' AND I."U_ItemCat01" IN('D1','L1')
-      UNION ALL
-      SELECT DISTINCT S."DocEntry", G."Code" AS "SellingGrpCode", G."Name" AS "SellingGrpName", I."ItemCode" AS "SellingItemCode", IFNULL(I."ItemName", D."ItemName") AS "SellingItemName", S."BreakBy", S."FrSelling", S."DiscountType", S."DiscountValue", S."FreeItemCode", IFNULL(F."ItemName", S."FreeItemName") AS "FreeItemName"
-      FROM "PM_SELLING_ITEMS" S
-      INNER JOIN "@PM_GRP_ITEM" G ON G."Code"=S."Code"
-      INNER JOIN "PM_GRP_ITEM_DETAILS" D ON D."DocEntry"=G."DocEntry"
-      LEFT JOIN "OITM" I ON ((D."Type"='I' AND I."ItemCode"=D."Code") OR (D."Type"='IC1' AND I."U_ItemCat01"=D."Code") OR (D."Type"='IC2' AND I."U_ItemCat02"=D."Code") OR (D."Type"='IC3' AND I."U_ItemCat03"=D."Code") OR (D."Type"='IC4' AND I."U_ItemCat04"=D."Code") OR (D."Type"='IC5' AND I."U_ItemCat05"=D."Code") OR (D."Type"='IC6' AND I."U_ItemCat06"=D."Code"))
-      LEFT JOIN "OITM" F ON F."ItemCode"=S."FreeItemCode"
-      WHERE S."Type"='UDO_PM_GRP_ITEM' AND IFNULL(D."Exclude",'N') <> 'Y' AND I."U_ItemCat01" IN('D1','L1')
-    )`;
-
-    const sqlText = `SELECT DISTINCT H."DocEntry" AS "doc_entry", H."Code" AS "promotion_code", H."Name" AS "promotion_name", H."CreateDate" AS "create_date", H."UpdateDate" AS "update_date", H."U_StartDate" AS "begin_date", H."U_EndDate" AS "end_date", BP."BPGrpCode" AS "bp_grp_code", BP."BPGrpName" AS "bp_grp_name", BP."BPCode" AS "bp_code", BP."BPName" AS "bp_name", IT."SellingGrpCode" AS "selling_grp_code", IT."SellingGrpName" AS "selling_grp_name", IT."SellingItemCode" AS "selling_item_code", IT."SellingItemName" AS "selling_item_name", CASE WHEN IT."DiscountType"='P' THEN IT."DiscountValue" ELSE NULL END AS "disc_pct", CASE WHEN IFNULL(IT."BreakBy", H."U_BreakBy")='Q' THEN IT."FrSelling" ELSE NULL END AS "selling_qty", CASE WHEN IT."DiscountType"='I' THEN IT."FreeItemCode" ELSE NULL END AS "giving_item_code", CASE WHEN IT."DiscountType"='I' THEN IT."FreeItemName" ELSE NULL END AS "giving_item_name", CASE WHEN IT."DiscountType"='I' THEN IT."DiscountValue" ELSE NULL END AS "giving_qty" FROM "@PM_HEADER" H INNER JOIN ${BP_SUB} BP ON BP."DocEntry"=H."DocEntry" INNER JOIN ${IT_SUB} IT ON IT."DocEntry"=H."DocEntry" WHERE IFNULL(H."U_Status",'N')='R' AND IFNULL(H."Canceled",'N') <> 'Y' AND IFNULL(H."U_Prefix",'N')='GT' ORDER BY H."U_StartDate" DESC, H."Code", BP."BPGrpCode", BP."BPCode", IT."SellingGrpCode", IT."SellingItemCode"`;
-
-    const sqlCode = 'PromoDiscSync';
-
-    try {
-      // Create or update the stored query
-      try {
-        await this.request('POST', '/SQLQueries', {
-          SqlCode: sqlCode, SqlName: 'Promotion Discounts Sync', SqlText: sqlText,
-        });
-        console.log('[SAP] Created SQLQuery', sqlCode);
-      } catch (createErr: any) {
-        if (createErr.message?.includes('400')) {
-          await this.request('PATCH', `/SQLQueries('${sqlCode}')`, { SqlText: sqlText });
-          console.log('[SAP] Updated SQLQuery', sqlCode);
-        } else {
-          throw createErr;
-        }
-      }
-
-      // Execute with pagination
-      const allRows: any[] = [];
-      let skip = 0;
-      const top = 500;
-      while (true) {
-        const result = await this.request<{ value: any[] }>(
-          'GET', `/SQLQueries('${sqlCode}')/List?$top=${top}&$skip=${skip}`
-        );
-        const rows = result.value || [];
-        allRows.push(...rows);
-        if (rows.length < top) break;
-        skip += top;
-      }
-      console.log(`[SAP] Promotion query returned ${allRows.length} rows`);
-      return allRows;
-    } catch (error) {
-      console.error('[SAP] executePromotionSql failed:', error);
-      throw error;
-    }
-  }
 }
 
 // Singleton instance

@@ -56,6 +56,12 @@ CREATE TABLE IF NOT EXISTS items (
   item_name_vi VARCHAR(255),
   item_name_en VARCHAR(255),
   uom VARCHAR(20),
+  -- Admin-set override for the unit of measure shown to customers (e.g. SAP's
+  -- own `uom` is a case pack code but the storefront should say the inner
+  -- unit instead) — NULL by default, and a sync never touches it (not in
+  -- syncItems' column list), so it survives future "Sync from SAP" runs.
+  -- Effective UOM anywhere customer-facing = COALESCE(sales_uom, uom).
+  sales_uom VARCHAR(50) NULL,
   pack_size VARCHAR(50),
   category VARCHAR(100),
   items_group_code INT NULL,
@@ -143,6 +149,102 @@ CREATE TABLE IF NOT EXISTS special_prices (
   INDEX idx_item_code (sap_item_code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Period Discounts — SAP B1's "Special Prices" object also carries rows
+-- scoped to an entire Price List rather than one customer: SAP marks these
+-- with CardCode = '*{PriceListNum}' (e.g. '*12' for "S02. GT Price List").
+-- The real, time-bound discount for each item lives in that row's
+-- SpecialPriceDataAreas child collection (DateFrom/Dateto + Discount % + the
+-- resulting SpecialPrice) — the row's own top-level Price/DiscountPercent
+-- are just the undiscounted baseline. One row per (price list, item, period
+-- start) — an item can have more than one tier. See syncPeriodDiscounts in
+-- src/lib/sap-b1/sync.ts. Not yet wired into the live storefront price
+-- calculation (see src/app/api/products/route.ts) — sync/admin-visibility
+-- only until that's decided.
+-- base_price is the row's own (undiscounted) Price on this price list —
+-- same baseline for every date-tier of that item; discount_percent keeps
+-- SAP's full 4-decimal precision (e.g. 20.0003), not rounded to 2.
+--
+-- Migration for an existing database (this table was briefly shipped
+-- without base_price and with a 2-decimal discount_percent):
+--   ALTER TABLE period_discount ADD COLUMN base_price DECIMAL(18,2) NULL AFTER sap_item_code;
+--   ALTER TABLE period_discount MODIFY COLUMN discount_percent DECIMAL(7,4);
+CREATE TABLE IF NOT EXISTS period_discount (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  price_list_num INT NOT NULL,
+  sap_item_code VARCHAR(50) NOT NULL,
+  base_price DECIMAL(18,2),
+  discount_percent DECIMAL(7,4),
+  special_price DECIMAL(18,2) NOT NULL,
+  date_from DATE,
+  date_to DATE,
+  last_synced TIMESTAMP NULL,
+  UNIQUE KEY uk_pricelist_item_from (price_list_num, sap_item_code, date_from),
+  INDEX idx_price_list (price_list_num),
+  INDEX idx_item_code (sap_item_code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Special Discounts — the same SAP "Special Prices" object in its normal
+-- per-customer form (a real CardCode, not a '*NN' price-list placeholder):
+-- negotiated item prices/discounts for one Business Partner. Bulk-synced
+-- here for every customer on a given channel price list in one go (e.g. all
+-- "GT Channel" customers on "S02. GT Price List") rather than one card at a
+-- time — see syncSpecialDiscountsForChannel. Same shape/source as the
+-- existing `special_prices` table, kept as a separate table per the
+-- admin's request. Not yet wired into the live storefront price
+-- calculation — sync/admin-visibility only until that's decided.
+CREATE TABLE IF NOT EXISTS special_discount (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  sap_card_code VARCHAR(50) NOT NULL,
+  sap_item_code VARCHAR(50) NOT NULL,
+  special_price DECIMAL(18,2) NOT NULL,
+  discount_percent DECIMAL(6,2),
+  valid_from DATE,
+  valid_to DATE,
+  last_synced TIMESTAMP NULL,
+  UNIQUE KEY uk_bp_item_from (sap_card_code, sap_item_code, valid_from),
+  INDEX idx_card_code (sap_card_code),
+  INDEX idx_item_code (sap_item_code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Warehouses (synced from SAP B1 /Warehouses). `is_included` is the admin's
+-- own on/off switch for whether this warehouse's stock counts toward an
+-- item's "available" quantity on the storefront (see item_warehouse_stock
+-- below and the stock gate in src/app/api/products/route.ts) — it is NOT
+-- synced from SAP and a re-sync never touches it once set (see
+-- syncWarehouses in src/lib/sap-b1/sync.ts). On first sync a warehouse
+-- defaults to included only if its name contains "_NORMAL" and not
+-- "EXPIRED" (SAP's own naming convention here for genuine sellable regional
+-- stock, e.g. HCM_NORMAL/HCM_NORMAL_GT, vs e.g. *_CONSIGNMENT, *_EXPIRED,
+-- *_IN TRANSIT, FACTORY_*, which should not count) — admins should review
+-- this on the Warehouses admin page rather than trust the default blindly.
+CREATE TABLE IF NOT EXISTS warehouses (
+  sap_warehouse_code VARCHAR(20) PRIMARY KEY,
+  warehouse_name VARCHAR(150),
+  is_inactive_in_sap BOOLEAN DEFAULT FALSE,
+  is_included BOOLEAN NOT NULL DEFAULT FALSE,
+  last_synced TIMESTAMP NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Per-item, per-warehouse stock (synced from SAP B1's OITW table via a
+-- SQLQueries object — see syncInventoryStock / client.ts getInventoryStock;
+-- the OData ItemWarehouseInfoCollection on /Items returns ~55 full GL-account
+-- -laden objects per item, which is far too heavy for a 1000+-item sync, so
+-- this goes straight at OITW instead, same pattern as executePromotionSql).
+-- "Available" is computed at query time as in_stock - committed, not stored,
+-- so the formula can be revisited without a migration.
+CREATE TABLE IF NOT EXISTS item_warehouse_stock (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  sap_item_code VARCHAR(50) NOT NULL,
+  warehouse_code VARCHAR(20) NOT NULL,
+  in_stock DECIMAL(18,3) NOT NULL DEFAULT 0,
+  committed DECIMAL(18,3) NOT NULL DEFAULT 0,
+  ordered DECIMAL(18,3) NOT NULL DEFAULT 0,
+  last_synced TIMESTAMP NULL,
+  UNIQUE KEY uk_item_warehouse (sap_item_code, warehouse_code),
+  INDEX idx_item_code (sap_item_code),
+  INDEX idx_warehouse_code (warehouse_code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- Contract Discounts (synced from SAP B1 CBD — @MDM_CD_CBD_H/@MDM_CD_CBD_L).
 -- One row per (header, line): a header targets a customer (specific
 -- CardCode or a customer_groups level 1-3 code); each line targets items
@@ -174,6 +276,36 @@ CREATE TABLE IF NOT EXISTS contract_discount (
   UNIQUE KEY uk_doc_line (doc_entry, line_id),
   INDEX idx_code_cust (u_code_cust),
   INDEX idx_code_item (u_code_item)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Customer Required Shelf Life (synced from SAP B1 UDO "@MDM_CD_CSL_H" /
+-- "@MDM_CD_CSL_L" — same "[CD]" custom module family as contract_discount —
+-- via the dedicated /CSL Service Layer entity, header + nested
+-- MDM_CD_CSL_LCollection; raw SQLQueries access to these two tables is
+-- blocked for this SAP user ("not accessible"), /CSL is not). One row per
+-- (header, line): a header targets a customer or customer-group level, a
+-- line targets an item-group level with a required remaining-shelf-life %
+-- range (shelf_life_from/to, e.g. 70-100) — see syncCustomerRequiredShelfLife
+-- in src/lib/sap-b1/sync.ts. Only rows whose customer-group AND item-group
+-- code are both already known locally (customer_groups/item_groups) are
+-- kept — a header targeting a specific customer (not a group), or any row
+-- naming a group this portal doesn't track, is skipped (see
+-- scope filtering in syncCustomerRequiredShelfLife).
+CREATE TABLE IF NOT EXISTS customer_require_shelflife (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  doc_entry INT NOT NULL,
+  cust_group_code VARCHAR(50) NOT NULL,
+  cust_group_name VARCHAR(255) NULL,
+  valid_from DATE NULL,
+  valid_to DATE NULL,
+  item_group_code VARCHAR(50) NOT NULL,
+  item_group_name VARCHAR(255) NULL,
+  shelf_life_from DECIMAL(6,2) NULL,
+  shelf_life_to DECIMAL(6,2) NULL,
+  last_synced TIMESTAMP NULL,
+  UNIQUE KEY uk_doc_itemgroup (doc_entry, item_group_code),
+  INDEX idx_cust_group (cust_group_code),
+  INDEX idx_item_group (item_group_code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Promotion Discounts (synced from SAP B1 via custom SQL query).
@@ -311,16 +443,29 @@ CREATE TABLE IF NOT EXISTS admin_roles (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- Admin Users — in addition to the config.json bootstrap super-admin
+-- Admin Users. `is_root` marks the "root" account(s) — unrestricted,
+-- bypasses every role/scope check (see hasPermission, getAllowed*Codes),
+-- and only root can reach this table's own admin UI (Admin Users/Admin
+-- Roles — see ROOT_ONLY_PERMISSIONS). A root row has no role (`role_id`
+-- NULL); every other row must have one — enforced by the CHECK below.
+-- The original bootstrap credential lived only in config.json/.env; it is
+-- migrated into a real row here (see scripts/migrate_root_admin.mjs) so root
+-- is a normal, manageable `admin_users` account like any other, with its
+-- own id used for the `admin-token` JWT's adminId and for last-root-standing
+-- checks (see /api/admin/users DELETE and the isActive PATCH guard).
 CREATE TABLE IF NOT EXISTS admin_users (
   id INT AUTO_INCREMENT PRIMARY KEY,
   email VARCHAR(255) NOT NULL UNIQUE,
   password_hash VARCHAR(255) NOT NULL,
   full_name VARCHAR(255) NOT NULL,
-  role_id INT NOT NULL,
+  role_id INT NULL,
+  is_root BOOLEAN NOT NULL DEFAULT FALSE,
   is_active BOOLEAN DEFAULT TRUE,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (role_id) REFERENCES admin_roles(id)
+  FOREIGN KEY (role_id) REFERENCES admin_roles(id),
+  CONSTRAINT chk_admin_users_role CHECK (
+    (is_root = TRUE AND role_id IS NULL) OR (is_root = FALSE AND role_id IS NOT NULL)
+  )
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Price Lists (synced from SAP B1 PriceLists) — admin marks base vs channel lists
@@ -364,16 +509,54 @@ CREATE TABLE IF NOT EXISTS catalog_visibility (
   FOREIGN KEY (customer_group_id) REFERENCES customer_groups(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- Catalog Visibility — per-customer override, wins over the group default
-CREATE TABLE IF NOT EXISTS customer_item_group_overrides (
+-- Catalog Visibility — Customer Group (level 2 only) <-> Warehouse, n:n.
+-- Which warehouse(s)' stock counts toward "available" (see the stock gate in
+-- src/app/api/products/route.ts) for a customer depends on which level-2
+-- group they belong to (users.sap_cus_grp02): if their group has at least
+-- one mapping here, ONLY those warehouses count for them; a group with no
+-- mapping falls back to every warehouse marked Included on the Warehouses
+-- admin page (warehouses.is_included) — the same safe default as before
+-- this table existed. `is_included` remains the master on/off switch (a
+-- warehouse must be Included to be offered here, and if NO warehouse is
+-- Included anywhere, the stock gate is off entirely regardless of mappings).
+CREATE TABLE IF NOT EXISTS customer_group_warehouses (
   id INT AUTO_INCREMENT PRIMARY KEY,
-  user_id INT NOT NULL,
-  item_category_level TINYINT NOT NULL,
-  item_category_code VARCHAR(20) NOT NULL,
-  is_visible BOOLEAN NOT NULL DEFAULT TRUE,
-  UNIQUE KEY uk_user_itemcat (user_id, item_category_level, item_category_code),
-  INDEX idx_user_id (user_id),
-  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  customer_group_id INT NOT NULL,
+  warehouse_code VARCHAR(20) NOT NULL,
+  UNIQUE KEY uk_group_warehouse (customer_group_id, warehouse_code),
+  INDEX idx_customer_group_id (customer_group_id),
+  INDEX idx_warehouse_code (warehouse_code),
+  FOREIGN KEY (customer_group_id) REFERENCES customer_groups(id) ON DELETE CASCADE,
+  FOREIGN KEY (warehouse_code) REFERENCES warehouses(sap_warehouse_code) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Per-admin data scoping, n:n — which Customer Groups / Item Groups a
+-- non-root admin user (admin_users, i.e. NOT the config.json bootstrap
+-- "root"/super-admin, who is always unrestricted) may see and manage.
+-- Default (no rows for that admin) = sees/manages NOTHING on scoped admin
+-- pages — an explicit allow-list, not a deny-list; root must assign at
+-- least one group before an admin can do anything on those pages. Assigning
+-- a group also grants every descendant group underneath it (same downward
+-- inheritance as Catalog Visibility) — see src/lib/adminScope.ts, which
+-- every scoped admin route reads through.
+CREATE TABLE IF NOT EXISTS admin_user_customer_groups (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  admin_user_id INT NOT NULL,
+  customer_group_id INT NOT NULL,
+  UNIQUE KEY uk_admin_cg (admin_user_id, customer_group_id),
+  INDEX idx_admin_user_id (admin_user_id),
+  FOREIGN KEY (admin_user_id) REFERENCES admin_users(id) ON DELETE CASCADE,
+  FOREIGN KEY (customer_group_id) REFERENCES customer_groups(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS admin_user_item_groups (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  admin_user_id INT NOT NULL,
+  item_group_id INT NOT NULL,
+  UNIQUE KEY uk_admin_ig (admin_user_id, item_group_id),
+  INDEX idx_admin_user_id (admin_user_id),
+  FOREIGN KEY (admin_user_id) REFERENCES admin_users(id) ON DELETE CASCADE,
+  FOREIGN KEY (item_group_id) REFERENCES item_groups(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- SAP Customer Master cache (Business Partners) — mirrors `items` for

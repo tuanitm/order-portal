@@ -99,6 +99,16 @@ export default function ProductCard({ product }: ProductCardProps) {
           )}
         </div>
 
+        {/* Available stock — only rendered once stock tracking is active for
+            this customer (availableQty is null otherwise, e.g. no warehouse
+            configured yet); an out-of-stock item never reaches this card at
+            all, the storefront's stock gate already excludes it. */}
+        {product.availableQty !== null && product.availableQty !== undefined && (
+          <div className="product-card__stock" style={{ fontSize: "0.75rem", color: "var(--text-tertiary)", marginTop: "0.25rem" }}>
+            {t("product.stockAvailable", { qty: product.availableQty, uom: product.uom || "" })}
+          </div>
+        )}
+
         {/* Buy-X-Get-Y bonus item — kept visually distinct (green "gift" box)
             from the orange percent-discount badge above, so both benefits
             are legible at a glance without being confused for one another. */}

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query } from "@/lib/db/connection";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
+import { getAllowedCustomerGroupCodes, groupScopeClause } from "@/lib/adminScope";
 
 /** Allowed sort columns to prevent SQL injection */
 const SORT_COLUMNS: Record<string, string> = {
@@ -38,6 +39,14 @@ export async function GET(request: NextRequest) {
     whereClauses.push("(card_name LIKE ? OR sap_card_code LIKE ? OR mst_code LIKE ?)");
     params.push(`%${search}%`, `%${search}%`, `%${search}%`);
   }
+
+  // A scoped (non-root) admin only sees customers under their assigned
+  // customer groups (and descendants) — see getAllowedCustomerGroupCodes.
+  const allowed = await getAllowedCustomerGroupCodes(guard.session);
+  const scope = groupScopeClause(allowed, ["cus_grp01", "cus_grp02", "cus_grp03"]);
+  whereClauses.push(scope.sql);
+  params.push(...scope.params);
+
   const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(" AND ")}` : "";
 
   const totalRows = await query<{ cnt: number }[]>(

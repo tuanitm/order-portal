@@ -10,6 +10,9 @@ import { importCustomerGroupsFromFile } from "@/lib/customerGroups";
 export async function POST(request: NextRequest) {
   const guard = await requireAdminPermission(request, "customer-groups");
   if (guard.response) return guard.response;
+  if (!guard.session.isSuperAdmin) {
+    return NextResponse.json({ error: "Only root can import customer groups" }, { status: 403 });
+  }
 
   try {
     const result = await importCustomerGroupsFromFile();

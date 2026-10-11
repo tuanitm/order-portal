@@ -70,12 +70,15 @@ function numOrNull(value: unknown): number | null {
 
 /**
  * Load Promotion Discount rows from GT_Promotion_Detail.xlsx (a manual
- * export of the same result set `executePromotionSql` targets in SAP B1 —
- * see sync.ts) into the local `promotion_discount` cache. Used as the
- * primary data source while the SAP API user lacks Query Generator
- * authorization on the promotion UDTs (@PM_HEADER etc. — see the admin
- * promotions page). Full replace, same reasoning as syncPromotionDiscounts:
- * the file is a flat snapshot with no stable key across re-exports.
+ * export of the same result set promotion_program.sql targets in SAP HANA —
+ * see src/lib/hana/sync.ts) into the local `promotion_discount` cache. Kept
+ * as a manual fallback import now that syncPromotionDiscountsFromHana reads
+ * straight from HANA (SAP B1's Service Layer has no accessible path to
+ * these promotion UDTs at all — its SQLQueries mechanism enforces its own
+ * "Query Generator Authorization" on them regardless of the API user's
+ * actual database grants). Full replace, same reasoning as
+ * syncPromotionDiscountsFromHana: the file is a flat snapshot with no
+ * stable key across re-exports.
  */
 export async function importPromotionDiscountsFromXlsx(
   fileName = "GT_Promotion_Detail.xlsx"

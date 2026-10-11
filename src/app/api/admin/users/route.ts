@@ -8,20 +8,21 @@ export async function GET(request: NextRequest) {
   if (guard.response) return guard.response;
 
   const users = await query(
-    `SELECT au.id, au.email, au.full_name, au.is_active, au.created_at,
+    `SELECT au.id, au.email, au.full_name, au.is_active, au.is_root, au.created_at,
             ar.id AS role_id, ar.name AS role_name
      FROM admin_users au
-     JOIN admin_roles ar ON ar.id = au.role_id
-     ORDER BY au.created_at DESC`
+     LEFT JOIN admin_roles ar ON ar.id = au.role_id
+     ORDER BY au.is_root DESC, au.created_at DESC`
   );
   return NextResponse.json({ adminUsers: users });
 }
 
 /**
- * POST /api/admin/users — create an admin user. Requires super-admin (the
- * config.json bootstrap credential), not just the "admin-users" permission,
- * since a role-scoped admin creating other admins could otherwise escalate
- * privileges by assigning a more powerful role.
+ * POST /api/admin/users — create an admin user. Always a regular (non-root)
+ * account — `is_root` isn't settable here, only via
+ * scripts/migrate_root_admin.mjs. Requires root itself, not just the
+ * "admin-users" permission, since a role-scoped admin creating other admins
+ * could otherwise escalate privileges by assigning a more powerful role.
  */
 export async function POST(request: NextRequest) {
   const guard = await requireAdminPermission(request, "admin-users");

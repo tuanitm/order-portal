@@ -49,7 +49,7 @@ export async function GET(
   const total = totalRows[0]?.cnt ?? 0;
 
   const items = await query(
-    `SELECT i.sap_item_code, i.item_name_vi, i.item_name_en, i.uom, i.category,
+    `SELECT i.sap_item_code, i.item_name_vi, i.item_name_en, COALESCE(i.sales_uom, i.uom) AS uom, i.category,
             cp.base_price_list_num, bpl.list_name AS base_price_list_name,
             bp.price AS base_price, cp.factor, cp.price, cp.last_synced
      FROM item_channel_prices cp

@@ -17,7 +17,7 @@ export function useAdminSession() {
   return useContext(AdminSessionContext);
 }
 
-const NAV_ITEMS: { key: AdminPermission; label: string; href: string; icon: string }[] = [
+const NAV_ITEMS: { key: AdminPermission; label: string; href: string; icon: string; rootOnly?: boolean }[] = [
   { key: "dashboard", label: "Dashboard", href: "", icon: "📊" },
   { key: "customers", label: "Customers Approval", href: "customers", icon: "👥" },
   { key: "sap-customers", label: "SAP Customers", href: "sap-customers", icon: "🏢" },
@@ -26,11 +26,12 @@ const NAV_ITEMS: { key: AdminPermission; label: string; href: string; icon: stri
   { key: "items", label: "Items", href: "items", icon: "📦" },
   { key: "item-groups", label: "Item Groups", href: "item-groups", icon: "🗂️" },
   { key: "price-lists", label: "Price Lists", href: "price-lists", icon: "💲" },
+  { key: "warehouses", label: "Warehouses", href: "warehouses", icon: "🏭" },
   { key: "contract-discounts", label: "Contract Discounts", href: "contract-discounts", icon: "📄" },
   { key: "promotions", label: "Promotion Discounts", href: "promotions", icon: "🎁" },
   { key: "orders", label: "Orders", href: "orders", icon: "🧾" },
-  { key: "admin-users", label: "Admin Users", href: "admin-users", icon: "🔑" },
-  { key: "admin-roles", label: "Admin Roles", href: "admin-roles", icon: "🛡️" },
+  { key: "admin-users", label: "Admin Users", href: "admin-users", icon: "🔑", rootOnly: true },
+  { key: "admin-roles", label: "Admin Roles", href: "admin-roles", icon: "🛡️", rootOnly: true },
 ];
 
 export default function AdminLayout({
@@ -188,7 +189,9 @@ export default function AdminLayout({
     );
   }
 
-  const visibleNav = NAV_ITEMS.filter((item) => session.isSuperAdmin || session.permissions.includes(item.key));
+  const visibleNav = NAV_ITEMS.filter((item) =>
+    item.rootOnly ? session.isSuperAdmin : session.isSuperAdmin || session.permissions.includes(item.key)
+  );
 
   return (
     <AdminSessionContext.Provider value={session}>
