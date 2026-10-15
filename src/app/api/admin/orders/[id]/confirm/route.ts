@@ -794,6 +794,14 @@ export async function POST(
   ];
 
   const sap = getSapClient();
+
+  // Invoice-related header fields, sourced from the customer BusinessPartner
+  // itself. getBusinessPartner already catches its own errors and returns
+  // null rather than throwing, so a lookup failure here doesn't block the
+  // push (CardCode alone is enough for SAP to accept the order) — these
+  // fields just come back unset.
+  const businessPartner = await sap.getBusinessPartner(order.sap_card_code);
+
   let sapResult: { DocEntry: number; DocNum: number };
   try {
     sapResult = await sap.createDraftSalesOrder({
@@ -802,6 +810,16 @@ export async function POST(
       DocDate: vnToday,
       DocDueDate: vnToday,
       U_ProdBrand: headerBrand,
+      // "Y" only if at least one Promotion Discount line is actually
+      // being pushed — left unset otherwise, not forced to "N".
+      U_GetPMStatus: promotionLines.length > 0 ? "Y" : undefined,
+      U_InvEmail: businessPartner?.EmailAddress || undefined,
+      U_BPPaymentMethod: "TM/CK",
+      // UDF is 200 chars max (confirmed via /UserFieldsMD) — truncate
+      // defensively rather than let an unusually long address get rejected.
+      U_InvAddress: businessPartner?.Address?.slice(0, 200) || undefined,
+      U_InvTaxNo: businessPartner?.FederalTaxID || undefined,
+      U_InvName: businessPartner?.CardName || undefined,
       // U_DocNo omitted — it's generated server-side by SAP's own
       // SBO_SP_TransactionNotification trigger after this Sales Order is
       // added (format SOO+YYMMDD+3-digit running number), not something

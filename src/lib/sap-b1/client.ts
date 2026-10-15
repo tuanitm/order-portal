@@ -234,6 +234,15 @@ export interface SapSalesOrderDraft {
   // own SBO_SP_TransactionNotification trigger after the Sales Order is
   // added (format SOO+YYMMDD+3-digit running number, e.g. "SOO261015015"),
   // not something this client sets. See POST .../confirm.
+  /** "Y" if this order has at least one Promotion Discount line (CK99999999), else unset. */
+  U_GetPMStatus?: string;
+  /** The customer BusinessPartner's own EmailAddress/Address/FederalTaxID/CardName — see POST .../confirm. */
+  U_InvEmail?: string;
+  /** Always the literal "TM/CK" — not looked up from anywhere. */
+  U_BPPaymentMethod?: string;
+  U_InvAddress?: string;
+  U_InvTaxNo?: string;
+  U_InvName?: string;
   DocumentLines: {
     ItemCode: string;
     /** Only set for the synthetic Contract/Promotion Discount lines (see
