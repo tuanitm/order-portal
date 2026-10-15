@@ -3,6 +3,11 @@ import { readFileSync } from "fs";
 import { join } from "path";
 import { execSync } from "child_process";
 
+/** Escape user-supplied text before interpolating it into an HTML email body. */
+function escapeHtml(text: string): string {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
 interface EmailConfig {
   smtpServer: string;
   smtpPort: number;
@@ -259,6 +264,80 @@ export async function sendApprovalEmail(
     return true;
   } catch (error) {
     console.error("[Email] Failed to send approval email:", error);
+    return false;
+  }
+}
+
+/**
+ * Notify a customer that an admin posted a message on one of their orders
+ * (the order-review thread — see src/lib/orderMessages.ts). Only admin ->
+ * customer notifies by email; a customer reply is checked by the admin
+ * directly in the admin panel, so it doesn't need one.
+ */
+export async function sendOrderMessageEmail(
+  to: string,
+  customerName: string,
+  orderNumber: string,
+  message: string,
+  language: "vi" | "en" = "vi"
+): Promise<boolean> {
+  const cfg = loadEmailConfig();
+  const transport = getTransporter();
+  const safeMessage = escapeHtml(message);
+
+  const subjects = {
+    vi: `[Cổng Đặt Hàng] Tin nhắn mới về đơn hàng ${orderNumber}`,
+    en: `[Ordering Portal] New message about order ${orderNumber}`,
+  };
+
+  const bodies = {
+    vi: `
+      <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 32px;">
+        <div style="text-align: center; margin-bottom: 24px;">
+          <div style="display: inline-block; width: 56px; height: 56px; border-radius: 16px; background: linear-gradient(135deg, #2BBCB3, #1E9A92); color: #fff; font-size: 28px; line-height: 56px;">💬</div>
+        </div>
+        <h2 style="text-align: center; color: #0F172A; margin-bottom: 8px;">Tin nhắn mới về đơn hàng ${orderNumber}</h2>
+        <p style="text-align: center; color: #64748B; font-size: 14px; margin-bottom: 16px;">
+          Xin chào <strong>${customerName}</strong>, bộ phận hỗ trợ vừa gửi tin nhắn về đơn hàng của bạn:
+        </p>
+        <div style="padding: 16px; background: #F1F5F9; border-radius: 8px; margin-bottom: 24px;">
+          <p style="color: #0F172A; font-size: 14px; margin: 0; white-space: pre-wrap;">${safeMessage}</p>
+        </div>
+        <p style="text-align: center; color: #94A3B8; font-size: 13px;">
+          Vui lòng đăng nhập vào cổng đặt hàng và mở đơn hàng ${orderNumber} để phản hồi.
+        </p>
+      </div>
+    `,
+    en: `
+      <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 32px;">
+        <div style="text-align: center; margin-bottom: 24px;">
+          <div style="display: inline-block; width: 56px; height: 56px; border-radius: 16px; background: linear-gradient(135deg, #2BBCB3, #1E9A92); color: #fff; font-size: 28px; line-height: 56px;">💬</div>
+        </div>
+        <h2 style="text-align: center; color: #0F172A; margin-bottom: 8px;">New message about order ${orderNumber}</h2>
+        <p style="text-align: center; color: #64748B; font-size: 14px; margin-bottom: 16px;">
+          Hello <strong>${customerName}</strong>, our team just sent a message about your order:
+        </p>
+        <div style="padding: 16px; background: #F1F5F9; border-radius: 8px; margin-bottom: 24px;">
+          <p style="color: #0F172A; font-size: 14px; margin: 0; white-space: pre-wrap;">${safeMessage}</p>
+        </div>
+        <p style="text-align: center; color: #94A3B8; font-size: 13px;">
+          Please log in to the ordering portal and open order ${orderNumber} to reply.
+        </p>
+      </div>
+    `,
+  };
+
+  try {
+    await transport.sendMail({
+      from: `"${cfg.senderName}" <${cfg.senderEmail}>`,
+      to,
+      subject: subjects[language],
+      html: bodies[language],
+    });
+    console.log(`[Email] Order message notification sent to ${to} for order ${orderNumber}`);
+    return true;
+  } catch (error) {
+    console.error("[Email] Failed to send order message notification:", error);
     return false;
   }
 }

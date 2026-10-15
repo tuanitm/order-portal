@@ -4,7 +4,7 @@ import { query, queryOne } from "@/lib/db/connection";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 
 /**
- * PATCH /api/admin/users/[id] — Body: { fullName?, roleId?, isActive?, password? }
+ * PATCH /api/admin/users/[id] — Body: { fullName?, email?, roleId?, isActive?, password? }
  * A root row (is_root=TRUE) has no role, so `roleId` is rejected for it;
  * `isActive: false` is rejected if it's the last active root — never let an
  * action lock every root account out.
@@ -25,11 +25,15 @@ export async function PATCH(
 
   const body = await request.json();
   const updates: string[] = [];
-  const values: (string | number | boolean)[] = [];
+  const values: (string | number | boolean | null)[] = [];
 
   if (typeof body.fullName === "string") {
     updates.push("full_name = ?");
     values.push(body.fullName.trim());
+  }
+  if (typeof body.email === "string" && body.email.trim()) {
+    updates.push("email = ?");
+    values.push(body.email.trim().toLowerCase());
   }
   if (typeof body.roleId === "number") {
     if (!guard.session.isSuperAdmin) {
@@ -54,6 +58,10 @@ export async function PATCH(
     updates.push("is_active = ?");
     values.push(body.isActive);
   }
+  if (typeof body.departmentCode === "string") {
+    updates.push("department_code = ?");
+    values.push(body.departmentCode.trim() || null);
+  }
   if (typeof body.password === "string" && body.password.length > 0) {
     if (body.password.length < 6) {
       return NextResponse.json({ error: "Password must be at least 6 characters" }, { status: 400 });
@@ -67,7 +75,15 @@ export async function PATCH(
   }
 
   values.push(adminUserId);
-  await query(`UPDATE admin_users SET ${updates.join(", ")} WHERE id = ?`, values);
+  try {
+    await query(`UPDATE admin_users SET ${updates.join(", ")} WHERE id = ?`, values);
+  } catch (error: unknown) {
+    if ((error as { code?: string })?.code === "ER_DUP_ENTRY") {
+      return NextResponse.json({ error: "Email already in use" }, { status: 409 });
+    }
+    console.error("[Admin] Update admin user failed:", error);
+    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+  }
   return NextResponse.json({ success: true });
 }
 

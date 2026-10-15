@@ -73,12 +73,51 @@ CREATE TABLE IF NOT EXISTS items (
   item_cat06 VARCHAR(20) NULL,
   base_price DECIMAL(18,2) DEFAULT 0,
   image_url VARCHAR(500),
+  -- SAP Items.U_ProdBrand UDF — same code space as cost_centers where
+  -- dimension=1 (e.g. "D1" = PIGEON). Posted to a Sales Order line's own
+  -- CostingCode/COGSCostingCode, and to the header's U_ProdBrand, on
+  -- confirm — see POST /api/admin/orders/[id]/confirm.
+  brand_code VARCHAR(20) NULL,
+  -- SAP Items.SalesVATGroup — NOT the same name as the Sales Order line's
+  -- own VatGroup field despite meaning the same thing. Posted explicitly
+  -- onto Contract/Promotion Discount lines (CK99999998/CK99999999), whose
+  -- OWN item master VatGroup differs from a real item's (confirmed
+  -- empirically — CK99999998 itself defaults to "S10", not the real
+  -- item's "S08") — without this override the discount would be taxed at
+  -- the wrong rate.
+  vat_group VARCHAR(20) NULL,
+  -- SAP Items.U_ItemTaxClass UDF — posted back onto real inventory/free-
+  -- item lines (not the synthetic discount lines, which have none).
+  item_tax_class VARCHAR(255) NULL,
   is_active BOOLEAN DEFAULT TRUE,
   is_manually_hidden BOOLEAN NOT NULL DEFAULT FALSE,
   last_synced TIMESTAMP NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_category (category),
   INDEX idx_active (is_active)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- Migration for an existing DB:
+-- ALTER TABLE items ADD COLUMN brand_code VARCHAR(20) NULL AFTER image_url;
+-- ALTER TABLE items ADD COLUMN vat_group VARCHAR(20) NULL AFTER brand_code;
+-- ALTER TABLE items ADD COLUMN item_tax_class VARCHAR(255) NULL AFTER vat_group;
+
+-- Distribution Rule codes ("Profit Centers" in this B1 version's own UI
+-- terminology), synced from SAP's /ProfitCenters Service Layer entity —
+-- see syncCostCenters in sync.ts. dimension 1 = Brand (matches items.
+-- brand_code), dimension 2 = Department (matches admin_users.
+-- department_code), dimension 3 = Customer (ocr_code there IS the BP's own
+-- CardCode, 1:1 — looked up by exact CardCode at confirm time, never shown
+-- as a dropdown, see POST /api/admin/orders/[id]/confirm). All three are
+-- posted onto Sales Order lines as the Service Layer's own
+-- CostingCode(N)/COGSCostingCode(N) fields — NOT the RDR1 SQL column names
+-- OcrCode(N)/CogsOcrCo(N), which Service Layer silently ignores.
+CREATE TABLE IF NOT EXISTS cost_centers (
+  ocr_code VARCHAR(20) NOT NULL,
+  dimension TINYINT NOT NULL,
+  ocr_name VARCHAR(255),
+  is_active BOOLEAN DEFAULT TRUE,
+  last_synced TIMESTAMP NULL,
+  PRIMARY KEY (ocr_code, dimension)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Item Groups (SAP BusinessOne UDFs Items.U_ItemCat01..06 — a 6-level
@@ -232,6 +271,14 @@ CREATE TABLE IF NOT EXISTS warehouses (
 -- this goes straight at OITW instead, same pattern as executePromotionSql).
 -- "Available" is computed at query time as in_stock - committed, not stored,
 -- so the formula can be revisited without a migration.
+--
+-- shelf_life_pct: the WORST (lowest) remaining-shelf-life % among this
+-- item/warehouse's batches with on-hand qty > 0 — (days until ExpDate) /
+-- (ExpDate - MnfDate) * 100, clamped to [0,100] — computed in JS from raw
+-- OBTN/OBTQ batch rows (SAP's SQLQueries engine rejects CASE/arithmetic
+-- expressions entirely, so the % itself can't be computed in the SAP query).
+-- NULL means the item isn't batch-managed (or has none in this warehouse) —
+-- treated as "no shelf-life restriction" wherever this is read.
 CREATE TABLE IF NOT EXISTS item_warehouse_stock (
   id INT AUTO_INCREMENT PRIMARY KEY,
   sap_item_code VARCHAR(50) NOT NULL,
@@ -239,6 +286,7 @@ CREATE TABLE IF NOT EXISTS item_warehouse_stock (
   in_stock DECIMAL(18,3) NOT NULL DEFAULT 0,
   committed DECIMAL(18,3) NOT NULL DEFAULT 0,
   ordered DECIMAL(18,3) NOT NULL DEFAULT 0,
+  shelf_life_pct DECIMAL(6,2) NULL,
   last_synced TIMESTAMP NULL,
   UNIQUE KEY uk_item_warehouse (sap_item_code, warehouse_code),
   INDEX idx_item_code (sap_item_code),
@@ -383,7 +431,7 @@ CREATE TABLE IF NOT EXISTS orders (
   discount_total DECIMAL(18,2) DEFAULT 0,
   grand_total DECIMAL(18,2) DEFAULT 0,
   remark TEXT,
-  status ENUM('draft','submitted','processing','sap_draft_created','approved','rejected','completed')
+  status ENUM('draft','submitted','processing','sap_draft_created','approved','rejected','completed','cancelled')
          DEFAULT 'draft',
   sap_doc_entry INT,
   sap_doc_num INT,
@@ -395,6 +443,8 @@ CREATE TABLE IF NOT EXISTS orders (
   INDEX idx_status (status),
   INDEX idx_order_number (order_number)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- Migration for an existing DB:
+-- ALTER TABLE orders MODIFY COLUMN status ENUM('draft','submitted','processing','sap_draft_created','approved','rejected','completed','cancelled') DEFAULT 'draft';
 
 -- Order Lines
 CREATE TABLE IF NOT EXISTS order_lines (
@@ -412,11 +462,48 @@ CREATE TABLE IF NOT EXISTS order_lines (
   unit_price DECIMAL(18,2) NOT NULL,
   discount_percent DECIMAL(5,2) DEFAULT 0,
   line_total DECIMAL(18,2) NOT NULL,
+  -- What actually gets pushed to SAP on confirm (see POST .../confirm) —
+  -- defaults to `quantity` at order creation, but the admin reviewing the
+  -- order can lower it first (insufficient live stock, shelf-life gate,
+  -- ...) on the Order Review page. Auto-recalculated on a linked gift
+  -- line (see promo_buy_qty/promo_give_qty/source_line_id below) whenever
+  -- the buy line's own confirm_qty changes — otherwise never touched
+  -- except by an explicit admin edit or the pre-SAP-push live-stock cap.
+  confirm_qty INT NOT NULL DEFAULT 0,
+  -- The customer's response to confirm_qty when it differs from `quantity`
+  -- (an admin adjustment) — 'pending' until they Accept/Reject on their own
+  -- order page; reset to 'pending' every time the admin changes confirm_qty
+  -- again (a fresh adjustment is a fresh decision), and 'accepted' whenever
+  -- confirm_qty equals quantity (nothing to confirm). Never blocks the
+  -- admin's SAP push by itself — just surfaces disagreement for them to see.
+  customer_confirm_status ENUM('pending', 'accepted', 'rejected') NOT NULL DEFAULT 'accepted',
+  -- Buy-X-get-Y promo linkage (see calculateFreeQty in useCart.tsx, and
+  -- the checkout page which creates the paired lines at order time):
+  -- is_gift_line marks the free-item line itself (unit_price always 0);
+  -- source_line_id, set ONLY on a gift line, points back at the paid
+  -- "buy" line in the SAME order that earned it; promo_buy_qty/
+  -- promo_give_qty, set ONLY on a buy line that has an attached gift,
+  -- are that promo's ratio (buy N -> give M) — used to recompute the
+  -- gift line's own confirm_qty whenever the buy line's confirm_qty
+  -- changes (see recalculateLinkedGiftQty in src/lib/orderGifts.ts).
+  is_gift_line BOOLEAN NOT NULL DEFAULT FALSE,
+  source_line_id INT NULL,
+  promo_buy_qty INT NULL,
+  promo_give_qty INT NULL,
   FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
+  FOREIGN KEY (source_line_id) REFERENCES order_lines(id) ON DELETE SET NULL,
   INDEX idx_order (order_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 -- Migration for an existing DB:
 -- ALTER TABLE order_lines ADD COLUMN base_unit_price DECIMAL(18,2) NOT NULL DEFAULT 0 AFTER uom;
+-- ALTER TABLE order_lines ADD COLUMN confirm_qty INT NOT NULL DEFAULT 0 AFTER line_total;
+-- UPDATE order_lines SET confirm_qty = quantity WHERE confirm_qty = 0;
+-- ALTER TABLE order_lines ADD COLUMN customer_confirm_status ENUM('pending','accepted','rejected') NOT NULL DEFAULT 'accepted' AFTER confirm_qty;
+-- ALTER TABLE order_lines ADD COLUMN is_gift_line BOOLEAN NOT NULL DEFAULT FALSE AFTER customer_confirm_status;
+-- ALTER TABLE order_lines ADD COLUMN source_line_id INT NULL AFTER is_gift_line;
+-- ALTER TABLE order_lines ADD COLUMN promo_buy_qty INT NULL AFTER source_line_id;
+-- ALTER TABLE order_lines ADD COLUMN promo_give_qty INT NULL AFTER promo_buy_qty;
+-- ALTER TABLE order_lines ADD FOREIGN KEY (source_line_id) REFERENCES order_lines(id) ON DELETE SET NULL;
 
 -- Order Status History — one row per status an order has entered (including
 -- the initial 'submitted'), so the customer's "Đơn hàng của tôi" status popup
@@ -428,6 +515,54 @@ CREATE TABLE IF NOT EXISTS order_status_history (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
   INDEX idx_order (order_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Order Messages — a two-way thread attached to one order (admin <-> the
+-- customer who placed it), for exactly the cases that come up AFTER an
+-- order is placed: not enough stock, qty over available stock, shelf-life
+-- requirement not met, etc. Both sides see the same thread on their own
+-- order page (admin: Order Review; customer: their own order detail page).
+-- sender_name is a snapshot (the admin's full name, or the customer's own
+-- name) — intentionally NOT a FK to admin_users/users, so the thread still
+-- reads correctly even if that account is later renamed or removed.
+-- read_at: NULL = unread. Set on admin-authored rows when the customer
+-- opens their own order's thread (drives the storefront navbar badge —
+-- getUnreadMessageSummaryForUser), and on customer-authored rows when any
+-- admin opens the admin Order Review thread (drives the admin portal's own
+-- top-right badge — getUnreadCustomerMessageSummaryForAdmins). Same column,
+-- opposite direction, disambiguated by sender_type.
+CREATE TABLE IF NOT EXISTS order_messages (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  order_id INT NOT NULL,
+  sender_type ENUM('admin', 'customer') NOT NULL,
+  sender_name VARCHAR(255),
+  message TEXT NOT NULL,
+  read_at TIMESTAMP NULL DEFAULT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
+  INDEX idx_order (order_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- Migration for an existing DB:
+-- ALTER TABLE order_messages ADD COLUMN read_at TIMESTAMP NULL DEFAULT NULL AFTER message;
+
+-- Push Subscriptions — one row per browser/device a customer has granted
+-- Notification permission on (see src/lib/webPush.ts). endpoint is the
+-- push service URL the browser handed back from PushManager.subscribe();
+-- p256dh/auth are the per-subscription encryption keys the Web Push
+-- protocol requires. A customer can have several (phone, laptop, ...) —
+-- all of them get notified. A row is deleted the moment its endpoint
+-- comes back expired/invalid (410/404) from the push service, so this
+-- table only ever holds subscriptions that still work.
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  user_id INT NOT NULL,
+  endpoint VARCHAR(512) NOT NULL,
+  p256dh VARCHAR(255) NOT NULL,
+  auth VARCHAR(255) NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  UNIQUE KEY uk_endpoint (endpoint(255)),
+  INDEX idx_user (user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- =============================================================
@@ -461,12 +596,20 @@ CREATE TABLE IF NOT EXISTS admin_users (
   role_id INT NULL,
   is_root BOOLEAN NOT NULL DEFAULT FALSE,
   is_active BOOLEAN DEFAULT TRUE,
+  -- This admin's own cost center code, dimension 2 in cost_centers (see
+  -- that table's comment) — posted as OcrCode2/CogsOcrCo2 on every Sales
+  -- Order line when THIS admin confirms/pushes an order to SAP (see POST
+  -- /api/admin/orders/[id]/confirm). NULL until set on the Admin Users page;
+  -- a push proceeds without those two fields if it's still unset.
+  department_code VARCHAR(20) NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (role_id) REFERENCES admin_roles(id),
   CONSTRAINT chk_admin_users_role CHECK (
     (is_root = TRUE AND role_id IS NULL) OR (is_root = FALSE AND role_id IS NOT NULL)
   )
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- Migration for an existing DB:
+-- ALTER TABLE admin_users ADD COLUMN department_code VARCHAR(20) NULL AFTER is_active;
 
 -- Price Lists (synced from SAP B1 PriceLists) — admin marks base vs channel lists
 CREATE TABLE IF NOT EXISTS price_lists (

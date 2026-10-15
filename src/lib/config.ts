@@ -24,6 +24,9 @@ export interface AppConfig {
     companyPrefix?: string;
     email: string;
     password: string;
+    /** "Yes"/"No" — whether the storefront shows the available-stock line on
+     *  product cards. Optional; shown by default (see isShowAvailableEnabled). */
+    showAvailable?: string;
   };
   mysql: {
     dbIp: string;
@@ -49,6 +52,14 @@ export interface AppConfig {
     customerGroup: string;
     itemGroup: string;
     wareHouse: string;
+  };
+  /** Web Push VAPID keypair — publicKey is sent to the browser (not
+   *  secret), privateKey stays server-side (see src/lib/webPush.ts). */
+  webPush: {
+    publicKey: string;
+    privateKey: string;
+    /** Contact URI required by the Web Push protocol, e.g. "mailto:agent@imv.com.vn". */
+    subject: string;
   };
 }
 

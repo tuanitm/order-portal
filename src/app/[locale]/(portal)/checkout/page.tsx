@@ -19,6 +19,11 @@ interface OrderLine {
   originalPrice: number;
   discountPercent: number;
   isGift: boolean;
+  /** Set only on the "buy" line of a buy-X-get-Y pair that actually has a gift line attached. */
+  promoBuyQty?: number;
+  promoGiveQty?: number;
+  /** Set only on the gift line — the sapItemCode of the "buy" line (in this same order) it came from. */
+  sourceSapItemCode?: string;
 }
 
 export default function CheckoutPage() {
@@ -75,6 +80,13 @@ export default function CheckoutPage() {
     const freeQty = calculateFreeQty(item);
     if (freeQty > 0) {
       const isSameItem = item.promoGiveItemCode === item.sapItemCode;
+      // The buy line only carries the ratio when a gift is actually
+      // attached to it — see recalculateLinkedGiftQty in orderGifts.ts,
+      // which uses this to keep the gift line in sync whenever an admin
+      // (or the pre-SAP-push live-stock check) changes this line's own
+      // Confirm Qty after the order is placed.
+      lines[0].promoBuyQty = item.promoBuyQty;
+      lines[0].promoGiveQty = item.promoGiveQty;
       lines.push({
         key: `${item.sapItemCode}-gift`,
         sapItemCode: item.promoGiveItemCode || item.sapItemCode,
@@ -85,6 +97,7 @@ export default function CheckoutPage() {
         originalPrice: 0,
         discountPercent: 0,
         isGift: true,
+        sourceSapItemCode: item.sapItemCode,
       });
     }
     return lines;
@@ -114,6 +127,10 @@ export default function CheckoutPage() {
             unitPrice: line.unitPrice,
             originalPrice: line.originalPrice,
             discountPercent: line.discountPercent,
+            isGift: line.isGift,
+            promoBuyQty: line.promoBuyQty,
+            promoGiveQty: line.promoGiveQty,
+            sourceSapItemCode: line.sourceSapItemCode,
           })),
         }),
       });

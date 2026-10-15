@@ -18,7 +18,8 @@
   "admin": {
     "companyPrefix": "IMV",
     "email": "ENV:ADMIN_EMAIL",
-    "password": "ENV:USER_PASSWORD"
+    "password": "ENV:USER_PASSWORD",
+    "showAvailable": "No"
   },
   "mysql": {
     "dbIp": "mysql8",
@@ -29,13 +30,18 @@
   },
   "hanadb": {
     "hostname": "saphana.imv.com.vn:30015",
-    "schema": "IMV",
+    "schema": "IMV260806",
     "userId": "IMV_REPORT_RO",
     "passWrd": "ENV:HANA_PASSWORD"
   },
   "masterdata": {
     "customerGroup": "'GT'",
     "itemGroup": "'D1','L1'",
-    "wareHouse": "'1000','1001','1003','1002','1010','1012','1013'"
+    "wareHouse": "'1001','1003','1002','1010','1012','1013'"
+  },
+  "webPush": {
+    "publicKey": "BLxvlXnBxaUSId_mRFplDyrko83KutQENb5xpBd-SwHqf3aA_KdGXk1Pz2en1gVK6H2Td8HWyphCgegGfznvgZE",
+    "privateKey": "ENV:WEBPUSH_PRIVATE_KEY",
+    "subject": "mailto:agent@imv.com.vn"
   }
 }

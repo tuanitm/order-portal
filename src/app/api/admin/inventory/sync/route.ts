@@ -5,7 +5,8 @@ import { syncInventoryStock } from "@/lib/sap-b1/sync";
 /**
  * POST /api/admin/inventory/sync — pull per-item, per-warehouse stock
  * (on-hand/committed/on-order) from SAP into `item_warehouse_stock`, the
- * table the storefront's stock gate reads from.
+ * table the storefront's stock gate reads from. Full replace, scoped to
+ * config.json's masterdata.itemGroup/wareHouse — see syncInventoryStock.
  */
 export async function POST(request: NextRequest) {
   const guard = await requireAdminPermission(request, "warehouses");

@@ -5,6 +5,16 @@ import { loadConfig, resolveEnvSecret } from '@/lib/config';
 // check to this client's own requests only — never disable it process-wide.
 const insecureDispatcher = new Agent({ connect: { rejectUnauthorized: false } });
 
+/** A single SQL string literal, with embedded single quotes escaped (doubled, the SQL-standard way). */
+function toSqlLiteral(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+/** A SQL IN-list literal built from raw values — e.g. ["A","B"] -> "'A','B'". */
+function toSqlList(values: string[]): string {
+  return values.map(toSqlLiteral).join(",");
+}
+
 // ── SAP B1 Types ──
 
 export interface SapLoginPayload {
@@ -39,6 +49,23 @@ export interface SapWarehouse {
   Inactive: string; // BoYesNoEnum: 'tYES' | 'tNO'
 }
 
+/**
+ * One row of OCRC (Distribution Rules / "Profit Centers" in this B1
+ * version's own terminology) via the /ProfitCenters Service Layer entity.
+ * InWhichDimension is the Distribution Rule dimension (1-5) it belongs to —
+ * confirmed empirically: dimension 1 holds Brand codes (matching Items'
+ * own U_ProdBrand UDF, e.g. "D1" = PIGEON), dimension 2 holds Department
+ * codes (e.g. "HCMD19" = ECOM), and dimension 3 holds Customer codes —
+ * CenterCode there IS the BusinessPartner's own CardCode (e.g. "GTSO0701"
+ * = "CÔNG TY TNHH GIA PHẠM P & T"), one-to-one, confirmed empirically.
+ */
+export interface SapProfitCenter {
+  CenterCode: string;
+  CenterName: string;
+  InWhichDimension: number;
+  Active: string; // BoYesNoEnum: 'tYES' | 'tNO'
+}
+
 /** One row of src.OITW (Item-Warehouse stock) via SQLQueries — see getInventoryStock. */
 export interface SapInventoryStockRow {
   item_code: string;
@@ -46,6 +73,15 @@ export interface SapInventoryStockRow {
   in_stock: number;
   committed: number;
   ordered: number;
+}
+
+/** One batch's on-hand qty + dates (OBTQ join OBTN) via SQLQueries — see getBatchStock. Dates come back as "YYYYMMDD" strings. */
+export interface SapBatchStockRow {
+  item_code: string;
+  warehouse_code: string;
+  qty: number;
+  mnf_date: string | null;
+  exp_date: string | null;
 }
 
 
@@ -72,6 +108,11 @@ export interface SapItem {
   U_ItemCat04?: string;
   U_ItemCat05?: string;
   U_ItemCat06?: string;
+  /** Brand UDF — same code space as ProfitCenters where InWhichDimension=1 (e.g. "D1" = PIGEON). */
+  U_ProdBrand?: string | null;
+  /** NOT the same field name as a Sales Order line's own VatGroup despite meaning the same thing. */
+  SalesVATGroup?: string | null;
+  U_ItemTaxClass?: string | null;
 }
 
 /**
@@ -186,11 +227,75 @@ export interface SapSalesOrderDraft {
   DocDate?: string;
   DocDueDate?: string;
   Comments?: string;
+  /** Brand UDF on the header — see POST /api/admin/orders/[id]/confirm for
+   * how it's resolved when an order's lines span more than one brand. */
+  U_ProdBrand?: string;
+  // U_DocNo deliberately not modeled — it's generated server-side by SAP's
+  // own SBO_SP_TransactionNotification trigger after the Sales Order is
+  // added (format SOO+YYMMDD+3-digit running number, e.g. "SOO261015015"),
+  // not something this client sets. See POST .../confirm.
   DocumentLines: {
     ItemCode: string;
+    /** Only set for the synthetic Contract/Promotion Discount lines (see
+     * POST .../confirm) — every other line leaves this unset and gets
+     * the item master's own default description. */
+    ItemDescription?: string;
     Quantity: number;
     UnitPrice?: number;
     DiscountPercent?: number;
+    WarehouseCode?: string;
+    ShipDate?: string;
+    // Distribution Rule dimension 1 (Brand) — revenue and COGS. NOTE: the
+    // Service Layer JSON property names (confirmed empirically by reading
+    // back a real posted line) are CostingCode/COGSCostingCode, NOT the
+    // underlying RDR1 SQL column names (OcrCode/CogsOcrCo) — Service Layer
+    // silently drops unrecognized property names instead of erroring, so
+    // using the wrong ones here looks like success but writes nothing.
+    CostingCode?: string;
+    COGSCostingCode?: string;
+    /** Distribution Rule dimension 2 (Department) — revenue and COGS. */
+    CostingCode2?: string;
+    COGSCostingCode2?: string;
+    /** Distribution Rule dimension 3 (Customer, CenterCode == CardCode) — revenue and COGS. */
+    CostingCode3?: string;
+    COGSCostingCode3?: string;
+    /** Required remaining shelf-life % range (UDFs) — see customer_require_shelflife. */
+    U_ReqSLFrom?: number;
+    U_ReqSLTo?: number;
+    /** NOT the RDR1 SQL column name (VatPrcnt) — "VatGroup" IS the real
+     * Service Layer property, confirmed empirically. Only set explicitly
+     * on Contract/Promotion Discount lines, whose own item master VatGroup
+     * (CK99999998/CK99999999's SalesVATGroup) differs from a real item's. */
+    VatGroup?: string;
+    // ── "Period Management" add-on UDFs — field names verified against a
+    // real posted order before use (see POST .../confirm). U_SONo is NOT
+    // modeled — it mirrors the header's own U_DocNo, which SAP's
+    // SBO_SP_TransactionNotification trigger generates server-side AFTER
+    // the Sales Order is added, so there's nothing for this client to set. ──
+    U_SODate?: string;
+    /** Null/omitted for real inventory lines; the BUY item's own code for every other line. */
+    U_PM_BaseItem?: string;
+    /** `{buyLine'sOwnLineNum}-{buyItemCode}` — same value for every line derived from one buy line. */
+    U_PM_BaseLine?: string;
+    U_INVDesc?: string;
+    U_SortField?: string;
+    /** 98 = Contract Discount, 20 = Promotion Discount, 31 = free/gift item. Unset for real inventory lines. */
+    U_PM_Type?: string;
+    U_PM_HavingSetupPrrt?: string;
+    /** Promotion code — ONLY set on Promotion Discount lines, never on gift lines (which get U_CTKM_NAME only). */
+    U_CTKM?: string;
+    U_CTKM_NAME?: string;
+    U_PM_FreeQty?: number;
+    U_PM_DiscPercent?: number;
+    U_PM_DiscAmount?: number;
+    U_PM_DiscPrice?: number;
+    U_PM_PriceBefFix?: number;
+    U_PM_FixPrice?: number;
+    /** Shared across every line derived from the same buy/inventory line. */
+    U_PM_GUID?: string;
+    U_PM_PrrtPMApplied?: number;
+    /** Real inventory/free-item lines only — items.item_tax_class, synced from Items.U_ItemTaxClass. */
+    U_ItemTaxClass?: string;
   }[];
 }
 
@@ -419,6 +524,72 @@ export class SapB1Client {
   }
 
   /**
+   * Get Distribution Rule codes ("Profit Centers") for one dimension (1 =
+   * Brand, 2 = Department, ...) — see syncCostCenters.
+   */
+  async getProfitCenters(dimension: number): Promise<SapProfitCenter[]> {
+    await this.ensureSession();
+    const out: SapProfitCenter[] = [];
+    let path: string | null =
+      `/ProfitCenters?$select=CenterCode,CenterName,InWhichDimension,Active&$filter=${encodeURIComponent(`InWhichDimension eq ${dimension}`)}`;
+    while (path) {
+      const result: { value: SapProfitCenter[]; 'odata.nextLink'?: string } = await this.request('GET', path);
+      out.push(...(result.value || []));
+      path = result['odata.nextLink'] ? `/${result['odata.nextLink']}` : null;
+    }
+    return out;
+  }
+
+  /**
+   * Create-or-update a named SQLQueries object and page through its /List
+   * result in full — shared by every SQLQueries-based puller (inventory
+   * stock, batch expiry, ...). Service Layer caps the actual page size
+   * server-side (often 20) regardless of the requested $top, so this
+   * advances by what came back, not the requested page size, and stops
+   * only on an empty page — same gotcha as getItems' own pagination.
+   */
+  private async runSqlQuery<T>(sqlCode: string, sqlName: string, sqlText: string): Promise<T[]> {
+    await this.ensureSession();
+    try {
+      try {
+        await this.request('POST', '/SQLQueries', { SqlCode: sqlCode, SqlName: sqlName, SqlText: sqlText });
+        console.log('[SAP] Created SQLQuery', sqlCode);
+      } catch (createErr: any) {
+        // Whatever the exact reason the create failed (SAP's own "already
+        // exists" error doesn't always come back with a message containing
+        // "400" — e.g. under the concurrent-caller race this SqlCode reuse
+        // can produce), fall back to PATCH rather than only on that one
+        // specific substring match. Only if the PATCH itself also fails is
+        // this truly unrecoverable.
+        try {
+          await this.request('PATCH', `/SQLQueries('${sqlCode}')`, { SqlText: sqlText });
+          console.log('[SAP] Updated SQLQuery', sqlCode);
+        } catch {
+          throw createErr;
+        }
+      }
+
+      const allRows: T[] = [];
+      let skip = 0;
+      const top = 500;
+      for (;;) {
+        const result = await this.request<{ value: T[] }>(
+          'GET', `/SQLQueries('${sqlCode}')/List?$top=${top}&$skip=${skip}`
+        );
+        const rows = result.value || [];
+        if (rows.length === 0) break;
+        allRows.push(...rows);
+        skip += rows.length;
+      }
+      console.log(`[SAP] SQLQuery ${sqlCode} returned ${allRows.length} rows`);
+      return allRows;
+    } catch (error) {
+      console.error(`[SAP] SQLQuery ${sqlCode} failed:`, error);
+      throw error;
+    }
+  }
+
+  /**
    * Get per-item, per-warehouse on-hand/committed/on-order stock straight
    * from OITW via SQLQueries — the OData ItemWarehouseInfoCollection on
    * /Items returns ~55 full GL-account-laden objects per item (one per
@@ -426,50 +597,64 @@ export class SapB1Client {
    * goes directly at the lean source table instead, same pattern as
    * executePromotionSql. Rows where on-hand/committed/on-order are all zero
    * are skipped server-side (most item×warehouse combinations are).
+   *
+   * Scoped by config.json's masterdata.itemGroup (checked against OITM's
+   * U_ItemCat01/02, same two-level check as the item/customer group syncs)
+   * and masterdata.wareHouse (checked against WhsCode) — both ready-made
+   * SQL IN-list literals, e.g. "'D1','L1'".
    */
-  async getInventoryStock(): Promise<SapInventoryStockRow[]> {
-    await this.ensureSession();
+  async getInventoryStock(itemGroupFilter: string, warehouseFilter: string): Promise<SapInventoryStockRow[]> {
+    const sqlText = `SELECT T0."ItemCode" AS "item_code", T0."WhsCode" AS "warehouse_code", T0."OnHand" AS "in_stock", T0."IsCommited" AS "committed", T0."OnOrder" AS "ordered" FROM "OITW" T0 INNER JOIN "OITM" T1 ON T1."ItemCode" = T0."ItemCode" WHERE (T0."OnHand" <> 0 OR T0."IsCommited" <> 0 OR T0."OnOrder" <> 0) AND (T1."U_ItemCat01" IN (${itemGroupFilter}) OR T1."U_ItemCat02" IN (${itemGroupFilter})) AND T0."WhsCode" IN (${warehouseFilter}) ORDER BY T0."ItemCode", T0."WhsCode"`;
+    return this.runSqlQuery<SapInventoryStockRow>('InventoryStockSync', 'Inventory Stock Sync', sqlText);
+  }
 
-    const sqlText = `SELECT T0."ItemCode" AS "item_code", T0."WhsCode" AS "warehouse_code", T0."OnHand" AS "in_stock", T0."IsCommited" AS "committed", T0."OnOrder" AS "ordered" FROM "OITW" T0 WHERE T0."OnHand" <> 0 OR T0."IsCommited" <> 0 OR T0."OnOrder" <> 0 ORDER BY T0."ItemCode", T0."WhsCode"`;
-    const sqlCode = 'InventoryStockSync';
+  /**
+   * Get raw per-batch on-hand quantity + manufacture/expiration dates
+   * (OBTQ joined to OBTN by (ItemCode, SysNumber) — NOT DistNumber, which
+   * OBTQ doesn't carry; confirmed empirically) for every batch with
+   * Quantity > 0, scoped the same way as getInventoryStock. The %
+   * remaining-shelf-life itself is computed in JS (syncInventoryStock), not
+   * here — SAP's SQLQueries engine rejects CASE expressions and arithmetic
+   * operators in the SELECT list outright ("Cannot support the case
+   * expression" / "mismatched input '*'"), confirmed empirically, so this
+   * can only ever return raw columns.
+   */
+  async getBatchStock(itemGroupFilter: string, warehouseFilter: string): Promise<SapBatchStockRow[]> {
+    const sqlText = `SELECT Q."ItemCode" AS "item_code", Q."WhsCode" AS "warehouse_code", Q."Quantity" AS "qty", B."MnfDate" AS "mnf_date", B."ExpDate" AS "exp_date" FROM "OBTQ" Q INNER JOIN "OBTN" B ON B."ItemCode" = Q."ItemCode" AND B."SysNumber" = Q."SysNumber" INNER JOIN "OITM" I ON I."ItemCode" = Q."ItemCode" WHERE Q."Quantity" > 0 AND Q."WhsCode" IN (${warehouseFilter}) AND (I."U_ItemCat01" IN (${itemGroupFilter}) OR I."U_ItemCat02" IN (${itemGroupFilter})) ORDER BY Q."ItemCode", Q."WhsCode"`;
+    return this.runSqlQuery<SapBatchStockRow>('BatchStockSync', 'Batch Stock Sync', sqlText);
+  }
 
-    try {
-      try {
-        await this.request('POST', '/SQLQueries', {
-          SqlCode: sqlCode, SqlName: 'Inventory Stock Sync', SqlText: sqlText,
-        });
-        console.log('[SAP] Created SQLQuery', sqlCode);
-      } catch (createErr: any) {
-        if (createErr.message?.includes('400')) {
-          await this.request('PATCH', `/SQLQueries('${sqlCode}')`, { SqlText: sqlText });
-          console.log('[SAP] Updated SQLQuery', sqlCode);
-        } else {
-          throw createErr;
-        }
-      }
+  /**
+   * Live (uncached) on-hand/committed stock for ONE warehouse, restricted
+   * to an explicit list of item codes — used by the admin Order Review
+   * page's "Avail Qty" check, which needs a fresh read for just the items
+   * on one order rather than the whole catalog (unlike getInventoryStock,
+   * which is the scheduled whole-catalog sync into item_warehouse_stock).
+   *
+   * `sqlCodeSuffix` (the order id) scopes the underlying SQLQueries object
+   * per order, not a single name shared by every call — two admins
+   * reviewing different orders at once used to be able to overwrite each
+   * other's query text before reading it back (occasionally surfacing as
+   * an outright request failure, not just wrong data, since SAP's retry
+   * path didn't always recognize the resulting conflict as recoverable).
+   */
+  async getLiveItemStock(warehouseCode: string, itemCodes: string[], sqlCodeSuffix: string | number): Promise<SapInventoryStockRow[]> {
+    if (itemCodes.length === 0) return [];
+    const sqlText = `SELECT T0."ItemCode" AS "item_code", T0."WhsCode" AS "warehouse_code", T0."OnHand" AS "in_stock", T0."IsCommited" AS "committed", T0."OnOrder" AS "ordered" FROM "OITW" T0 WHERE T0."WhsCode" = ${toSqlLiteral(warehouseCode)} AND T0."ItemCode" IN (${toSqlList(itemCodes)})`;
+    return this.runSqlQuery<SapInventoryStockRow>(`OSC${sqlCodeSuffix}`, 'Order Review Stock Check', sqlText);
+  }
 
-      const allRows: SapInventoryStockRow[] = [];
-      let skip = 0;
-      const top = 500;
-      for (;;) {
-        const result = await this.request<{ value: SapInventoryStockRow[] }>(
-          'GET', `/SQLQueries('${sqlCode}')/List?$top=${top}&$skip=${skip}`
-        );
-        const rows = result.value || [];
-        if (rows.length === 0) break;
-        allRows.push(...rows);
-        // Service Layer caps the actual page size server-side (often 20)
-        // regardless of the requested $top, so advance by what came back,
-        // not by our requested page size, and stop only on an empty page —
-        // same gotcha as getItems' pagination (see its comment).
-        skip += rows.length;
-      }
-      console.log(`[SAP] Inventory stock query returned ${allRows.length} rows`);
-      return allRows;
-    } catch (error) {
-      console.error('[SAP] getInventoryStock failed:', error);
-      throw error;
-    }
+  /**
+   * Live (uncached) per-batch on-hand qty + dates for ONE warehouse,
+   * restricted to an explicit list of item codes — same scope as
+   * getLiveItemStock (including the per-order `sqlCodeSuffix`), used to
+   * compute the shelf-life-qualifying portion of that stock for the admin
+   * Order Review page.
+   */
+  async getLiveBatchStock(warehouseCode: string, itemCodes: string[], sqlCodeSuffix: string | number): Promise<SapBatchStockRow[]> {
+    if (itemCodes.length === 0) return [];
+    const sqlText = `SELECT Q."ItemCode" AS "item_code", Q."WhsCode" AS "warehouse_code", Q."Quantity" AS "qty", B."MnfDate" AS "mnf_date", B."ExpDate" AS "exp_date" FROM "OBTQ" Q INNER JOIN "OBTN" B ON B."ItemCode" = Q."ItemCode" AND B."SysNumber" = Q."SysNumber" WHERE Q."Quantity" > 0 AND Q."WhsCode" = ${toSqlLiteral(warehouseCode)} AND Q."ItemCode" IN (${toSqlList(itemCodes)})`;
+    return this.runSqlQuery<SapBatchStockRow>(`OBC${sqlCodeSuffix}`, 'Order Review Batch Check', sqlText);
   }
 
   /**
@@ -517,7 +702,7 @@ export class SapB1Client {
       const select =
         "ItemCode,ItemName,SalesUnit,ItemPrices,ItemsGroupCode,Valid," +
         (withImage ? "U_ImageURL," : "") +
-        "U_ItemCat01,U_ItemCat02,U_ItemCat03,U_ItemCat04,U_ItemCat05,U_ItemCat06";
+        "U_ItemCat01,U_ItemCat02,U_ItemCat03,U_ItemCat04,U_ItemCat05,U_ItemCat06,U_ProdBrand,SalesVATGroup,U_ItemTaxClass";
       queryParts.push(`$select=${encodeURIComponent(select)}`);
 
       if (params?.top) queryParts.push(`$top=${params.top}`);
@@ -650,6 +835,23 @@ export class SapB1Client {
       'GET',
       `/Drafts(${docEntry})`
     );
+  }
+
+  /**
+   * Delete a Draft Sales Order by DocEntry — used when an admin cancels an
+   * order that's already been pushed to SAP (see POST
+   * /api/admin/orders/[id]/cancel). A Draft (ObjectType 112) is just a
+   * proposal sitting in SAP, not yet a real committed Sales Order — it
+   * never reserved stock or posted anything — so deleting it outright is
+   * the correct cleanup, not a "Cancel" action (which only applies to real
+   * documents like Sales Orders/Invoices). Without this, a cancelled-in-
+   * the-portal order would leave its Draft sitting in SAP, where someone
+   * could still "Add" it there and create a real order the portal thinks
+   * doesn't exist.
+   */
+  async deleteDraftSalesOrder(docEntry: number): Promise<void> {
+    await this.ensureSession();
+    await this.request<void>('DELETE', `/Drafts(${docEntry})`);
   }
 
 }

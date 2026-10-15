@@ -1017,11 +1017,31 @@ ul, ol {
   color: var(--color-primary);
 }
 
-.cart-item__qty {
+.cart-item__qty-input {
+  width: 48px;
+  height: 28px;
   font-size: var(--text-sm);
   font-weight: var(--font-semibold);
-  min-width: 24px;
   text-align: center;
+  border: 1.5px solid var(--color-gray-200);
+  border-radius: var(--radius-md);
+  background: var(--color-white, #fff);
+  color: inherit;
+}
+
+.cart-item__qty-input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+}
+
+/* Hide the native up/down spinner — the +/- buttons already cover that */
+.cart-item__qty-input::-webkit-outer-spin-button,
+.cart-item__qty-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.cart-item__qty-input[type="number"] {
+  -moz-appearance: textfield;
 }
 
 .cart-item__remove {
@@ -1260,6 +1280,7 @@ ul, ol {
 .status-badge--approved { background: var(--color-success-light); color: #065F46; }
 .status-badge--rejected { background: var(--color-error-light); color: #991B1B; }
 .status-badge--completed { background: #E0E7FF; color: #3730A3; }
+.status-badge--cancelled { background: var(--color-gray-100); color: var(--color-gray-600); }
 
 /* ── Page Layout ── */
 .page {

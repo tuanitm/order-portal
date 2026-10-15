@@ -9,6 +9,7 @@ interface Order {
   order_number: string;
   customer_name: string | null;
   customer_email: string | null;
+  sap_card_code: string | null;
   grand_total: string;
   status: string;
   sap_doc_num: number | null;
@@ -17,7 +18,7 @@ interface Order {
 
 const STATUS_TONE: Record<string, "success" | "warning" | "error" | "neutral"> = {
   draft: "neutral", submitted: "warning", processing: "warning",
-  sap_draft_created: "warning", approved: "success", completed: "success", rejected: "error",
+  sap_draft_created: "warning", approved: "success", completed: "success", rejected: "error", cancelled: "neutral",
 };
 
 function formatPrice(v: string) {
@@ -57,7 +58,7 @@ export default function AdminOrdersPage() {
         </div>
 
         <div style={{ display: "flex", gap: "0.5rem", marginBottom: "1rem", flexWrap: "wrap" }}>
-          {["", "submitted", "processing", "sap_draft_created", "approved", "completed", "rejected"].map((s) => (
+          {["", "submitted", "processing", "sap_draft_created", "approved", "completed", "rejected", "cancelled"].map((s) => (
             <button
               key={s || "all"}
               onClick={() => setStatus(s)}
@@ -93,7 +94,10 @@ export default function AdminOrdersPage() {
                   {orders.map((o) => (
                     <tr key={o.id} style={{ cursor: "pointer" }} onClick={() => (window.location.href = `/${locale}/admin/orders/${o.id}`)}>
                       <td style={{ ...styles.td, fontFamily: "monospace", fontWeight: 600 }}>{o.order_number}</td>
-                      <td style={styles.td}>{o.customer_name || o.customer_email || "—"}</td>
+                      <td style={styles.td}>
+                        {o.sap_card_code && <span style={{ fontFamily: "monospace", fontSize: "0.75rem", color: "var(--text-tertiary, #94A3B8)" }}>{o.sap_card_code} — </span>}
+                        {o.customer_name || o.customer_email || "—"}
+                      </td>
                       <td style={styles.td}>{formatPrice(o.grand_total)}</td>
                       <td style={{ ...styles.td, fontFamily: "monospace" }}>{o.sap_doc_num || "—"}</td>
                       <td style={styles.td}><Badge label={ORDER_STATUS_LABELS[o.status] || o.status} tone={STATUS_TONE[o.status] || "neutral"} /></td>

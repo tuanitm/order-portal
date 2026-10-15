@@ -8,7 +8,7 @@ export async function GET(request: NextRequest) {
   if (guard.response) return guard.response;
 
   const users = await query(
-    `SELECT au.id, au.email, au.full_name, au.is_active, au.is_root, au.created_at,
+    `SELECT au.id, au.email, au.full_name, au.is_active, au.is_root, au.department_code, au.created_at,
             ar.id AS role_id, ar.name AS role_name
      FROM admin_users au
      LEFT JOIN admin_roles ar ON ar.id = au.role_id

@@ -1,10 +1,11 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useTranslations, useLocale } from "next-intl";
 import { Link } from "@/i18n/navigation";
 import OrderStatusBadge from "@/components/order/OrderStatusBadge";
 import ReorderButton from "@/components/order/ReorderButton";
+import { useOnPushNotification } from "@/hooks/usePushRefresh";
 
 interface OrderSummary {
   id: number;
@@ -33,7 +34,7 @@ export default function OrdersPage() {
   const [orders, setOrders] = useState<OrderSummary[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
-  useEffect(() => {
+  const load = useCallback(() => {
     const controller = new AbortController();
     fetch("/api/orders?limit=50", { signal: controller.signal })
       .then((res) => (res.ok ? res.json() : { orders: [] }))
@@ -46,6 +47,13 @@ export default function OrdersPage() {
       .finally(() => setIsLoading(false));
     return () => controller.abort();
   }, []);
+
+  useEffect(() => load(), [load]);
+
+  // Any order's push notification (status change, new message) means this
+  // list's status badges may now be stale — refresh rather than wait for
+  // the customer to manually reload.
+  useOnPushNotification(useCallback(() => load(), [load]));
 
   return (
     <div className="page">
@@ -103,7 +111,7 @@ export default function OrdersPage() {
                       {formatPrice(Number(order.grand_total))}
                     </div>
                     <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", justifyContent: "flex-end", flexWrap: "wrap" }}>
-                      <OrderStatusBadge orderId={order.id} status={order.status} />
+                      <OrderStatusBadge orderId={order.id} status={order.status} clickable={false} />
                       <ReorderButton orderId={order.id} />
                     </div>
                   </div>

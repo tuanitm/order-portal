@@ -17,6 +17,132 @@ export function useAdminSession() {
   return useContext(AdminSessionContext);
 }
 
+interface UnreadOrderSummary {
+  order_id: number;
+  order_number: string;
+  customer_name: string | null;
+  unread_count: number;
+  latest_message: string;
+  latest_created_at: string;
+}
+
+/**
+ * Top-right notification bell for customer messages on orders (see
+ * order_messages) — global across all admins, not per-account (orders
+ * aren't scoped per admin elsewhere either). Polled periodically and
+ * refreshed on navigation, mirroring the customer storefront's own
+ * notification bell (src/components/layout/Navbar.tsx).
+ */
+function MessageNotificationBell({ locale, pathname }: { locale: string; pathname: string }) {
+  const [totalUnread, setTotalUnread] = useState(0);
+  const [unreadOrders, setUnreadOrders] = useState<UnreadOrderSummary[]>([]);
+  const [showPanel, setShowPanel] = useState(false);
+
+  const checkUnread = useCallback(async () => {
+    try {
+      const res = await fetch("/api/admin/orders/messages/unread");
+      if (res.ok) {
+        const data = await res.json();
+        setTotalUnread(data.totalUnread || 0);
+        setUnreadOrders(data.orders || []);
+      }
+    } catch {
+      // leave the last-known count as is
+    }
+  }, []);
+
+  useEffect(() => {
+    checkUnread();
+    const interval = setInterval(checkUnread, 30000);
+    return () => clearInterval(interval);
+  }, [checkUnread]);
+
+  // Coming back from an order's Review page (opening the thread marks it
+  // read) should clear the badge sooner than the next 30s poll.
+  useEffect(() => {
+    checkUnread();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pathname]);
+
+  return (
+    <div style={{ position: "fixed", top: "1rem", right: "1.5rem", zIndex: 200 }}>
+      <button
+        onClick={() => setShowPanel((v) => !v)}
+        aria-label="Order message notifications"
+        style={{
+          position: "relative", display: "flex", alignItems: "center", justifyContent: "center",
+          width: "40px", height: "40px", borderRadius: "var(--radius-full, 999px)",
+          border: "1px solid var(--color-gray-200, #E2E8F0)", background: "var(--bg-primary, #fff)",
+          cursor: "pointer", boxShadow: "0 2px 8px rgba(0,0,0,0.06)",
+        }}
+      >
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ color: "var(--text-secondary, #64748B)" }}>
+          <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z" />
+        </svg>
+        {totalUnread > 0 && (
+          <span style={{
+            position: "absolute", top: "-4px", right: "-4px", minWidth: "20px", height: "20px",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            background: "#DC2626", color: "#fff", fontSize: "11px", fontWeight: 700,
+            borderRadius: "var(--radius-full, 999px)", padding: "0 5px", lineHeight: 1,
+          }}>
+            {totalUnread}
+          </span>
+        )}
+      </button>
+
+      {showPanel && (
+        <>
+          <div style={{ position: "fixed", inset: 0, zIndex: 190 }} onClick={() => setShowPanel(false)} />
+          <div style={{
+            position: "absolute", right: 0, top: "calc(100% + 0.5rem)",
+            background: "var(--bg-primary, #fff)", borderRadius: "var(--radius-lg, 8px)",
+            boxShadow: "0 10px 40px rgba(0,0,0,0.12)", border: "1px solid var(--color-gray-200, #E2E8F0)",
+            minWidth: "300px", maxWidth: "360px", maxHeight: "380px", overflowY: "auto",
+            padding: "0.375rem", zIndex: 201,
+          }}>
+            <div style={{ padding: "0.5rem 0.75rem", fontSize: "0.75rem", fontWeight: 700, color: "var(--text-tertiary, #94A3B8)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+              Order Messages
+            </div>
+            {unreadOrders.length === 0 ? (
+              <div style={{ padding: "0.75rem", fontSize: "0.8125rem", color: "var(--text-tertiary, #94A3B8)" }}>
+                No new messages.
+              </div>
+            ) : (
+              unreadOrders.map((o) => (
+                <a
+                  key={o.order_id}
+                  href={`/${locale}/admin/orders/${o.order_id}`}
+                  onClick={() => setShowPanel(false)}
+                  style={{
+                    display: "block", padding: "0.625rem 0.75rem", borderRadius: "var(--radius-md, 6px)",
+                    textDecoration: "none", color: "var(--text-primary, #0F172A)",
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-secondary, #F8FAFC)")}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.1875rem" }}>
+                    <span style={{ fontSize: "0.8125rem", fontWeight: 700 }}>{o.order_number}</span>
+                    <span style={{ fontSize: "0.7rem", fontWeight: 700, color: "#DC2626", background: "#FEF2F2", borderRadius: "var(--radius-full, 999px)", padding: "0.0625rem 0.4375rem" }}>
+                      {o.unread_count}
+                    </span>
+                  </div>
+                  <div style={{ fontSize: "0.7rem", color: "var(--text-tertiary, #94A3B8)", marginBottom: "0.1875rem" }}>
+                    {o.customer_name || "—"}
+                  </div>
+                  <div style={{ fontSize: "0.75rem", color: "var(--text-secondary, #64748B)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {o.latest_message}
+                  </div>
+                </a>
+              ))
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 const NAV_ITEMS: { key: AdminPermission; label: string; href: string; icon: string; rootOnly?: boolean }[] = [
   { key: "dashboard", label: "Dashboard", href: "", icon: "📊" },
   { key: "customers", label: "Customers Approval", href: "customers", icon: "👥" },
@@ -192,10 +318,13 @@ export default function AdminLayout({
   const visibleNav = NAV_ITEMS.filter((item) =>
     item.rootOnly ? session.isSuperAdmin : session.isSuperAdmin || session.permissions.includes(item.key)
   );
+  const canSeeOrders = session.isSuperAdmin || session.permissions.includes("orders");
 
   return (
     <AdminSessionContext.Provider value={session}>
       <div style={{ display: "flex", minHeight: "100vh", background: "var(--bg-secondary, #F8FAFC)" }}>
+        {canSeeOrders && <MessageNotificationBell locale={locale} pathname={pathname} />}
+
         {/* Sidebar */}
         <aside style={{
           width: "220px", flexShrink: 0, background: "var(--bg-primary, #fff)",
@@ -228,6 +357,14 @@ export default function AdminLayout({
             <div style={{ fontSize: "0.75rem", color: "var(--text-tertiary, #94A3B8)", padding: "0 0.75rem", marginBottom: "0.5rem", wordBreak: "break-all" }}>
               {session.email}
             </div>
+            <a href={`/${locale}/admin/change-password`} style={{
+              display: "block", padding: "0.5rem 0.75rem", fontSize: "0.8125rem",
+              color: pathname === `/${locale}/admin/change-password` ? "var(--color-primary, #2BBCB3)" : "var(--text-secondary, #64748B)",
+              fontWeight: pathname === `/${locale}/admin/change-password` ? 700 : 500,
+              textDecoration: "none",
+            }}>
+              🔒 Change Password
+            </a>
             <a href={`/${locale}`} style={{
               display: "block", padding: "0.5rem 0.75rem", fontSize: "0.8125rem",
               color: "var(--text-tertiary, #94A3B8)", textDecoration: "none",

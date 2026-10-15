@@ -1,23 +1,35 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { Fragment, useState, useEffect, useCallback } from "react";
 import { styles, btn, Toggle, LoadingOrEmpty } from "../adminUi";
 import { useAdminSession } from "../layout";
 
 interface AdminUserRow {
   id: number; email: string; full_name: string; is_active: number; is_root: number;
-  role_id: number | null; role_name: string | null; created_at: string;
+  role_id: number | null; role_name: string | null; department_code: string | null; created_at: string;
 }
 interface Role { id: number; name: string }
+interface CostCenter { ocr_code: string; ocr_name: string | null; is_active: number }
 
 export default function AdminUsersPage() {
   const session = useAdminSession();
   const [users, setUsers] = useState<AdminUserRow[]>([]);
   const [roles, setRoles] = useState<Role[]>([]);
+  const [departments, setDepartments] = useState<CostCenter[]>([]);
+  const [syncingDepts, setSyncingDepts] = useState(false);
+  const [deptSyncMsg, setDeptSyncMsg] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [showNew, setShowNew] = useState(false);
   const [form, setForm] = useState({ email: "", password: "", fullName: "", roleId: "" });
   const [error, setError] = useState("");
+
+  // Edit existing admin user (name/email/role/password) — a separate inline
+  // form per row, opened by the "Edit" button, distinct from the always-on
+  // Active toggle and Customer/Item Group scope inputs above.
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editForm, setEditForm] = useState({ fullName: "", email: "", roleId: "", password: "", departmentCode: "" });
+  const [editError, setEditError] = useState("");
+  const [editSaving, setEditSaving] = useState(false);
 
   // Per-admin data scoping — Customer Groups / Item Groups the admin may
   // see/manage (default: none, until root assigns some — see adminScope.ts).
@@ -28,15 +40,18 @@ export default function AdminUsersPage() {
 
   const load = useCallback(async () => {
     setIsLoading(true);
-    const [usersRes, rolesRes] = await Promise.all([
+    const [usersRes, rolesRes, deptRes] = await Promise.all([
       fetch("/api/admin/users"),
       fetch("/api/admin/roles"),
+      fetch("/api/admin/cost-centers?dimension=2"),
     ]);
     const usersData = await usersRes.json();
     const rolesData = await rolesRes.json();
+    const deptData = await deptRes.json();
     const loadedUsers: AdminUserRow[] = usersData.adminUsers || [];
     setUsers(loadedUsers);
     setRoles(rolesData.roles || []);
+    setDepartments(deptData.costCenters || []);
     setIsLoading(false);
 
     // Seed each admin's two scope textboxes from their current assignments.
@@ -116,6 +131,68 @@ export default function AdminUsersPage() {
     await load();
   };
 
+  const startEdit = (u: AdminUserRow) => {
+    setEditingId(u.id);
+    setEditForm({
+      fullName: u.full_name, email: u.email, roleId: u.role_id ? String(u.role_id) : "",
+      password: "", departmentCode: u.department_code || "",
+    });
+    setEditError("");
+  };
+
+  const syncDepartments = async () => {
+    setSyncingDepts(true);
+    setDeptSyncMsg("");
+    try {
+      const res = await fetch("/api/admin/cost-centers/sync", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error([data.error, data.message].filter(Boolean).join(" — "));
+      setDeptSyncMsg(`✓ Synced ${data.costCentersSynced} codes`);
+      await load();
+    } catch (err) {
+      setDeptSyncMsg(err instanceof Error ? err.message : "Sync failed");
+    } finally {
+      setSyncingDepts(false);
+    }
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setEditError("");
+  };
+
+  const saveEdit = async (u: AdminUserRow) => {
+    setEditError("");
+    if (!editForm.fullName || !editForm.email) {
+      setEditError("Name and email are required");
+      return;
+    }
+    if (editForm.password && editForm.password.length < 6) {
+      setEditError("Password must be at least 6 characters");
+      return;
+    }
+    setEditSaving(true);
+    try {
+      const body: Record<string, string | number> = { fullName: editForm.fullName, email: editForm.email, departmentCode: editForm.departmentCode };
+      if (!u.is_root && editForm.roleId) body.roleId = Number(editForm.roleId);
+      if (editForm.password) body.password = editForm.password;
+
+      const res = await fetch(`/api/admin/users/${u.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error([data.error, data.message].filter(Boolean).join(" — "));
+      setEditingId(null);
+      await load();
+    } catch (err) {
+      setEditError(err instanceof Error ? err.message : "Save failed");
+    } finally {
+      setEditSaving(false);
+    }
+  };
+
   return (
     <div style={styles.page}>
       <div style={styles.container}>
@@ -131,7 +208,15 @@ export default function AdminUsersPage() {
             </p>
           </div>
           {session?.isSuperAdmin && (
-            <button onClick={() => setShowNew(!showNew)} style={btn("primary")}>{showNew ? "Cancel" : "+ New Admin User"}</button>
+            <div style={{ display: "flex", gap: "0.75rem", alignItems: "center" }}>
+              <button onClick={syncDepartments} disabled={syncingDepts} style={btn("secondary", syncingDepts)}>
+                {syncingDepts ? "Syncing..." : "Sync Departments from SAP"}
+              </button>
+              {deptSyncMsg && (
+                <span style={{ fontSize: "0.75rem", color: deptSyncMsg.startsWith("✓") ? "#059669" : "#DC2626" }}>{deptSyncMsg}</span>
+              )}
+              <button onClick={() => setShowNew(!showNew)} style={btn("primary")}>{showNew ? "Cancel" : "+ New Admin User"}</button>
+            </div>
           )}
         </div>
 
@@ -162,6 +247,7 @@ export default function AdminUsersPage() {
                     <th style={styles.th}>Email</th>
                     <th style={styles.th}>Role</th>
                     <th style={styles.th}>Active</th>
+                    <th style={styles.th}>Department</th>
                     <th style={styles.th}>Customer Groups</th>
                     <th style={styles.th}>Item Groups</th>
                     {session?.isSuperAdmin && <th style={styles.th}>Actions</th>}
@@ -169,7 +255,8 @@ export default function AdminUsersPage() {
                 </thead>
                 <tbody>
                   {users.map((u) => (
-                    <tr key={u.id} style={u.is_root ? { background: "var(--bg-secondary, #F8FAFC)" } : undefined}>
+                    <Fragment key={u.id}>
+                    <tr style={u.is_root ? { background: "var(--bg-secondary, #F8FAFC)" } : undefined}>
                       <td style={styles.td}>
                         {u.full_name}
                         {!!u.is_root && (
@@ -181,6 +268,11 @@ export default function AdminUsersPage() {
                       <td style={styles.td}>{u.email}</td>
                       <td style={styles.td}>{u.is_root ? <em style={{ color: "var(--text-tertiary, #94A3B8)" }}>unrestricted</em> : u.role_name}</td>
                       <td style={styles.td}><Toggle checked={!!u.is_active} onChange={(v) => toggleActive(u.id, v)} /></td>
+                      <td style={styles.td}>
+                        {u.department_code
+                          ? (departments.find((d) => d.ocr_code === u.department_code)?.ocr_name || u.department_code)
+                          : <em style={{ color: "var(--text-tertiary, #94A3B8)" }}>— none</em>}
+                      </td>
                       {u.is_root ? (
                         <>
                           <td style={{ ...styles.td, color: "var(--text-tertiary, #94A3B8)", fontStyle: "italic" }}>— (sees everything)</td>
@@ -232,12 +324,56 @@ export default function AdminUsersPage() {
                       )}
                       {session?.isSuperAdmin && (
                         <td style={styles.td}>
-                          {!u.is_root && (
-                            <button onClick={() => deleteUser(u.id)} style={{ fontSize: "0.75rem", color: "#DC2626", background: "none", border: "none", cursor: "pointer" }}>Delete</button>
-                          )}
+                          <div style={{ display: "flex", gap: "0.75rem" }}>
+                            <button onClick={() => (editingId === u.id ? cancelEdit() : startEdit(u))} style={{ fontSize: "0.75rem", color: "var(--color-primary, #2563EB)", background: "none", border: "none", cursor: "pointer" }}>
+                              {editingId === u.id ? "Cancel" : "Edit"}
+                            </button>
+                            {!u.is_root && (
+                              <button onClick={() => deleteUser(u.id)} style={{ fontSize: "0.75rem", color: "#DC2626", background: "none", border: "none", cursor: "pointer" }}>Delete</button>
+                            )}
+                          </div>
                         </td>
                       )}
                     </tr>
+                    {editingId === u.id && (
+                      <tr>
+                        <td colSpan={session?.isSuperAdmin ? 8 : 7} style={{ ...styles.td, background: "var(--bg-secondary, #F8FAFC)" }}>
+                          {editError && <div style={{ color: "#991B1B", fontSize: "0.8125rem", marginBottom: "0.75rem" }}>{editError}</div>}
+                          <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "center" }}>
+                            <input style={styles.input} placeholder="Full name" value={editForm.fullName} onChange={(e) => setEditForm({ ...editForm, fullName: e.target.value })} />
+                            <input style={styles.input} placeholder="Email" value={editForm.email} onChange={(e) => setEditForm({ ...editForm, email: e.target.value })} />
+                            {!u.is_root && (
+                              <select style={styles.input} value={editForm.roleId} onChange={(e) => setEditForm({ ...editForm, roleId: e.target.value })}>
+                                <option value="">Select role</option>
+                                {roles.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+                              </select>
+                            )}
+                            <select
+                              style={styles.input}
+                              value={editForm.departmentCode}
+                              onChange={(e) => setEditForm({ ...editForm, departmentCode: e.target.value })}
+                            >
+                              <option value="">No department</option>
+                              {departments.map((d) => (
+                                <option key={d.ocr_code} value={d.ocr_code}>{d.ocr_name || d.ocr_code}{!d.is_active ? " (inactive)" : ""}</option>
+                              ))}
+                            </select>
+                            <input
+                              style={styles.input}
+                              type="password"
+                              placeholder="New password (leave blank to keep current)"
+                              value={editForm.password}
+                              onChange={(e) => setEditForm({ ...editForm, password: e.target.value })}
+                            />
+                            <button onClick={() => saveEdit(u)} disabled={editSaving} style={btn("primary")}>
+                              {editSaving ? "Saving..." : "Save"}
+                            </button>
+                            <button onClick={cancelEdit} style={smallBtn}>Cancel</button>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                    </Fragment>
                   ))}
                 </tbody>
               </table>

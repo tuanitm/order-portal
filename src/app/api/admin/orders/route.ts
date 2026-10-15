@@ -33,7 +33,7 @@ export async function GET(request: NextRequest) {
 
   const orders = await query(
     `SELECT o.id, o.order_number, o.customer_name, o.subtotal, o.discount_total, o.grand_total,
-            o.status, o.sap_doc_entry, o.sap_doc_num, o.created_at, u.email AS customer_email
+            o.status, o.sap_doc_entry, o.sap_doc_num, o.created_at, u.email AS customer_email, u.sap_card_code
      FROM orders o
      LEFT JOIN users u ON u.id = o.user_id
      ${whereSql}

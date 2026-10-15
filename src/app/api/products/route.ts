@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { query } from "@/lib/db/connection";
 import { getSessionUser } from "@/lib/auth/session";
 import { getBasePriceListNum } from "@/lib/sap-b1/sync";
+import { getVisibleWarehousesForCustomerGroup } from "@/lib/warehouseVisibility";
 import type { ProductWithPricing } from "@/types/product";
 
 interface HiddenCategory {
@@ -260,6 +261,18 @@ function promotionMatchSql(alias: string): { bpSql: string; itSql: string; score
  * run, so turning inventory tracking on later never silently empties the
  * storefront in the meantime; likewise an unmapped group just falls back to
  * the Included set rather than losing visibility.
+ *
+ * Nested inside that same stock gate: a warehouse's stock only counts
+ * toward "available" if it also clears every currently-valid
+ * `customer_require_shelflife` rule for this (customer, item) pair — same
+ * any-group-level matching as contract/promotion discounts (cust_group_code
+ * against any of cusGrp01-03, item_group_code against any of
+ * item_cat01-06). `item_warehouse_stock.shelf_life_pct` (the worst remaining
+ * shelf-life % among that item/warehouse's batches — see
+ * computeBatchShelfLifePct in sync.ts) must be within [shelf_life_from,
+ * shelf_life_to]; a non-batch-managed item (shelf_life_pct IS NULL) or one
+ * with no applicable rule always counts — same fail-open default as the
+ * rest of this gate.
  */
 export async function GET(request: NextRequest) {
   try {
@@ -283,7 +296,7 @@ export async function GET(request: NextRequest) {
     const { clauses: hiddenClauses, params: hiddenParams } = buildHiddenCategoryClauses(hiddenCategories);
 
     const whereClauses = ["i.is_active = TRUE", "i.is_manually_hidden = FALSE", ...hiddenClauses];
-    const params: (string | number)[] = [...hiddenParams];
+    const params: (string | number | null)[] = [...hiddenParams];
 
     // Stock gate: only applies once an admin has marked at least one
     // warehouse "Included" (see the Warehouses admin page) — until then this
@@ -295,31 +308,47 @@ export async function GET(request: NextRequest) {
     // the Catalog Visibility page), only those warehouses count; otherwise
     // fall back to every globally Included warehouse (today's default) —
     // same fail-open rule, so an unmapped group never loses visibility.
-    const includedWarehouseCodes = await query<{ sap_warehouse_code: string }[]>(
-      `SELECT sap_warehouse_code FROM warehouses WHERE is_included = TRUE`
-    );
-    let stockWarehouseCodes = includedWarehouseCodes.map((w) => w.sap_warehouse_code);
-    if (stockWarehouseCodes.length > 0 && cusGrp02) {
-      const groupWarehouses = await query<{ warehouse_code: string }[]>(
-        `SELECT cgw.warehouse_code
-         FROM customer_group_warehouses cgw
-         JOIN customer_groups cg ON cg.id = cgw.customer_group_id
-         WHERE cg.level = 2 AND cg.code = ?`,
-        [cusGrp02]
-      );
-      if (groupWarehouses.length > 0) {
-        stockWarehouseCodes = groupWarehouses.map((w) => w.warehouse_code);
-      }
-    }
+    const visibleWarehouses = await getVisibleWarehousesForCustomerGroup(cusGrp02);
+    const stockWarehouseCodes = visibleWarehouses.map((w) => w.code);
+    // Shared by the stock-gate EXISTS below AND availableQtySql further
+    // down — both must apply the identical shelf-life condition, or the
+    // displayed "available" number could disagree with whether the item is
+    // listed at all (see availableQtySql's own comment). `iwsAlias` lets
+    // each call site qualify iws.shelf_life_pct with its own alias; 3 `?`
+    // placeholders (cusGrp01/02/03) are needed wherever this is spliced in.
+    const shelfLifeOkSql = (iwsAlias: string) => `(
+      ${iwsAlias}.shelf_life_pct IS NULL
+      OR NOT EXISTS (
+        SELECT 1 FROM customer_require_shelflife crs
+        WHERE crs.cust_group_code IN (?, ?, ?)
+          AND crs.item_group_code IN (i.item_cat01, i.item_cat02, i.item_cat03, i.item_cat04, i.item_cat05, i.item_cat06)
+          AND (crs.valid_from IS NULL OR crs.valid_from <= CURDATE())
+          AND (crs.valid_to IS NULL OR crs.valid_to >= CURDATE())
+          AND (
+            (crs.shelf_life_from IS NOT NULL AND ${iwsAlias}.shelf_life_pct < crs.shelf_life_from)
+            OR (crs.shelf_life_to IS NOT NULL AND ${iwsAlias}.shelf_life_pct > crs.shelf_life_to)
+          )
+      )
+    )`;
+
     if (stockWarehouseCodes.length > 0) {
+      // Shelf-life gate, nested inside the same EXISTS: a batch's stock only
+      // counts toward "available" if it clears every CURRENTLY-VALID
+      // customer_require_shelflife rule that applies to this (customer,
+      // item) pair — matched the same way discounts are (any of the
+      // customer's group levels, any of the item's group levels; see the
+      // GET docstring's "Stock gate" paragraph). iws.shelf_life_pct IS NULL
+      // (not batch-managed, or no batch data at all) always counts — same
+      // fail-open default as the rest of this gate.
       whereClauses.push(`EXISTS (
         SELECT 1 FROM item_warehouse_stock iws
         WHERE iws.sap_item_code = i.sap_item_code
           AND iws.warehouse_code IN (${stockWarehouseCodes.map(() => "?").join(",")})
+          AND ${shelfLifeOkSql("iws")}
         GROUP BY iws.sap_item_code
         HAVING SUM(iws.in_stock - iws.committed) > 0
       )`);
-      params.push(...stockWarehouseCodes);
+      params.push(...stockWarehouseCodes, cusGrp01, cusGrp02, cusGrp03);
     }
 
     if (search) {
@@ -386,7 +415,8 @@ export async function GET(request: NextRequest) {
       stockWarehouseCodes.length > 0
         ? `(SELECT SUM(iws.in_stock - iws.committed) FROM item_warehouse_stock iws
             WHERE iws.sap_item_code = i.sap_item_code
-              AND iws.warehouse_code IN (${stockWarehouseCodes.map(() => "?").join(",")}))`
+              AND iws.warehouse_code IN (${stockWarehouseCodes.map(() => "?").join(",")})
+              AND ${shelfLifeOkSql("iws")})`
         : "NULL";
 
     const rows = await query<ProductRow[]>(
@@ -468,7 +498,7 @@ export async function GET(request: NextRequest) {
        ORDER BY i.item_name_vi ASC
        LIMIT ?${sortByDiscount ? "" : " OFFSET ?"}`,
       [
-        ...(stockWarehouseCodes.length > 0 ? stockWarehouseCodes : []), // available_qty subquery (SELECT list — comes first in the SQL text)
+        ...(stockWarehouseCodes.length > 0 ? [...stockWarehouseCodes, cusGrp01, cusGrp02, cusGrp03] : []), // available_qty subquery (SELECT list — comes first in the SQL text)
         priceListNum ?? basePriceListNum, // cp.price_list_num
         priceListNum ?? basePriceListNum, // period_discount.price_list_num (same list — SAP scopes these per price list, not per customer)
         custCode, grp01, grp02, grp03, // contract WHERE u_code_cust IN list

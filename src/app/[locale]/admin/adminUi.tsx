@@ -61,6 +61,7 @@ export const ORDER_STATUS_LABELS: Record<string, string> = {
   approved: "Approved",
   rejected: "Rejected",
   completed: "Completed",
+  cancelled: "Cancelled by Customer",
 };
 
 export function Badge({ label, tone }: { label: string; tone: "success" | "warning" | "error" | "neutral" }) {

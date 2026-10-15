@@ -2,6 +2,7 @@
 
 import { useTranslations, useLocale } from "next-intl";
 import { useCart, CartItem } from "@/hooks/useCart";
+import { useShowAvailable } from "@/hooks/useAppName";
 import type { ProductWithPricing } from "@/types/product";
 
 function formatPrice(amount: number): string {
@@ -16,8 +17,15 @@ export default function ProductCard({ product }: ProductCardProps) {
   const t = useTranslations();
   const locale = useLocale();
   const { addItem } = useCart();
+  const showAvailable = useShowAvailable();
 
-  const name = locale === "vi" ? product.itemNameVi : product.itemNameEn;
+  // SAP only ever carries one (Vietnamese) item name — item_name_en is never
+  // populated by the sync (see syncItems in sap-b1/sync.ts), so on an "en"
+  // locale this always falls through to the Vietnamese name rather than the
+  // raw SAP item code. Same fallback chain as ReorderButton.
+  const name =
+    (locale === "vi" ? product.itemNameVi : product.itemNameEn) ||
+    product.itemNameVi || product.itemNameEn;
   const hasDiscount = product.specialPrice !== null && product.specialPrice < product.basePrice;
   const displayPrice = hasDiscount ? product.specialPrice! : product.basePrice;
   const discountPercent = hasDiscount
@@ -102,8 +110,11 @@ export default function ProductCard({ product }: ProductCardProps) {
         {/* Available stock — only rendered once stock tracking is active for
             this customer (availableQty is null otherwise, e.g. no warehouse
             configured yet); an out-of-stock item never reaches this card at
-            all, the storefront's stock gate already excludes it. */}
-        {product.availableQty !== null && product.availableQty !== undefined && (
+            all, the storefront's stock gate already excludes it. Admin can
+            also hide this line entirely via config.json's admin.showAvailable
+            (e.g. this business wants customers ordering freely, not anchored
+            to an exact stock figure), independent of the gate itself. */}
+        {showAvailable && product.availableQty !== null && product.availableQty !== undefined && (
           <div className="product-card__stock" style={{ fontSize: "0.75rem", color: "var(--text-tertiary)", marginTop: "0.25rem" }}>
             {t("product.stockAvailable", { qty: product.availableQty, uom: product.uom || "" })}
           </div>

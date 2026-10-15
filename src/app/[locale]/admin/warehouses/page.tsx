@@ -19,11 +19,16 @@ interface StockRow {
   committed: string;
   ordered: string;
   available: string;
+  shelf_life_pct: string | null;
   last_synced: string | null;
 }
 
 function formatQty(v: string) {
   return new Intl.NumberFormat("vi-VN").format(Number(v));
+}
+
+function formatShelfLife(v: string | null) {
+  return v === null ? "—" : `${Number(v).toFixed(1)}%`;
 }
 
 export default function WarehousesPage() {
@@ -178,6 +183,7 @@ export default function WarehousesPage() {
                       <th style={styles.th}>Committed</th>
                       <th style={styles.th}>Ordered</th>
                       <th style={styles.th}>Available</th>
+                      <th style={styles.th}>Shelf-life %</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -192,6 +198,7 @@ export default function WarehousesPage() {
                         <td style={styles.td}>{formatQty(r.committed)}</td>
                         <td style={styles.td}>{formatQty(r.ordered)}</td>
                         <td style={{ ...styles.td, fontWeight: 600 }}>{formatQty(r.available)}</td>
+                        <td style={styles.td}>{formatShelfLife(r.shelf_life_pct)}</td>
                       </tr>
                     ))}
                   </tbody>

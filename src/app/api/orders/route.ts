@@ -11,6 +11,12 @@ interface OrderLineInput {
   /** Pre-discount price, used only to compute the order's subtotal/discount. */
   originalPrice?: number;
   discountPercent: number;
+  /** Buy-X-get-Y linkage — see order_lines in schema.sql. */
+  isGift?: boolean;
+  promoBuyQty?: number;
+  promoGiveQty?: number;
+  /** Set only on a gift line — the sapItemCode of the "buy" line (earlier in this same `lines` array) it came from. */
+  sourceSapItemCode?: string;
 }
 
 /**
@@ -121,15 +127,29 @@ export async function POST(request: NextRequest) {
         [orderId]
       );
 
+      // Buy lines are always listed before their gift line (see the
+      // checkout page's flatMap), so by the time a gift line is reached
+      // its "buy" line's own just-inserted id is already in this map.
+      const lineIdBySapItemCode = new Map<string, number>();
       for (const line of roundedLines) {
-        await conn.execute(
-          `INSERT INTO order_lines (order_id, sap_item_code, item_name, quantity, uom, base_unit_price, unit_price, discount_percent, line_total)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        const sourceLineId = line.isGift && line.sourceSapItemCode
+          ? lineIdBySapItemCode.get(line.sourceSapItemCode) ?? null
+          : null;
+
+        const [lineResult] = await conn.execute(
+          `INSERT INTO order_lines (
+             order_id, sap_item_code, item_name, quantity, uom, base_unit_price, unit_price, discount_percent, line_total, confirm_qty,
+             is_gift_line, source_line_id, promo_buy_qty, promo_give_qty)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             orderId, line.sapItemCode, line.itemName, line.quantity, line.uom,
-            line.baseUnitPrice, line.netUnitPrice, line.discountPercent || 0, line.lineTotal,
+            line.baseUnitPrice, line.netUnitPrice, line.discountPercent || 0, line.lineTotal, line.quantity,
+            !!line.isGift, sourceLineId, line.promoBuyQty ?? null, line.promoGiveQty ?? null,
           ]
         );
+        if (!line.isGift) {
+          lineIdBySapItemCode.set(line.sapItemCode, (lineResult as { insertId: number }).insertId);
+        }
       }
 
       await conn.commit();

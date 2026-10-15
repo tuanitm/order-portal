@@ -8,6 +8,62 @@ interface HistoryEntry {
   created_at: string;
 }
 
+/** The order's normal, in-order lifecycle. "draft"/"rejected"/"cancelled"
+ * are deliberately excluded — draft orders are never shown to the
+ * customer, and rejected/cancelled are alternate endings appended after
+ * whichever of these stages the order actually reached (see RoadmapStep
+ * below), not steps on this main line. */
+const LIFECYCLE_STAGES = ["submitted", "processing", "sap_draft_created", "approved", "completed"];
+
+interface RoadmapStep {
+  status: string;
+  /** Real timestamp if this exact status has a history row, otherwise null
+   * for a stage that's either upcoming, or already passed through without
+   * ever being recorded on its own (e.g. an order pushed straight from
+   * "submitted" to "sap_draft_created" skips recording "processing"). */
+  time: string | null;
+  done: boolean;
+  /** The branch an order left the main lifecycle on, if any. */
+  isException?: "rejected" | "cancelled";
+}
+
+/** Turns the raw history rows into the full fixed-stage roadmap: every
+ * lifecycle stage up to and including the furthest one reached is marked
+ * done (using its own recorded time where one exists), everything after
+ * it is upcoming. If the order was rejected/cancelled, that's appended as
+ * a final, distinctly-styled step and nothing further down the normal
+ * lifecycle is shown, since it will now never happen. */
+function buildRoadmap(history: HistoryEntry[]): RoadmapStep[] {
+  const timeByStatus = new Map<string, string>();
+  for (const h of history) {
+    if (!timeByStatus.has(h.status)) timeByStatus.set(h.status, h.created_at);
+  }
+
+  const exception = history.find((h) => h.status === "rejected" || h.status === "cancelled");
+
+  const maxReachedIndex = history.reduce((max, h) => {
+    const idx = LIFECYCLE_STAGES.indexOf(h.status);
+    return idx > max ? idx : max;
+  }, -1);
+
+  const steps: RoadmapStep[] = LIFECYCLE_STAGES.map((status, i) => ({
+    status,
+    time: timeByStatus.get(status) ?? null,
+    done: i <= maxReachedIndex,
+  })).filter((step) => !exception || step.done); // stages after the exception never happened
+
+  if (exception) {
+    steps.push({
+      status: exception.status,
+      time: exception.created_at,
+      done: true,
+      isException: exception.status as "rejected" | "cancelled",
+    });
+  }
+
+  return steps;
+}
+
 function formatDateTime(dateString: string, locale: string): string {
   return new Date(dateString).toLocaleString(locale === "vi" ? "vi-VN" : "en-US", {
     year: "numeric", month: "2-digit", day: "2-digit",
@@ -16,18 +72,27 @@ function formatDateTime(dateString: string, locale: string): string {
 }
 
 /**
- * The order's status label, clickable: opens a popup timeline of every
- * status the order has been through, newest at the top and the original
- * "submitted" step at the bottom, each with its time.
+ * The order's status label, clickable: opens a popup showing the FULL
+ * order lifecycle roadmap (submitted → processing → pushed to SAP →
+ * confirmed → completed) top to bottom, each stage already reached shown
+ * with its real date/time and each stage not yet reached shown greyed
+ * out with no time. If the order was rejected or cancelled, that's shown
+ * as a final step after whatever stages it actually reached, and nothing
+ * further down the normal lifecycle is rendered.
  */
 export default function OrderStatusBadge({
   orderId,
   status,
   large = false,
+  clickable = true,
 }: {
   orderId: number;
   status: string;
   large?: boolean;
+  /** false on the orders list page — the status history popup is only
+   * reachable after opening an order's own detail page, so the list's
+   * badge is a plain label there, not a button. */
+  clickable?: boolean;
 }) {
   const t = useTranslations();
   const locale = useLocale();
@@ -50,6 +115,20 @@ export default function OrderStatusBadge({
       setIsLoading(false);
     }
   };
+
+  if (!clickable) {
+    return (
+      <span
+        className={`status-badge status-badge--${status}`}
+        style={{
+          fontWeight: 600,
+          ...(large ? { fontSize: "0.875rem", padding: "0.5rem 1rem" } : {}),
+        }}
+      >
+        {label(status)}
+      </span>
+    );
+  }
 
   return (
     <>
@@ -101,30 +180,53 @@ export default function OrderStatusBadge({
               <div style={{ textAlign: "center", padding: "1.5rem", color: "var(--text-tertiary)" }}>
                 {t("common.loading")}
               </div>
-            ) : (
-              <ol style={{ listStyle: "none", margin: 0, padding: 0 }}>
-                {(history ?? []).map((h, i, arr) => (
-                  <li key={`${h.status}-${h.created_at}-${i}`} style={{ display: "flex", gap: "0.875rem" }}>
-                    <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
-                      <div style={{
-                        width: 14, height: 14, borderRadius: "50%", flexShrink: 0, marginTop: 4,
-                        background: i === 0 ? "var(--color-primary, #2BBCB3)" : "var(--color-gray-300, #CBD5E1)",
-                        boxShadow: i === 0 ? "0 0 0 4px var(--color-primary-50, #E8F8F7)" : "none",
-                      }} />
-                      {i < arr.length - 1 && (
-                        <div style={{ width: 2, flex: 1, minHeight: 28, background: "var(--color-gray-200, #E2E8F0)" }} />
-                      )}
-                    </div>
-                    <div style={{ paddingBottom: i < arr.length - 1 ? "1.25rem" : 0 }}>
-                      <div style={{ fontWeight: i === 0 ? 700 : 600, fontSize: "0.9375rem" }}>{label(h.status)}</div>
-                      <div style={{ fontSize: "0.75rem", color: "var(--text-tertiary, #94A3B8)" }}>
-                        {formatDateTime(h.created_at, locale)}
-                      </div>
-                    </div>
-                  </li>
-                ))}
-              </ol>
-            )}
+            ) : (() => {
+              const roadmap = buildRoadmap(history ?? []);
+              const currentIndex = roadmap.reduce((last, s, i) => (s.done ? i : last), -1);
+              return (
+                <ol style={{ listStyle: "none", margin: 0, padding: 0 }}>
+                  {roadmap.map((step, i, arr) => {
+                    const isCurrent = i === currentIndex;
+                    const dotBg = step.isException
+                      ? "#DC2626"
+                      : step.done
+                        ? "var(--color-primary, #2BBCB3)"
+                        : "var(--bg-primary, #fff)";
+                    const dotBorder = step.done || step.isException
+                      ? "none"
+                      : "2px solid var(--color-gray-300, #CBD5E1)";
+                    return (
+                      <li key={step.status} style={{ display: "flex", gap: "0.875rem" }}>
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
+                          <div style={{
+                            width: 14, height: 14, borderRadius: "50%", flexShrink: 0, marginTop: 4,
+                            background: dotBg, border: dotBorder,
+                            boxShadow: isCurrent ? "0 0 0 4px var(--color-primary-50, #E8F8F7)" : "none",
+                          }} />
+                          {i < arr.length - 1 && (
+                            <div style={{
+                              width: 2, flex: 1, minHeight: 28,
+                              background: step.done ? "var(--color-primary, #2BBCB3)" : "var(--color-gray-200, #E2E8F0)",
+                            }} />
+                          )}
+                        </div>
+                        <div style={{ paddingBottom: i < arr.length - 1 ? "1.25rem" : 0, opacity: step.done ? 1 : 0.55 }}>
+                          <div style={{
+                            fontWeight: isCurrent ? 700 : 600, fontSize: "0.9375rem",
+                            color: step.isException ? "#DC2626" : undefined,
+                          }}>
+                            {label(step.status)}
+                          </div>
+                          <div style={{ fontSize: "0.75rem", color: "var(--text-tertiary, #94A3B8)" }}>
+                            {step.time ? formatDateTime(step.time, locale) : t("order.statusUpcoming")}
+                          </div>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ol>
+              );
+            })()}
           </div>
         </div>
       )}

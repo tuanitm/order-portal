@@ -3,16 +3,25 @@
 import { useEffect, useState } from "react";
 import { useTranslations } from "next-intl";
 
-let prefixPromise: Promise<string> | null = null;
+interface AppInfo {
+  companyPrefix: string;
+  showAvailable: boolean;
+}
 
-function fetchCompanyPrefix(): Promise<string> {
-  if (!prefixPromise) {
-    prefixPromise = fetch("/api/app-info")
-      .then((res) => (res.ok ? res.json() : { companyPrefix: "" }))
-      .then((data) => (typeof data.companyPrefix === "string" ? data.companyPrefix : ""))
-      .catch(() => "");
+let appInfoPromise: Promise<AppInfo> | null = null;
+
+/** One shared, memoized fetch of /api/app-info for every hook below. */
+function fetchAppInfo(): Promise<AppInfo> {
+  if (!appInfoPromise) {
+    appInfoPromise = fetch("/api/app-info")
+      .then((res) => (res.ok ? res.json() : { companyPrefix: "", showAvailable: true }))
+      .then((data) => ({
+        companyPrefix: typeof data.companyPrefix === "string" ? data.companyPrefix : "",
+        showAvailable: typeof data.showAvailable === "boolean" ? data.showAvailable : true,
+      }))
+      .catch(() => ({ companyPrefix: "", showAvailable: true }));
   }
-  return prefixPromise;
+  return appInfoPromise;
 }
 
 /** `admin.companyPrefix` from config.json ("" until loaded / if unset). */
@@ -21,8 +30,8 @@ export function useCompanyPrefix(): string {
 
   useEffect(() => {
     let cancelled = false;
-    fetchCompanyPrefix().then((p) => {
-      if (!cancelled) setPrefix(p);
+    fetchAppInfo().then((info) => {
+      if (!cancelled) setPrefix(info.companyPrefix);
     });
     return () => {
       cancelled = true;
@@ -30,6 +39,28 @@ export function useCompanyPrefix(): string {
   }, []);
 
   return prefix;
+}
+
+/**
+ * Whether the storefront should show the available-stock line on product
+ * cards (`admin.showAvailable` in config.json, hidden only when explicitly
+ * "No"). Defaults to `true` until loaded, so the line doesn't flash in then
+ * disappear for the common case where it's enabled.
+ */
+export function useShowAvailable(): boolean {
+  const [showAvailable, setShowAvailable] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchAppInfo().then((info) => {
+      if (!cancelled) setShowAvailable(info.showAvailable);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return showAvailable;
 }
 
 /**

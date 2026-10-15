@@ -120,16 +120,110 @@ export async function syncWarehouses(): Promise<{ warehousesSynced: number }> {
 }
 
 /**
+ * Pull Distribution Rule codes ("Profit Centers") for dimensions 1 (Brand),
+ * 2 (Department) and 3 (Customer) from SAP B1 — see SapProfitCenter's own
+ * comment for how that mapping was confirmed. Brand feeds items.
+ * brand_code's own validity (display only, not enforced) and the Admin
+ * Order page's Brand column; Department feeds the dropdown on the Admin
+ * Users page for admin_users.department_code; Customer (dimension 3's
+ * CenterCode IS the BP's own CardCode — confirmed empirically) is only
+ * ever looked up by exact CardCode at confirm time (see POST
+ * .../confirm), never shown as a dropdown, so it's synced for validation
+ * only — to confirm a given customer actually HAS a dimension-3 cost
+ * center before sending CostingCode3/COGSCostingCode3, rather than
+ * sending an unmapped CardCode and risking SAP rejecting the whole push.
+ */
+export async function syncCostCenters(): Promise<{ costCentersSynced: number }> {
+  const sap = getSapClient();
+  const pool = getPool();
+  const [brands, departments, customers] = await Promise.all([
+    sap.getProfitCenters(1),
+    sap.getProfitCenters(2),
+    sap.getProfitCenters(3),
+  ]);
+  const rows = [...brands, ...departments, ...customers];
+
+  const conn = await pool.getConnection();
+  try {
+    await conn.beginTransaction();
+    // Dimensions 1/2/3 are fully replaced by what SAP returns right now —
+    // same "deactivate then reactivate what's current" shape as other
+    // master-list syncs, but via delete+reinsert since there's no
+    // is_active-only toggle semantics to preserve here.
+    await conn.query(`DELETE FROM cost_centers WHERE dimension IN (1, 2, 3)`);
+    for (const r of rows) {
+      await conn.execute(
+        `INSERT INTO cost_centers (ocr_code, dimension, ocr_name, is_active, last_synced)
+         VALUES (?, ?, ?, ?, NOW())`,
+        [r.CenterCode, r.InWhichDimension, r.CenterName, r.Active === "tYES"]
+      );
+    }
+    await conn.commit();
+    return { costCentersSynced: rows.length };
+  } catch (error) {
+    await conn.rollback();
+    throw error;
+  } finally {
+    conn.release();
+  }
+}
+
+const MS_PER_DAY = 86400000;
+
+/** SAP returns batch dates as "YYYYMMDD" (no separators) over SQLQueries — parse to a UTC timestamp, or null if missing/malformed. */
+function parseSapBatchDate(dateStr: string | null): number | null {
+  if (!dateStr || dateStr.length !== 8) return null;
+  const ms = Date.UTC(Number(dateStr.slice(0, 4)), Number(dateStr.slice(4, 6)) - 1, Number(dateStr.slice(6, 8)));
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/**
+ * % of a batch's total shelf life (MnfDate -> ExpDate) still remaining as
+ * of today, clamped to [0,100]. Null if either date is missing or ExpDate
+ * isn't after MnfDate (can't express a shelf-life span at all). Exported
+ * for the admin Order Review page's live (uncached) stock check — see
+ * src/app/api/admin/orders/[id]/stock/route.ts.
+ */
+export function computeBatchShelfLifePct(mnfDate: string | null, expDate: string | null): number | null {
+  const mnf = parseSapBatchDate(mnfDate);
+  const exp = parseSapBatchDate(expDate);
+  if (mnf === null || exp === null || exp <= mnf) return null;
+  const totalDays = (exp - mnf) / MS_PER_DAY;
+  const remainingDays = (exp - Date.now()) / MS_PER_DAY;
+  return Math.max(0, Math.min(100, (remainingDays / totalDays) * 100));
+}
+
+/**
  * Pull per-item, per-warehouse on-hand/committed/on-order stock from SAP
- * (OITW via SQLQueries — see client.getInventoryStock) and replace the
- * `item_warehouse_stock` cache wholesale. This is what the storefront's
- * stock gate (src/app/api/products/route.ts) reads — see
- * defaultWarehouseIncluded/syncWarehouses for which warehouses count.
+ * (OITW via SQLQueries — see client.getInventoryStock), scoped to
+ * config.json's masterdata.itemGroup/wareHouse, and replace the
+ * `item_warehouse_stock` cache wholesale (full delete + re-insert — same
+ * reasoning as syncWarehouses: stock for an item/warehouse dropped from
+ * either list must not linger as stale leftover data).
+ *
+ * Also pulls raw batch on-hand qty + dates (client.getBatchStock) and folds
+ * in each row's `shelf_life_pct`: the WORST (lowest) remaining-shelf-life %
+ * among that item/warehouse's batches with qty > 0 — see
+ * computeBatchShelfLifePct and schema.sql's column comment for why MIN, and
+ * why the % itself is computed here in JS rather than in the SAP query.
  */
 export async function syncInventoryStock(): Promise<{ rowsSynced: number }> {
   const sap = getSapClient();
   const pool = getPool();
-  const rows = await sap.getInventoryStock();
+  const masterdata = loadConfig().masterdata;
+  const [rows, batchRows] = await Promise.all([
+    sap.getInventoryStock(masterdata.itemGroup, masterdata.wareHouse),
+    sap.getBatchStock(masterdata.itemGroup, masterdata.wareHouse),
+  ]);
+
+  const shelfLifeByKey = new Map<string, number>();
+  for (const b of batchRows) {
+    const pct = computeBatchShelfLifePct(b.mnf_date, b.exp_date);
+    if (pct === null) continue;
+    const key = `${b.item_code}|${b.warehouse_code}`;
+    const existing = shelfLifeByKey.get(key);
+    if (existing === undefined || pct < existing) shelfLifeByKey.set(key, pct);
+  }
 
   const conn = await pool.getConnection();
   try {
@@ -141,9 +235,12 @@ export async function syncInventoryStock(): Promise<{ rowsSynced: number }> {
     const CHUNK = 500;
     for (let i = 0; i < rows.length; i += CHUNK) {
       const chunk = rows.slice(i, i + CHUNK);
-      const values = chunk.map((r) => [r.item_code, r.warehouse_code, r.in_stock, r.committed, r.ordered]);
+      const values = chunk.map((r) => [
+        r.item_code, r.warehouse_code, r.in_stock, r.committed, r.ordered,
+        shelfLifeByKey.get(`${r.item_code}|${r.warehouse_code}`) ?? null,
+      ]);
       await conn.query(
-        `INSERT INTO item_warehouse_stock (sap_item_code, warehouse_code, in_stock, committed, ordered, last_synced)
+        `INSERT INTO item_warehouse_stock (sap_item_code, warehouse_code, in_stock, committed, ordered, shelf_life_pct, last_synced)
          VALUES ?`,
         [values.map((v) => [...v, new Date()])]
       );
@@ -243,8 +340,8 @@ export async function syncItems(): Promise<{ itemsSynced: number }> {
           `INSERT INTO items (
              sap_item_code, item_name_vi, uom, category, items_group_code,
              item_cat01, item_cat02, item_cat03, item_cat04, item_cat05, item_cat06,
-             base_price, image_url, is_active, last_synced)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE, NOW())
+             base_price, image_url, brand_code, vat_group, item_tax_class, is_active, last_synced)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE, NOW())
            ON DUPLICATE KEY UPDATE
              item_name_vi = VALUES(item_name_vi),
              uom = VALUES(uom),
@@ -255,6 +352,9 @@ export async function syncItems(): Promise<{ itemsSynced: number }> {
              item_cat05 = VALUES(item_cat05), item_cat06 = VALUES(item_cat06),
              base_price = VALUES(base_price),
              image_url = VALUES(image_url),
+             brand_code = VALUES(brand_code),
+             vat_group = VALUES(vat_group),
+             item_tax_class = VALUES(item_tax_class),
              is_active = TRUE,
              last_synced = NOW()`,
           [
@@ -271,6 +371,9 @@ export async function syncItems(): Promise<{ itemsSynced: number }> {
             item.U_ItemCat06 || null,
             basePrice,
             item.U_ImageURL?.trim() || null,
+            item.U_ProdBrand || null,
+            item.SalesVATGroup || null,
+            item.U_ItemTaxClass || null,
           ]
         );
 

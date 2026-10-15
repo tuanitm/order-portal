@@ -21,7 +21,7 @@ export async function GET(request: NextRequest) {
   const rows = await query(
     `SELECT iws.warehouse_code, w.warehouse_name, w.is_included,
             iws.in_stock, iws.committed, iws.ordered,
-            (iws.in_stock - iws.committed) AS available, iws.last_synced
+            (iws.in_stock - iws.committed) AS available, iws.shelf_life_pct, iws.last_synced
      FROM item_warehouse_stock iws
      LEFT JOIN warehouses w ON w.sap_warehouse_code = iws.warehouse_code
      WHERE iws.sap_item_code = ?

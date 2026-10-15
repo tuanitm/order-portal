@@ -66,21 +66,23 @@ export default function HomePage() {
   return (
     <div className="page">
       <div className="container">
-        {/* Hero Section */}
+        {/* Hero Section — sized at ~70% of its original height (padding,
+            margin and font sizes all scaled down together) so more product
+            cards are visible without scrolling. */}
         <section style={{
           background: "linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-dark) 50%, #167872 100%)",
           borderRadius: "var(--radius-2xl)",
-          padding: "3rem 2.5rem",
-          marginBottom: "2rem",
+          padding: "2.1rem 1.75rem",
+          marginBottom: "1.4rem",
           color: "white",
           position: "relative",
           overflow: "hidden",
         }} id="hero-section">
           <div style={{ position: "relative", zIndex: 1 }}>
             <h1 style={{
-              fontSize: "clamp(1.5rem, 4vw, 2.25rem)",
+              fontSize: "clamp(1.05rem, 2.8vw, 1.575rem)",
               fontWeight: 800,
-              marginBottom: "0.75rem",
+              marginBottom: "0.525rem",
               lineHeight: 1.2,
             }}>
               {locale === "vi"
@@ -88,7 +90,7 @@ export default function HomePage() {
                 : "Fast & Convenient Ordering"}
             </h1>
             <p style={{
-              fontSize: "1rem",
+              fontSize: "0.875rem",
               opacity: 0.9,
               maxWidth: "500px",
               lineHeight: 1.6,
@@ -98,15 +100,15 @@ export default function HomePage() {
                 : "Browse products, add to cart and place orders directly. Orders are processed and confirmed quickly."}
             </p>
           </div>
-          {/* Decorative circles */}
+          {/* Decorative circles — scaled down to match the smaller banner */}
           <div style={{
-            position: "absolute", top: "-40px", right: "-40px",
-            width: "200px", height: "200px", borderRadius: "50%",
+            position: "absolute", top: "-28px", right: "-28px",
+            width: "140px", height: "140px", borderRadius: "50%",
             background: "rgba(255,255,255,0.08)",
           }} />
           <div style={{
-            position: "absolute", bottom: "-60px", right: "100px",
-            width: "150px", height: "150px", borderRadius: "50%",
+            position: "absolute", bottom: "-42px", right: "70px",
+            width: "105px", height: "105px", borderRadius: "50%",
             background: "rgba(255,255,255,0.05)",
           }} />
         </section>
