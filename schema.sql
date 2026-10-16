@@ -431,10 +431,13 @@ CREATE TABLE IF NOT EXISTS orders (
   discount_total DECIMAL(18,2) DEFAULT 0,
   grand_total DECIMAL(18,2) DEFAULT 0,
   remark TEXT,
-  status ENUM('draft','submitted','processing','sap_draft_created','approved','rejected','completed','cancelled')
+  status ENUM('draft','submitted','processing','sap_draft_created','approved','delivered','rejected','completed','cancelled')
          DEFAULT 'draft',
   sap_doc_entry INT,
   sap_doc_num INT,
+  -- SAP-generated Sales Order number (U_DocNo, e.g. "SOO261015001") — filled
+  -- by the sync-status cron/manual button after the draft is approved in SAP.
+  sap_so_number VARCHAR(50) NULL,
   language ENUM('vi', 'en') DEFAULT 'vi',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -444,7 +447,8 @@ CREATE TABLE IF NOT EXISTS orders (
   INDEX idx_order_number (order_number)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 -- Migration for an existing DB:
--- ALTER TABLE orders MODIFY COLUMN status ENUM('draft','submitted','processing','sap_draft_created','approved','rejected','completed','cancelled') DEFAULT 'draft';
+-- ALTER TABLE orders MODIFY COLUMN status ENUM('draft','submitted','processing','sap_draft_created','approved','delivered','rejected','completed','cancelled') DEFAULT 'draft';
+-- ALTER TABLE orders ADD COLUMN sap_so_number VARCHAR(50) NULL AFTER sap_doc_num;
 
 -- Order Lines
 CREATE TABLE IF NOT EXISTS order_lines (
@@ -490,6 +494,40 @@ CREATE TABLE IF NOT EXISTS order_lines (
   source_line_id INT NULL,
   promo_buy_qty INT NULL,
   promo_give_qty INT NULL,
+  -- Excel Import (storefront "Excel Import" feature): the uploaded file's
+  -- Remark column for this row. NULL for every line created through the
+  -- normal manual add-to-cart/Reorder flow, which has no remark concept.
+  -- Unrelated to and independent of orders.remark (order-level).
+  remark VARCHAR(500) NULL,
+  -- Per-discount-type % breakdown, snapshotted at order-creation time from
+  -- the same waterfall src/app/api/products/route.ts already computes
+  -- (Channel -> Period -> Contract -> Promotion) — previously only the
+  -- COMBINED discount_percent above was persisted. Lets Admin - Order show
+  -- which discount type(s) actually applied instead of one opaque %. NULL
+  -- on legacy rows predating this column and on gift lines (unit_price is
+  -- always 0, so no waterfall percent is meaningful there).
+  period_disc_pct DECIMAL(5,2) NULL,
+  contract_disc_pct DECIMAL(5,2) NULL,
+  promo_disc_pct DECIMAL(5,2) NULL,
+  -- Which specific promotion_discount PROGRAM (doc_entry/promotion_code,
+  -- NOT a single rule row) the customer chose on the product card, when an
+  -- item qualified for more than one at once — see
+  -- src/lib/pricing/productPricing.ts's promotionOptions/giveawayOptions.
+  -- Plain denormalized code+name (not an FK): promotion_discount is a
+  -- bulk-synced cache table, fully replaced on every sync, so a row-level
+  -- FK would dangle after the very next sync even though the PROGRAM
+  -- (promotion_code) itself is still perfectly identifiable. promotion_code
+  -- covers the percent-discount program on this line; giveaway_promotion_code
+  -- covers the (independent) buy-X-get-Y program that attached this line's
+  -- gift line, if any — a single buy line can draw its % discount from one
+  -- program and its free gift from a completely different one. NULL means
+  -- either no program applied, or (for legacy rows predating this column)
+  -- the choice was never recorded — the SAP push falls back to today's
+  -- auto-best-match in that case (see POST .../confirm).
+  promotion_code VARCHAR(50) NULL,
+  promotion_name VARCHAR(255) NULL,
+  giveaway_promotion_code VARCHAR(50) NULL,
+  giveaway_promotion_name VARCHAR(255) NULL,
   FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
   FOREIGN KEY (source_line_id) REFERENCES order_lines(id) ON DELETE SET NULL,
   INDEX idx_order (order_id)
@@ -504,6 +542,14 @@ CREATE TABLE IF NOT EXISTS order_lines (
 -- ALTER TABLE order_lines ADD COLUMN promo_buy_qty INT NULL AFTER source_line_id;
 -- ALTER TABLE order_lines ADD COLUMN promo_give_qty INT NULL AFTER promo_buy_qty;
 -- ALTER TABLE order_lines ADD FOREIGN KEY (source_line_id) REFERENCES order_lines(id) ON DELETE SET NULL;
+-- ALTER TABLE order_lines ADD COLUMN remark VARCHAR(500) NULL AFTER promo_give_qty;
+-- ALTER TABLE order_lines ADD COLUMN period_disc_pct DECIMAL(5,2) NULL AFTER remark;
+-- ALTER TABLE order_lines ADD COLUMN contract_disc_pct DECIMAL(5,2) NULL AFTER period_disc_pct;
+-- ALTER TABLE order_lines ADD COLUMN promo_disc_pct DECIMAL(5,2) NULL AFTER contract_disc_pct;
+-- ALTER TABLE order_lines ADD COLUMN promotion_code VARCHAR(50) NULL AFTER promo_disc_pct;
+-- ALTER TABLE order_lines ADD COLUMN promotion_name VARCHAR(255) NULL AFTER promotion_code;
+-- ALTER TABLE order_lines ADD COLUMN giveaway_promotion_code VARCHAR(50) NULL AFTER promotion_name;
+-- ALTER TABLE order_lines ADD COLUMN giveaway_promotion_name VARCHAR(255) NULL AFTER giveaway_promotion_code;
 
 -- Order Status History — one row per status an order has entered (including
 -- the initial 'submitted'), so the customer's "Đơn hàng của tôi" status popup

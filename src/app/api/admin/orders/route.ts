@@ -33,9 +33,12 @@ export async function GET(request: NextRequest) {
 
   const orders = await query(
     `SELECT o.id, o.order_number, o.customer_name, o.subtotal, o.discount_total, o.grand_total,
-            o.status, o.sap_doc_entry, o.sap_doc_num, o.created_at, u.email AS customer_email, u.sap_card_code
+            o.status, o.sap_doc_entry, o.sap_doc_num, o.sap_so_number, o.created_at,
+            u.email AS customer_email, u.sap_card_code,
+            c.card_name AS sap_card_name
      FROM orders o
      LEFT JOIN users u ON u.id = o.user_id
+     LEFT JOIN customers c ON c.sap_card_code = u.sap_card_code
      ${whereSql}
      ORDER BY o.created_at DESC
      LIMIT ? OFFSET ?`,

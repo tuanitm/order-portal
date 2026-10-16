@@ -15,7 +15,8 @@
     "search": "Search",
     "noResults": "No results found",
     "currency": "₫",
-    "all": "All"
+    "all": "All",
+    "row": "Row {n}"
   },
   "nav": {
     "home": "Home",
@@ -112,7 +113,32 @@
     "viewDetail": "View Details",
     "buyGetPromo": "Buy {buyQty} get {giveQty} {giveItem} free",
     "buyGetSamePromo": "Buy {buyQty} get {giveQty} free (same item)",
-    "stockAvailable": "In stock: {qty} {uom}"
+    "stockAvailable": "In stock: {qty} {uom}",
+    "choosePromotion": "Choose promotion program",
+    "chooseGiveaway": "Choose bonus-item program"
+  },
+  "import": {
+    "button": "Excel Import",
+    "modalTitle": "Import Order from Excel",
+    "downloadTemplate": "Download Template",
+    "uploadLabel": "Upload an Excel file (.xlsx) with your order — download the template below if you don't have one yet.",
+    "parsing": "Reading file...",
+    "parseError": "Could not read this file — make sure it has Item Code and Quantity columns.",
+    "tooManyCodes": "This file has {count} items — the maximum per import is {max}.",
+    "matchedCount": "{count} items ready to import",
+    "unavailableTitle": "Not available ({count})",
+    "unavailableHint": "These item codes were not found, are no longer sold, or are out of stock.",
+    "invalidTitle": "Invalid rows ({count})",
+    "invalidMissingCode": "Missing item code",
+    "invalidQuantity": "Invalid quantity",
+    "replaceCartWarning": "This will replace {count} existing item(s) in your cart.",
+    "replaceCartConfirm": "Replace Cart",
+    "cancel": "Cancel",
+    "confirmImport": "Confirm Import",
+    "columnItemCode": "Item Code",
+    "columnItemName": "Item Name",
+    "columnQuantity": "Quantity",
+    "columnRemark": "Remark"
   },
   "cart": {
     "title": "Shopping Cart",
@@ -147,7 +173,9 @@
     "submitting": "Submitting order...",
     "orderSuccess": "Order placed successfully!",
     "orderNumber": "Order Number",
-    "orderConfirmMessage": "Your order has been submitted successfully. We will contact you shortly to confirm."
+    "orderConfirmMessage": "Your order has been submitted successfully. We will contact you shortly to confirm.",
+    "splitIntoOrders": "Your cart will be placed as {count} separate orders, one per brand:",
+    "noBrand": "No brand"
   },
   "order": {
     "title": "My Orders",

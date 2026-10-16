@@ -15,7 +15,8 @@
     "search": "Tìm kiếm",
     "noResults": "Không tìm thấy kết quả",
     "currency": "₫",
-    "all": "Tất cả"
+    "all": "Tất cả",
+    "row": "Dòng {n}"
   },
   "nav": {
     "home": "Trang chủ",
@@ -112,7 +113,32 @@
     "viewDetail": "Xem chi tiết",
     "buyGetPromo": "Mua {buyQty} tặng {giveQty} {giveItem}",
     "buyGetSamePromo": "Mua {buyQty} tặng {giveQty} cùng loại",
-    "stockAvailable": "Còn {qty} {uom}"
+    "stockAvailable": "Còn {qty} {uom}",
+    "choosePromotion": "Chọn chương trình khuyến mãi",
+    "chooseGiveaway": "Chọn chương trình quà tặng"
+  },
+  "import": {
+    "button": "Nhập từ Excel",
+    "modalTitle": "Nhập đơn hàng từ Excel",
+    "downloadTemplate": "Tải mẫu nhập liệu",
+    "uploadLabel": "Tải lên file Excel (.xlsx) chứa đơn hàng của bạn — tải mẫu bên dưới nếu chưa có.",
+    "parsing": "Đang đọc file...",
+    "parseError": "Không thể đọc file này — vui lòng đảm bảo file có cột Mã hàng và Số lượng.",
+    "tooManyCodes": "File này có {count} sản phẩm — tối đa cho mỗi lần nhập là {max}.",
+    "matchedCount": "{count} sản phẩm sẵn sàng để nhập",
+    "unavailableTitle": "Không khả dụng ({count})",
+    "unavailableHint": "Các mã hàng này không tồn tại, không còn bán, hoặc đã hết hàng.",
+    "invalidTitle": "Dòng không hợp lệ ({count})",
+    "invalidMissingCode": "Thiếu mã hàng",
+    "invalidQuantity": "Số lượng không hợp lệ",
+    "replaceCartWarning": "Hành động này sẽ thay thế {count} sản phẩm hiện có trong giỏ hàng.",
+    "replaceCartConfirm": "Thay thế giỏ hàng",
+    "cancel": "Hủy",
+    "confirmImport": "Xác nhận nhập",
+    "columnItemCode": "Mã hàng",
+    "columnItemName": "Tên hàng",
+    "columnQuantity": "Số lượng",
+    "columnRemark": "Ghi chú"
   },
   "cart": {
     "title": "Giỏ hàng",
@@ -147,7 +173,9 @@
     "submitting": "Đang gửi đơn hàng...",
     "orderSuccess": "Đặt hàng thành công!",
     "orderNumber": "Mã đơn hàng",
-    "orderConfirmMessage": "Đơn hàng của bạn đã được gửi thành công. Chúng tôi sẽ liên hệ xác nhận trong thời gian sớm nhất."
+    "orderConfirmMessage": "Đơn hàng của bạn đã được gửi thành công. Chúng tôi sẽ liên hệ xác nhận trong thời gian sớm nhất.",
+    "splitIntoOrders": "Đơn hàng của bạn sẽ được tách thành {count} đơn riêng, mỗi đơn một thương hiệu:",
+    "noBrand": "Không có thương hiệu"
   },
   "order": {
     "title": "Đơn hàng của tôi",

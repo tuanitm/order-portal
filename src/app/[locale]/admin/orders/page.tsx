@@ -10,9 +10,11 @@ interface Order {
   customer_name: string | null;
   customer_email: string | null;
   sap_card_code: string | null;
+  sap_card_name: string | null;
   grand_total: string;
   status: string;
   sap_doc_num: number | null;
+  sap_so_number: string | null;
   created_at: string;
 }
 
@@ -83,9 +85,11 @@ export default function AdminOrdersPage() {
                 <thead>
                   <tr>
                     <th style={styles.th}>Order #</th>
-                    <th style={styles.th}>Customer</th>
+                    <th style={styles.th}>Customer Code</th>
+                    <th style={styles.th}>Customer Name</th>
                     <th style={styles.th}>Total</th>
                     <th style={styles.th}>SAP Doc #</th>
+                    <th style={styles.th}>SAP SO #</th>
                     <th style={styles.th}>Status</th>
                     <th style={styles.th}>Created</th>
                   </tr>
@@ -94,12 +98,13 @@ export default function AdminOrdersPage() {
                   {orders.map((o) => (
                     <tr key={o.id} style={{ cursor: "pointer" }} onClick={() => (window.location.href = `/${locale}/admin/orders/${o.id}`)}>
                       <td style={{ ...styles.td, fontFamily: "monospace", fontWeight: 600 }}>{o.order_number}</td>
-                      <td style={styles.td}>
-                        {o.sap_card_code && <span style={{ fontFamily: "monospace", fontSize: "0.75rem", color: "var(--text-tertiary, #94A3B8)" }}>{o.sap_card_code} — </span>}
-                        {o.customer_name || o.customer_email || "—"}
-                      </td>
+                      <td style={{ ...styles.td, fontFamily: "monospace", fontSize: "0.75rem" }}>{o.sap_card_code || "—"}</td>
+                      <td style={styles.td}>{o.sap_card_name || o.customer_name || o.customer_email || "—"}</td>
                       <td style={styles.td}>{formatPrice(o.grand_total)}</td>
                       <td style={{ ...styles.td, fontFamily: "monospace" }}>{o.sap_doc_num || "—"}</td>
+                      <td style={{ ...styles.td, fontFamily: "monospace", fontSize: "0.75rem", color: o.sap_so_number ? "var(--color-primary, #2BBCB3)" : "var(--text-tertiary, #94A3B8)" }}>
+                        {o.sap_so_number || "—"}
+                      </td>
                       <td style={styles.td}><Badge label={ORDER_STATUS_LABELS[o.status] || o.status} tone={STATUS_TONE[o.status] || "neutral"} /></td>
                       <td style={{ ...styles.td, fontSize: "0.75rem", color: "var(--text-tertiary, #94A3B8)" }}>
                         {new Date(o.created_at).toLocaleString()}

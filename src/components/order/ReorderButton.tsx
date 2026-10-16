@@ -67,6 +67,15 @@ export default function ReorderButton({ orderId }: { orderId: number }) {
           promoGiveQty: product.promoGiveQty,
           promoGiveItemCode: product.promoGiveItemCode,
           promoGiveItemName: product.promoGiveItemName,
+          periodDiscPct: product.periodDiscPct,
+          contractDiscPct: product.contractDiscPct,
+          promoDiscPct: product.promoDiscPct,
+          promotionCode: product.promotionCode,
+          promotionName: product.promotionTitle,
+          giveawayCode: product.giveawayCode,
+          giveawayName: product.giveawayOptions?.[0]?.name ?? undefined,
+          brandCode: product.brandCode,
+          brandName: product.brandName,
         });
         addedAny = true;
       }

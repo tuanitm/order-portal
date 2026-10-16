@@ -80,10 +80,12 @@ export async function syncPriceLists(): Promise<{ listsSynced: number }> {
  * upserts every listed code found in SAP, and deletes any existing row
  * whose code is no longer listed (cascading to that warehouse's rows in
  * customer_group_warehouses, which already only ever offers Included
- * warehouses — see schema.sql). `is_included` is simply "active in SAP",
- * since every row in the table is, by construction, one masterdata.wareHouse
- * already named as wanted. Admins can still uncheck one as a temporary
- * override on the Warehouses admin page; that holds until the next sync.
+ * warehouses — see schema.sql). `is_included` only gets its "active in SAP"
+ * default on first INSERT (a brand new warehouse code appearing for the
+ * first time); on every later sync of an already-known code, the UPDATE
+ * branch deliberately leaves `is_included` alone so an admin's manual
+ * uncheck on the Warehouses admin page is a permanent choice, not a
+ * temporary one the next sync silently reverts.
  */
 export async function syncWarehouses(): Promise<{ warehousesSynced: number }> {
   const sap = getSapClient();
@@ -105,7 +107,7 @@ export async function syncWarehouses(): Promise<{ warehousesSynced: number }> {
       await conn.execute(
         `INSERT INTO warehouses (sap_warehouse_code, warehouse_name, is_inactive_in_sap, is_included, last_synced)
          VALUES (?, ?, ?, ?, NOW())
-         ON DUPLICATE KEY UPDATE warehouse_name = VALUES(warehouse_name), is_inactive_in_sap = VALUES(is_inactive_in_sap), is_included = VALUES(is_included), last_synced = NOW()`,
+         ON DUPLICATE KEY UPDATE warehouse_name = VALUES(warehouse_name), is_inactive_in_sap = VALUES(is_inactive_in_sap), last_synced = NOW()`,
         [w.WarehouseCode, w.WarehouseName, w.Inactive === "tYES", w.Inactive !== "tYES"]
       );
     }

@@ -11,6 +11,7 @@ import {
 import { syncPromotionDiscountsFromHana } from "@/lib/hana/sync";
 import { syncCustomerGroupsFromHana } from "@/lib/customerGroups";
 import { syncItemGroupsFromHana } from "@/lib/itemCategories";
+import { syncOneOrderStatusFromSap } from "@/lib/orderStatusSync";
 
 /**
  * Everything scripts/daily-sync.mjs already did (SAP Customers, Items,
@@ -53,6 +54,31 @@ export async function runScheduledSync(): Promise<{ status: "success" | "partial
     ],
     ["Contract Discount", () => syncContractDiscounts()],
     ["Promotion Discount", () => syncPromotionDiscountsFromHana()],
+    [
+      "SAP Order Status",
+      async () => {
+        // Sync status back from SAP for every order that has been pushed
+        // (sap_doc_entry set) but isn't already in a local terminal state
+        // (completed/cancelled/rejected are final on the portal side).
+        const pending = await query<{ id: number }[]>(
+          `SELECT id FROM orders
+           WHERE sap_doc_entry IS NOT NULL
+             AND status NOT IN ('completed', 'cancelled', 'rejected')
+           ORDER BY id`
+        );
+        let updated = 0;
+        let errors = 0;
+        for (const { id } of pending) {
+          try {
+            const r = await syncOneOrderStatusFromSap(id);
+            if (r.changed) updated++;
+          } catch {
+            errors++;
+          }
+        }
+        return { checked: pending.length, updated, errors };
+      },
+    ],
   ];
 
   const lines: string[] = [];

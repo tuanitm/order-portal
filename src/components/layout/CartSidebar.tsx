@@ -1,57 +1,12 @@
 "use client";
 
-import { useState, useEffect } from "react";
 import { useTranslations } from "next-intl";
 import { useCart, calculateFreeQty, type CartItem } from "@/hooks/useCart";
 import { Link } from "@/i18n/navigation";
+import QtyInput from "@/components/common/QtyInput";
 
 function formatPrice(amount: number): string {
   return new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 0 }).format(amount) + "₫";
-}
-
-/**
- * Typeable quantity box (not just +/- buttons) — a customer ordering e.g.
- * 200 pcs shouldn't have to click an increment button 200 times. Keeps its
- * own draft string while typing (so a mid-edit value like "" or "2" isn't
- * immediately clobbered by the committed cart quantity), and only commits
- * to the cart on blur or Enter. An invalid or empty draft reverts to the
- * last committed quantity rather than silently zeroing the line.
- */
-function QtyInput({ item, updateQuantity }: { item: CartItem; updateQuantity: (sapItemCode: string, quantity: number) => void }) {
-  const [draft, setDraft] = useState(String(item.quantity));
-
-  useEffect(() => {
-    setDraft(String(item.quantity));
-  }, [item.quantity]);
-
-  const commit = () => {
-    const parsed = parseInt(draft, 10);
-    if (!Number.isFinite(parsed)) {
-      setDraft(String(item.quantity));
-      return;
-    }
-    updateQuantity(item.sapItemCode, Math.max(0, parsed));
-  };
-
-  return (
-    <input
-      type="number"
-      inputMode="numeric"
-      min={0}
-      className="cart-item__qty-input"
-      value={draft}
-      onChange={(e) => setDraft(e.target.value)}
-      onBlur={commit}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") {
-          e.preventDefault();
-          commit();
-          e.currentTarget.blur();
-        }
-      }}
-      aria-label="Quantity"
-    />
-  );
 }
 
 /**
@@ -181,7 +136,11 @@ export default function CartSidebar() {
                     >
                       −
                     </button>
-                    <QtyInput item={item} updateQuantity={updateQuantity} />
+                    <QtyInput
+                      value={item.quantity}
+                      onCommit={(q) => updateQuantity(item.sapItemCode, q)}
+                      className="cart-item__qty-input"
+                    />
                     <button
                       className="cart-item__qty-btn"
                       onClick={() => updateQuantity(item.sapItemCode, item.quantity + 1)}

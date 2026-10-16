@@ -243,6 +243,9 @@ export interface SapSalesOrderDraft {
   U_InvAddress?: string;
   U_InvTaxNo?: string;
   U_InvName?: string;
+  /** Portal order number (e.g. SO-GTSO0701-261015-503) — stamped onto the SAP
+   * Sales Order header so the portal reference is visible in SAP. */
+  U_RefDocNo?: string;
   DocumentLines: {
     ItemCode: string;
     /** Only set for the synthetic Contract/Promotion Discount lines (see
@@ -861,6 +864,42 @@ export class SapB1Client {
   async deleteDraftSalesOrder(docEntry: number): Promise<void> {
     await this.ensureSession();
     await this.request<void>('DELETE', `/Drafts(${docEntry})`);
+  }
+
+  /**
+   * Get a confirmed Sales Order's key status fields by DocEntry — used to
+   * sync U_DocNo (the SOO number SAP generates via SBO_SP_TransactionNotification,
+   * e.g. "SOO261015001") and DocStatus back to the portal after the draft is
+   * approved and becomes a real Sales Order in SAP.
+   *
+   * DocStatus values from SAP Service Layer:
+   *   "bost_Open"      → approved/in-progress (maps to portal "approved")
+   *   "bost_Delivered" → delivery issued       (maps to portal "delivered")
+   *   "bost_Closed"    → closed                (maps to portal "completed")
+   * Cancelled = "tYES" → maps to portal "cancelled".
+   */
+  async getSalesOrderStatus(docEntry: number): Promise<{
+    DocEntry: number;
+    DocNum: number;
+    U_DocNo: string | null;
+    DocStatus: string | null;
+    Cancelled: string | null;
+  } | null> {
+    await this.ensureSession();
+    try {
+      const select = encodeURIComponent('DocEntry,DocNum,U_DocNo,DocStatus,Cancelled');
+      const result = await this.request<{
+        DocEntry: number;
+        DocNum: number;
+        U_DocNo: string | null;
+        DocStatus: string | null;
+        Cancelled: string | null;
+      }>('GET', `/Orders(${docEntry})?$select=${select}`);
+      return result;
+    } catch (error) {
+      console.error(`[SAP] Failed to get Sales Order status for DocEntry ${docEntry}:`, error);
+      return null;
+    }
   }
 
 }

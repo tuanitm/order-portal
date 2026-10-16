@@ -6,7 +6,7 @@ import { recordOrderStatus, notifyCustomerOfStatusChange } from "@/lib/orderHist
 // 'cancelled' is deliberately excluded — cancelling can mean deleting the
 // order's SAP Draft Sales Order too, so it only ever goes through the
 // dedicated POST /api/admin/orders/[id]/cancel, never this generic setter.
-const VALID_STATUSES = ["draft", "submitted", "processing", "sap_draft_created", "approved", "rejected", "completed"];
+const VALID_STATUSES = ["draft", "submitted", "processing", "sap_draft_created", "approved", "delivered", "rejected", "completed"];
 
 export async function GET(
   request: NextRequest,

@@ -26,6 +26,25 @@ export interface CartItem {
   promoGiveQty?: number;
   promoGiveItemCode?: string;
   promoGiveItemName?: string;
+  /** Set only on a line added via Excel Import — the customer's free-text Remark column for that row. */
+  remark?: string;
+  /** Individual discount-waterfall percentages that compound into discountPercent above — see
+   *  ProductWithPricing's own fields of the same name. Carried through to order_lines so Admin -
+   *  Order can show which discount type(s) applied, not just the combined discountPercent. */
+  periodDiscPct?: number;
+  contractDiscPct?: number;
+  promoDiscPct?: number;
+  /** Which specific promotion program the customer chose (or the auto-default, when the item only ever
+   *  had one candidate) — see ProductWithPricing.promotionOptions/giveawayOptions. Persisted on order_lines
+   *  so the SAP push uses the SAME program instead of re-deriving a possibly-different "best" match. */
+  promotionCode?: string;
+  promotionName?: string;
+  giveawayCode?: string;
+  giveawayName?: string;
+  /** Display-only — drives the checkout page's "this will create N orders" brand-split preview.
+   *  The actual order split is decided server-side by POST /api/orders' own live items.brand_code lookup. */
+  brandCode?: string | null;
+  brandName?: string | null;
 }
 
 /**

@@ -9,24 +9,44 @@ import { styles, btn, Badge, BackLink, SyncButton, ORDER_STATUS_LABELS } from ".
 // if one was already pushed (see POST .../cancel). It stays in
 // ORDER_STATUS_LABELS/STATUS_TONE so an already-cancelled order still
 // displays correctly.
-const STATUSES = ["draft", "submitted", "processing", "sap_draft_created", "approved", "rejected", "completed"];
+const STATUSES = ["draft", "submitted", "processing", "sap_draft_created", "approved", "delivered", "rejected", "completed"];
 const TERMINAL_STATUSES = ["cancelled", "completed", "rejected"];
 const STATUS_TONE: Record<string, "success" | "warning" | "error" | "neutral"> = {
   draft: "neutral", submitted: "warning", processing: "warning",
-  sap_draft_created: "warning", approved: "success", completed: "success", rejected: "error", cancelled: "neutral",
+  sap_draft_created: "warning", approved: "success", delivered: "success",
+  completed: "success", rejected: "error", cancelled: "neutral",
 };
 
 interface OrderDetail {
   id: number; order_number: string; customer_name: string | null; customer_email: string | null;
   delivery_address: string | null; contact_phone: string | null; subtotal: string; discount_total: string;
   grand_total: string; remark: string | null; status: string; sap_doc_entry: number | null;
-  sap_doc_num: number | null; created_at: string; sap_card_code: string | null;
+  sap_doc_num: number | null; sap_so_number: string | null; created_at: string; sap_card_code: string | null;
 }
 interface OrderLine {
   id: number; sap_item_code: string; item_name: string; quantity: number; uom: string;
   base_unit_price: string; unit_price: string; discount_percent: string; line_total: string;
   confirm_qty: number; customer_confirm_status: "pending" | "accepted" | "rejected";
   brand_code: string | null; brand_name: string | null;
+  // Already returned by GET /api/admin/orders/[id] (SELECT ol.*) — just not
+  // typed/rendered here until now. is_gift_line/source_line_id/promo_buy_qty/
+  // promo_give_qty existed before; remark/period_disc_pct/contract_disc_pct/
+  // promo_disc_pct are new columns (Excel Import + discount-breakdown work).
+  is_gift_line: number;
+  source_line_id: number | null;
+  promo_buy_qty: number | null;
+  promo_give_qty: number | null;
+  remark: string | null;
+  period_disc_pct: string | null;
+  contract_disc_pct: string | null;
+  promo_disc_pct: string | null;
+  // Which specific promotion PROGRAM the customer chose on the product
+  // card (Business Brand/Promotion Program control) — see order_lines.
+  // promotion_code/giveaway_promotion_code in schema.sql.
+  promotion_code: string | null;
+  promotion_name: string | null;
+  giveaway_promotion_code: string | null;
+  giveaway_promotion_name: string | null;
 }
 interface Warehouse {
   code: string;
@@ -409,6 +429,30 @@ export default function AdminOrderDetailPage() {
             </p>
           )}
 
+          {/* SAP SO# + Update Status — visible once the order has been pushed to SAP.
+              U_DocNo (e.g. SOO261015001) is filled by SAP's own trigger after the draft
+              is approved; the "Update Status" button fetches it (and DocStatus) immediately
+              without waiting for the next scheduled sync run. */}
+          {order.sap_doc_entry && (
+            <div style={{ display: "flex", alignItems: "center", gap: "1rem", marginBottom: "1rem", flexWrap: "wrap" }}>
+              <div style={{ fontSize: "0.8125rem" }}>
+                <span style={{ fontWeight: 600, color: "var(--text-secondary, #64748B)" }}>SAP SO #: </span>
+                {order.sap_so_number
+                  ? <span style={{ fontFamily: "monospace", color: "var(--color-primary, #2BBCB3)", fontWeight: 700 }}>{order.sap_so_number}</span>
+                  : <em style={{ color: "var(--text-tertiary, #94A3B8)" }}>Not yet assigned</em>
+                }
+              </div>
+              <SyncButton
+                url={`/api/admin/orders/${params.id}/sync-status`}
+                label="Update Status"
+                loadingLabel="Syncing from SAP..."
+                onDone={(data) => {
+                  if (data.changed) load();
+                }}
+              />
+            </div>
+          )}
+
           {/* Warehouse stock check — "Avail Qty" below is fetched live from
               SAP for whichever warehouse is selected here, not from the
               daily-synced cache; changing the warehouse re-fetches
@@ -459,18 +503,44 @@ export default function AdminOrderDetailPage() {
                   <th style={styles.th}>Qty</th>
                   <th style={styles.th}>Cfm Qty</th>
                   <th style={styles.th}>Uom</th>
-                  <th style={styles.th}>Base Unit Price</th>
+                  <th style={styles.th}>Base Price</th>
+                  <th style={styles.th}>STD Disc %</th>
+                  <th style={styles.th}>CT Disc %</th>
+                  <th style={styles.th}>PM Disc %</th>
                   <th style={styles.th}>Unit Price</th>
-                  <th style={styles.th}>Discount %</th>
                   <th style={styles.th}>Line Total</th>
                 </tr>
               </thead>
               <tbody>
                 {lines.map((l) => (
-                  <tr key={l.id}>
+                  <tr key={l.id} style={!!l.is_gift_line ? { background: "var(--color-success-light, #ECFDF5)" } : undefined}>
                     <td style={styles.td}>{l.brand_name || <em style={{ color: "var(--text-tertiary, #94A3B8)" }}>—</em>}</td>
                     <td style={{ ...styles.td, fontFamily: "monospace", fontSize: "0.75rem" }}>{l.sap_item_code}</td>
-                    <td style={styles.td}>{l.item_name}</td>
+                    <td style={styles.td}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "0.375rem" }}>
+                        {!!l.is_gift_line && <span aria-hidden>🎁</span>}
+                        {l.item_name}
+                        {!!l.is_gift_line && (
+                          <span style={{
+                            fontSize: "0.6875rem", fontWeight: 700, color: "#065F46",
+                            background: "var(--color-success-light, #ECFDF5)", borderRadius: "var(--radius-sm)",
+                            padding: "1px 6px",
+                          }}>
+                            FREE
+                          </span>
+                        )}
+                      </div>
+                      {!!l.is_gift_line && l.giveaway_promotion_name && (
+                        <div style={{ fontSize: "0.7rem", color: "var(--text-tertiary, #94A3B8)", marginTop: "2px" }}>
+                          🎁 {l.giveaway_promotion_name} {l.giveaway_promotion_code ? `(${l.giveaway_promotion_code})` : ""}
+                        </div>
+                      )}
+                      {l.remark && (
+                        <div style={{ fontSize: "0.7rem", color: "var(--text-tertiary, #94A3B8)", marginTop: "2px" }}>
+                          📝 {l.remark}
+                        </div>
+                      )}
+                    </td>
                     <td style={{ ...styles.td, fontWeight: 600, color: (availByItem[l.sap_item_code] ?? 0) >= l.quantity ? "#059669" : "#DC2626" }}>
                       {isLoadingStock ? "…" : (l.sap_item_code in availByItem ? formatQty(availByItem[l.sap_item_code]) : "—")}
                     </td>
@@ -491,8 +561,16 @@ export default function AdminOrderDetailPage() {
                     </td>
                     <td style={styles.td}>{l.uom}</td>
                     <td style={styles.td}>{formatPrice(l.base_unit_price)}</td>
+                    <td style={styles.td}>
+                      {Number(l.period_disc_pct) > 0 ? `${l.period_disc_pct}%` : <em style={{ color: "var(--text-tertiary, #94A3B8)" }}>—</em>}
+                    </td>
+                    <td style={styles.td}>
+                      {Number(l.contract_disc_pct) > 0 ? `${l.contract_disc_pct}%` : <em style={{ color: "var(--text-tertiary, #94A3B8)" }}>—</em>}
+                    </td>
+                    <td style={styles.td}>
+                      {Number(l.promo_disc_pct) > 0 ? `${l.promo_disc_pct}%` : <em style={{ color: "var(--text-tertiary, #94A3B8)" }}>—</em>}
+                    </td>
                     <td style={styles.td}>{formatPrice(l.unit_price)}</td>
-                    <td style={styles.td}>{l.discount_percent}%</td>
                     <td style={styles.td}>{formatPrice(l.line_total)}</td>
                   </tr>
                 ))}

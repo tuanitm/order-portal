@@ -24,6 +24,20 @@ interface OrderLine {
   promoGiveQty?: number;
   /** Set only on the gift line — the sapItemCode of the "buy" line (in this same order) it came from. */
   sourceSapItemCode?: string;
+  /** Set only on lines added via Excel Import; unset on the gift line (no remark concept there). */
+  remark?: string;
+  /** Discount-waterfall breakdown — see CartItem's own fields of the same name. Unset on the gift line (0-priced, no waterfall percent is meaningful). */
+  periodDiscPct?: number;
+  contractDiscPct?: number;
+  promoDiscPct?: number;
+  /** Which promotion program the customer chose — see CartItem's own fields of the same name. */
+  promotionCode?: string;
+  promotionName?: string;
+  giveawayCode?: string;
+  giveawayName?: string;
+  /** Display-only brand, used to group this preview — see CartItem's own comment. */
+  brandCode?: string | null;
+  brandName?: string | null;
 }
 
 export default function CheckoutPage() {
@@ -37,7 +51,7 @@ export default function CheckoutPage() {
   const [contactEmail, setContactEmail] = useState("");
   const [remark, setRemark] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [orderResult, setOrderResult] = useState<{ orderNumber: string } | null>(null);
+  const [orderResult, setOrderResult] = useState<{ orderNumbers: string[] } | null>(null);
   const [error, setError] = useState("");
 
   // Prefill from the customer's own BP master data (SAP customer master),
@@ -75,6 +89,16 @@ export default function CheckoutPage() {
         originalPrice: item.originalPrice,
         discountPercent: item.discountPercent,
         isGift: false,
+        remark: item.remark,
+        periodDiscPct: item.periodDiscPct,
+        contractDiscPct: item.contractDiscPct,
+        promoDiscPct: item.promoDiscPct,
+        promotionCode: item.promotionCode,
+        promotionName: item.promotionName,
+        giveawayCode: item.giveawayCode,
+        giveawayName: item.giveawayName,
+        brandCode: item.brandCode,
+        brandName: item.brandName,
       },
     ];
     const freeQty = calculateFreeQty(item);
@@ -102,6 +126,27 @@ export default function CheckoutPage() {
     }
     return lines;
   });
+
+  // Display-only preview of how many separate orders placing this cart will
+  // create — one per Business Brand (Cost Center dimension 1), since SAP's
+  // Sales Order header can only carry a single brand. A gift line groups
+  // with its buy line's brand (the only one that matters for the split —
+  // see POST /api/orders, which re-derives this live/server-side and never
+  // trusts this preview for the actual grouping). Order is insertion order
+  // (first-seen brand first), stable across re-renders.
+  const brandGroups = orderLines.reduce((groups, line) => {
+    const key = line.isGift
+      ? orderLines.find((l) => l.sapItemCode === line.sourceSapItemCode && !l.isGift)?.brandCode ?? null
+      : line.brandCode ?? null;
+    const keyStr = key ?? "__no_brand__";
+    let group = groups.get(keyStr);
+    if (!group) {
+      group = { brandName: line.isGift ? undefined : line.brandName, itemCount: 0 };
+      groups.set(keyStr, group);
+    }
+    if (!line.isGift) group.itemCount += 1;
+    return groups;
+  }, new Map<string, { brandName?: string | null; itemCount: number }>());
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -131,6 +176,14 @@ export default function CheckoutPage() {
             promoBuyQty: line.promoBuyQty,
             promoGiveQty: line.promoGiveQty,
             sourceSapItemCode: line.sourceSapItemCode,
+            remark: line.remark,
+            periodDiscPct: line.periodDiscPct,
+            contractDiscPct: line.contractDiscPct,
+            promoDiscPct: line.promoDiscPct,
+            promotionCode: line.promotionCode,
+            promotionName: line.promotionName,
+            giveawayCode: line.giveawayCode,
+            giveawayName: line.giveawayName,
           })),
         }),
       });
@@ -140,8 +193,8 @@ export default function CheckoutPage() {
         throw new Error(data.error || "Order submission failed");
       }
 
-      const data = await res.json();
-      setOrderResult({ orderNumber: data.orderNumber });
+      const data: { orders: { orderNumber: string }[] } = await res.json();
+      setOrderResult({ orderNumbers: data.orders.map((o) => o.orderNumber) });
       clearCart();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Order submission failed");
@@ -158,9 +211,16 @@ export default function CheckoutPage() {
           <div className="order-success">
             <div className="order-success__icon">✓</div>
             <h1 className="order-success__title">{t("checkout.orderSuccess")}</h1>
-            <div className="order-success__number">
-              {t("checkout.orderNumber")}: {orderResult.orderNumber}
-            </div>
+            {orderResult.orderNumbers.length > 1 && (
+              <p style={{ fontSize: "0.875rem", color: "var(--text-tertiary)", marginBottom: "0.5rem" }}>
+                {t("checkout.splitIntoOrders", { count: orderResult.orderNumbers.length })}
+              </p>
+            )}
+            {orderResult.orderNumbers.map((orderNumber) => (
+              <div className="order-success__number" key={orderNumber}>
+                {t("checkout.orderNumber")}: {orderNumber}
+              </div>
+            ))}
             <p className="order-success__message">
               {t("checkout.orderConfirmMessage")}
             </p>
@@ -285,6 +345,24 @@ export default function CheckoutPage() {
             <h2 style={{ fontSize: "var(--text-lg)", fontWeight: 700, marginBottom: "1.5rem" }}>
               {t("checkout.orderSummary")}
             </h2>
+
+            {brandGroups.size > 1 && (
+              <div style={{
+                padding: "0.75rem 1rem", background: "var(--color-warning-light, #FFFBEB)",
+                borderRadius: "var(--radius-lg)", marginBottom: "1.5rem", fontSize: "0.8125rem",
+              }}>
+                <p style={{ fontWeight: 600, marginBottom: "0.375rem" }}>
+                  {t("checkout.splitIntoOrders", { count: brandGroups.size })}
+                </p>
+                <ul style={{ paddingLeft: "1.25rem", margin: 0 }}>
+                  {[...brandGroups.values()].map((group, idx) => (
+                    <li key={idx}>
+                      {group.brandName || t("checkout.noBrand")} — {t("cart.itemCount", { count: group.itemCount })}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
 
             <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem", marginBottom: "1.5rem" }}>
               {orderLines.map((line) => (

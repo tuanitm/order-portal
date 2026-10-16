@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { useTranslations, useLocale } from "next-intl";
 import ProductCard from "@/components/product/ProductCard";
+import ImportExcelModal from "@/components/cart/ImportExcelModal";
 import { useSearch } from "@/hooks/useSearch";
 import type { ProductWithPricing, ProductListResponse } from "@/types/product";
 
@@ -19,6 +20,7 @@ export default function HomePage() {
   const [categories, setCategories] = useState<string[]>([]);
   const [total, setTotal] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
+  const [isImportOpen, setIsImportOpen] = useState(false);
 
   // Debounced fetch whenever search/category changes
   useEffect(() => {
@@ -178,13 +180,24 @@ export default function HomePage() {
           <h2 className="page__title" style={{ fontSize: "var(--text-xl)" }}>
             {t("nav.products")}
           </h2>
-          <span style={{
-            fontSize: "var(--text-sm)",
-            color: "var(--text-tertiary)",
-          }}>
-            {total} {locale === "vi" ? "sản phẩm" : "products"}
-          </span>
+          <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
+            <button
+              className="btn btn-secondary btn-sm"
+              onClick={() => setIsImportOpen(true)}
+              id="excel-import-button"
+            >
+              📄 {t("import.button")}
+            </button>
+            <span style={{
+              fontSize: "var(--text-sm)",
+              color: "var(--text-tertiary)",
+            }}>
+              {total} {locale === "vi" ? "sản phẩm" : "products"}
+            </span>
+          </div>
         </div>
+
+        <ImportExcelModal isOpen={isImportOpen} onClose={() => setIsImportOpen(false)} />
 
         {/* Product Grid */}
         {isLoading ? (

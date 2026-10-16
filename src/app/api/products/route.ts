@@ -3,276 +3,36 @@ import { query } from "@/lib/db/connection";
 import { getSessionUser } from "@/lib/auth/session";
 import { getBasePriceListNum } from "@/lib/sap-b1/sync";
 import { getVisibleWarehousesForCustomerGroup } from "@/lib/warehouseVisibility";
+import {
+  resolveHiddenItemCategories,
+  buildHiddenCategoryClauses,
+  buildStockGateClause,
+  queryPricedProducts,
+  type PricingContext,
+} from "@/lib/pricing/productPricing";
 import type { ProductWithPricing } from "@/types/product";
-
-interface HiddenCategory {
-  level: number;
-  code: string;
-}
-
-/**
- * Resolve which item categories (item_groups, levels 1-3) a customer must
- * NOT see: group-level defaults from `catalog_visibility`, checked at each
- * of the customer's group levels. No rule configured for a category =
- * visible. (Per-customer overrides were removed — group-level rules are now
- * the only source.)
- */
-async function resolveHiddenItemCategories(
-  cusGrp01: string | null,
-  cusGrp02: string | null,
-  cusGrp03: string | null
-): Promise<HiddenCategory[]> {
-  const visibility = new Map<string, HiddenCategory & { visible: boolean; explicit: boolean }>();
-  const key = (level: number, code: string) => `${level}:${code}`;
-
-  const levels: { level: number; code: string }[] = [];
-  if (cusGrp01) levels.push({ level: 1, code: cusGrp01 });
-  if (cusGrp02) levels.push({ level: 2, code: cusGrp02 });
-  if (cusGrp03) levels.push({ level: 3, code: cusGrp03 });
-
-  for (const { level, code } of levels) {
-    const rules = await query<
-      { item_category_level: number; item_category_code: string; is_visible: number }[]
-    >(
-      `SELECT cv.item_category_level, cv.item_category_code, cv.is_visible
-       FROM catalog_visibility cv
-       JOIN customer_groups cg ON cg.id = cv.customer_group_id
-       WHERE cg.level = ? AND cg.code = ?`,
-      [level, code]
-    );
-    for (const r of rules) {
-      visibility.set(key(r.item_category_level, r.item_category_code), {
-        level: r.item_category_level,
-        code: r.item_category_code,
-        visible: !!r.is_visible,
-        explicit: true,
-      });
-    }
-  }
-
-  // ── Item group inheritance: propagate parent visibility to children ──
-  // If D1 (level 1) is hidden, also hide D11/D12 (level 2), D111/D112 (level 3), etc.
-  const allItemGroups = await query<{ level: number; code: string; parent_code: string | null }[]>(
-    `SELECT level, code, parent_code FROM item_groups WHERE level IN (1, 2, 3) ORDER BY level ASC`
-  );
-  // Process level by level (1→2→3) so parent state is resolved first
-  for (let lvl = 2; lvl <= 3; lvl++) {
-    for (const ig of allItemGroups.filter((g) => g.level === lvl && g.parent_code)) {
-      const parentKey = key(lvl - 1, ig.parent_code!);
-      const parentState = visibility.get(parentKey);
-      if (parentState) {
-        const childKey = key(ig.level, ig.code);
-        const childState = visibility.get(childKey);
-        // Only inherit if no explicit rule exists for this child
-        if (!childState || !childState.explicit) {
-          visibility.set(childKey, {
-            level: ig.level,
-            code: ig.code,
-            visible: parentState.visible,
-            explicit: false,
-          });
-        }
-      }
-    }
-  }
-
-  return [...visibility.values()].filter((v) => !v.visible).map((v) => ({ level: v.level, code: v.code }));
-}
-
-/**
- * Build `AND items.item_catNN NOT IN (...)` clauses (one per level that has
- * hidden codes) plus the flat params array to bind them — one placeholder
- * per value, since db.execute() (prepared statements) does not expand an
- * array into an IN-list the way db.query() would.
- */
-function buildHiddenCategoryClauses(hidden: HiddenCategory[]): { clauses: string[]; params: string[] } {
-  const byLevel = new Map<number, string[]>();
-  for (const h of hidden) {
-    if (!byLevel.has(h.level)) byLevel.set(h.level, []);
-    byLevel.get(h.level)!.push(h.code);
-  }
-
-  const clauses: string[] = [];
-  const params: string[] = [];
-  for (const [level, codes] of byLevel) {
-    const col = `item_cat${String(level).padStart(2, "0")}`;
-    clauses.push(`${col} NOT IN (${codes.map(() => "?").join(",")})`);
-    params.push(...codes);
-  }
-  return { clauses, params };
-}
-
-interface ProductRow {
-  id: number;
-  sap_item_code: string;
-  item_name_vi: string | null;
-  item_name_en: string | null;
-  uom: string | null;
-  pack_size: string | null;
-  category: string | null;
-  base_price: string; // DECIMAL comes back as string from mysql2
-  image_url: string | null;
-  is_active: number;
-  channel_price: string | null;
-  period_disc_pct: string | null;
-  contract_disc_pct: string | null;
-  promo_disc_pct: string | null;
-  promo_name: string | null;
-  buy_qty: string | null;
-  give_item_code: string | null;
-  give_item_name: string | null;
-  give_qty: string | null;
-  available_qty: string | null;
-}
-
-/**
- * The bp_type/it_type match condition shared by every promotion_discount
- * LATERAL join below (percent-discount and buy-give alike) — see the GET
- * docstring for what these columns mean. Takes the alias to qualify columns
- * with (distinct LATERAL subqueries can't share one alias) and returns the
- * SQL text; the caller still needs to bind 4 bp params (exact/CG1/CG2/CG3)
- * for the bp clause — there are no params for the it clause (all column-to-column).
- */
-function promotionMatchSql(alias: string): { bpSql: string; itSql: string; scoreSql: string } {
-  return {
-    bpSql: `(
-      (${alias}.bp_type = '2' AND ${alias}.bp_code = ?)
-      OR (${alias}.bp_type = 'CG1' AND ${alias}.bp_code = ?)
-      OR (${alias}.bp_type = 'CG2' AND ${alias}.bp_code = ?)
-      OR (${alias}.bp_type = 'CG3' AND ${alias}.bp_code = ?)
-      OR (${alias}.bp_type IS NULL AND ${alias}.bp_code IS NULL)
-    )`,
-    itSql: `(
-      (${alias}.it_type = '4' AND ${alias}.selling_item_code = i.sap_item_code)
-      OR (${alias}.it_type = 'IC1' AND ${alias}.selling_item_code = i.item_cat01)
-      OR (${alias}.it_type = 'IC2' AND ${alias}.selling_item_code = i.item_cat02)
-      OR (${alias}.it_type = 'IC3' AND ${alias}.selling_item_code = i.item_cat03)
-      OR (${alias}.it_type = 'IC4' AND ${alias}.selling_item_code = i.item_cat04)
-      OR (${alias}.it_type = 'IC5' AND ${alias}.selling_item_code = i.item_cat05)
-      OR (${alias}.it_type = 'IC6' AND ${alias}.selling_item_code = i.item_cat06)
-    )`,
-    scoreSql: `(
-      (CASE ${alias}.it_type
-         WHEN '4' THEN 600 WHEN 'IC6' THEN 60 WHEN 'IC5' THEN 50 WHEN 'IC4' THEN 40
-         WHEN 'IC3' THEN 30 WHEN 'IC2' THEN 20 WHEN 'IC1' THEN 10 ELSE 0 END)
-      +
-      (CASE ${alias}.bp_type
-         WHEN '2' THEN 600 WHEN 'CG3' THEN 300 WHEN 'CG2' THEN 200 WHEN 'CG1' THEN 100 ELSE 0 END)
-    )`,
-  };
-}
 
 /**
  * GET /api/products — List products with pricing.
  *
- * Price flow (sequential, not additive — each step's output feeds the next
- * step's input, none of them computed off the original Channel Price):
- *   Step 1: Channel Price      = the customer's applicable price-list price
- *                                 (their channel price list, falling back to
- *                                 items.base_price if they have no channel
- *                                 price cached).
- *   Step 2: Period Discount    = Channel Price - Channel Price * (period
- *                                 discount % / 100) — the best-matching,
- *                                 currently-valid `period_discount` row for
- *                                 the customer's own channel price list (SAP
- *                                 scopes these to the whole price list, not
- *                                 a customer — see syncPeriodDiscounts).
- *   Step 3: Contract Discount  = Step 2's price - Step 2's price * (contract
- *                                 discount % / 100) — best-matching
- *                                 `contract_discount` row.
- *   Step 4: Promotion Discount = Step 3's price - Step 3's price * (promotion
- *                                 discount % / 100) — best-matching
- *                                 `promotion_discount` row. This is the final
- *                                 displayed price.
- * The `basePrice`/strikethrough and `discountPercent` returned to the client
- * are the Step 1 Channel Price (priceBeforeDiscounts) — never items.base_price
- * (S01) when a channel price exists — so the displayed "% off" always matches
- * the price the discounts were actually taken from, even when a channel list
- * prices an item above or below S01.
+ * The discount waterfall (Channel -> Period -> Contract -> Promotion),
+ * visibility rules, and the stock gate are all implemented once in
+ * src/lib/pricing/productPricing.ts (see queryPricedProducts' own
+ * docstring there for the full price-flow explanation) — this route is a
+ * thin wrapper around it that adds the storefront-specific concerns:
+ * fuzzy `search`/`category` filtering, pagination, the `categories` facet
+ * list, and the `promoOnly`/`sort=discount` "Khuyến mãi" tab behavior. The
+ * same pricing core also backs POST /api/products/batch (exact-code lookup
+ * for Excel Import), so both callers can never drift apart.
  *
- * Resolving that channel price (`cp_base.price` below): find the customer's
- * own item_channel_prices row (price_list_num = users.sap_price_list_num for
- * their sap_card_code), then read the price from item_channel_prices AGAIN
- * at price_list_num = that row's own base_price_list_num. When a list prices
- * an item directly (base_price_list_num = its own price_list_num), this
- * joins back to the same row, so it's a no-op; when a list derives an item's
- * price from another list (e.g. S02 GT Price List deriving from S01 IMV
- * Price List), this always reads the SOURCE list's own price rather than
- * trusting the derived row's own cached `price` value.
+ * Query params: `search` (fuzzy LIKE on name/code), `category` (exact),
+ * `page`/`limit`, `promoOnly=true` (only items with a currently-valid
+ * promotion, percent or buy-give), `sort=discount` (rank by combined
+ * discount % descending instead of by name — combine with promoOnly for
+ * the "Khuyến mãi" tab).
  *
- * A discount (from `contract_discount` or `promotion_discount`) matches a
- * (customer, item) pair if its customer code equals the customer's own BP
- * code OR one of their customer-group codes at any of the 3 BP-group levels
- * (cus_grp01-03/sap_cus_grp01-03), AND its item code equals the item's own
- * code OR one of its item-group codes at any of the 6 item-group levels
- * (item_cat01-06) — i.e. a discount targeting a group applies to every BP
- * under that BP group (and its sub-groups) or every item under that item
- * group (and its sub-groups), not just members of that exact group level.
- * When several currently-valid discounts co-exist for the same (customer,
- * item) — e.g. one targeting BP-group level 1, another level 2, another
- * level 3, another the exact BP itself — the MOST SPECIFIC (deepest) one
- * wins: exact BP > level-3 group > level-2 group > level-1 group, and
- * likewise exact item > level-6 group > ... > level-1 group on the item
- * side. Only currently-valid rows count (validity dates straddle today, and
- * for contract_discount, not canceled).
- *
- * `contract_discount` has no type column, so its `u_code_cust`/`u_code_item`
- * are matched by trying every level (existence-check against the code
- * itself or item_cat01-06/cus_grp01-03) and ranking by which level matched.
- * `promotion_discount`, by contrast, carries authoritative `bp_type`/
- * `it_type` columns that say EXACTLY what `bp_code`/`selling_item_code`
- * contain — bp_type='2' (exact BP) or 'CG1'/'CG2'/'CG3' (a customer_groups
- * code at that level); it_type='4' (exact item) or 'IC1'..'IC6' (an
- * item_groups code at that level) — so its matching is a direct, deterministic
- * lookup by type rather than a guess-every-level fallback. `bp_grp_code`/
- * `selling_grp_code` are NOT customer_groups/item_groups codes at all — just
- * free-text labels (e.g. "GT.TOILETRIES") — and are display-only, never used
- * for matching. A row with `bp_type` AND `bp_code` both NULL has no customer
- * restriction at all (applies to every customer) — it's still eligible, just
- * ranked below any row with a real BP/group match.
- *
- * Only percent-type promotions with no real quantity-break gate (`selling_qty`
- * NULL or <= 1, i.e. applies from the first unit) are folded into this listing
- * price — a promo whose discount only kicks in past a *higher* quantity break
- * can't be resolved to a single price before the customer has chosen a
- * quantity. Free/bonus-item promos (`giving_item_code`) don't affect the
- * selling item's own price, but ARE still resolved and returned per item
- * (`promoBuyQty`/`promoGiveItemCode`/`promoGiveItemName`/`promoGiveQty`) —
- * same bp_type/it_type matching/specificity as the percent-discount join,
- * just against `giving_item_code IS NOT NULL` rows instead, with no
- * `selling_qty <= 1` restriction (a buy-give promo's `selling_qty` IS its
- * "buy N" threshold).
- *
- * Anonymous/unapproved users have no BP/group codes, so no discount can match
- * and they only ever see the base price-list price.
- *
- * Query params: `promoOnly=true` restricts the listing to items with a
- * currently-valid promotion (percent OR buy-give) — the storefront's
- * "Khuyến mãi" tab. `sort=discount` orders by combined discount % (contract
- * + promotion) descending instead of by name; combine both for that tab.
- *
- * Stock gate: an item is only listed if it has positive available quantity
- * (in_stock - committed, from `item_warehouse_stock`) summed across the
- * warehouses that count for THIS customer — their level-2 customer group's
- * mapped warehouses (`customer_group_warehouses`, set on the Catalog
- * Visibility page) if any are mapped, otherwise every warehouse an admin has
- * marked "Included" on the Warehouses admin page (`warehouses.is_included`).
- * Entirely opt-in: if no warehouse is Included at all, this filter doesn't
- * run, so turning inventory tracking on later never silently empties the
- * storefront in the meantime; likewise an unmapped group just falls back to
- * the Included set rather than losing visibility.
- *
- * Nested inside that same stock gate: a warehouse's stock only counts
- * toward "available" if it also clears every currently-valid
- * `customer_require_shelflife` rule for this (customer, item) pair — same
- * any-group-level matching as contract/promotion discounts (cust_group_code
- * against any of cusGrp01-03, item_group_code against any of
- * item_cat01-06). `item_warehouse_stock.shelf_life_pct` (the worst remaining
- * shelf-life % among that item/warehouse's batches — see
- * computeBatchShelfLifePct in sync.ts) must be within [shelf_life_from,
- * shelf_life_to]; a non-batch-managed item (shelf_life_pct IS NULL) or one
- * with no applicable rule always counts — same fail-open default as the
- * rest of this gate.
+ * Anonymous/unapproved users have no BP/group codes, so no discount can
+ * match and they only ever see the base price-list price.
  */
 export async function GET(request: NextRequest) {
   try {
@@ -295,82 +55,62 @@ export async function GET(request: NextRequest) {
       : [];
     const { clauses: hiddenClauses, params: hiddenParams } = buildHiddenCategoryClauses(hiddenCategories);
 
-    const whereClauses = ["i.is_active = TRUE", "i.is_manually_hidden = FALSE", ...hiddenClauses];
-    const params: (string | number | null)[] = [...hiddenParams];
-
-    // Stock gate: only applies once an admin has marked at least one
-    // warehouse "Included" (see the Warehouses admin page) — until then this
-    // is a no-op, so turning the feature on is opt-in and never silently
-    // empties the storefront. "Available" = in_stock - committed.
-    //
     // WHICH warehouses count for THIS customer: if their level-2 customer
     // group has at least one mapping in `customer_group_warehouses` (set on
     // the Catalog Visibility page), only those warehouses count; otherwise
-    // fall back to every globally Included warehouse (today's default) —
-    // same fail-open rule, so an unmapped group never loses visibility.
+    // fall back to every globally Included warehouse — same fail-open rule,
+    // so an unmapped group never loses visibility.
     const visibleWarehouses = await getVisibleWarehousesForCustomerGroup(cusGrp02);
     const stockWarehouseCodes = visibleWarehouses.map((w) => w.code);
-    // Shared by the stock-gate EXISTS below AND availableQtySql further
-    // down — both must apply the identical shelf-life condition, or the
-    // displayed "available" number could disagree with whether the item is
-    // listed at all (see availableQtySql's own comment). `iwsAlias` lets
-    // each call site qualify iws.shelf_life_pct with its own alias; 3 `?`
-    // placeholders (cusGrp01/02/03) are needed wherever this is spliced in.
-    const shelfLifeOkSql = (iwsAlias: string) => `(
-      ${iwsAlias}.shelf_life_pct IS NULL
-      OR NOT EXISTS (
-        SELECT 1 FROM customer_require_shelflife crs
-        WHERE crs.cust_group_code IN (?, ?, ?)
-          AND crs.item_group_code IN (i.item_cat01, i.item_cat02, i.item_cat03, i.item_cat04, i.item_cat05, i.item_cat06)
-          AND (crs.valid_from IS NULL OR crs.valid_from <= CURDATE())
-          AND (crs.valid_to IS NULL OR crs.valid_to >= CURDATE())
-          AND (
-            (crs.shelf_life_from IS NOT NULL AND ${iwsAlias}.shelf_life_pct < crs.shelf_life_from)
-            OR (crs.shelf_life_to IS NOT NULL AND ${iwsAlias}.shelf_life_pct > crs.shelf_life_to)
-          )
-      )
-    )`;
 
-    if (stockWarehouseCodes.length > 0) {
-      // Shelf-life gate, nested inside the same EXISTS: a batch's stock only
-      // counts toward "available" if it clears every CURRENTLY-VALID
-      // customer_require_shelflife rule that applies to this (customer,
-      // item) pair — matched the same way discounts are (any of the
-      // customer's group levels, any of the item's group levels; see the
-      // GET docstring's "Stock gate" paragraph). iws.shelf_life_pct IS NULL
-      // (not batch-managed, or no batch data at all) always counts — same
-      // fail-open default as the rest of this gate.
-      whereClauses.push(`EXISTS (
-        SELECT 1 FROM item_warehouse_stock iws
-        WHERE iws.sap_item_code = i.sap_item_code
-          AND iws.warehouse_code IN (${stockWarehouseCodes.map(() => "?").join(",")})
-          AND ${shelfLifeOkSql("iws")}
-        GROUP BY iws.sap_item_code
-        HAVING SUM(iws.in_stock - iws.committed) > 0
-      )`);
-      params.push(...stockWarehouseCodes, cusGrp01, cusGrp02, cusGrp03);
+    const ctx: PricingContext = {
+      sapCardCode: sapCardCode ?? "",
+      cusGrp01: cusGrp01 ?? "",
+      cusGrp02: cusGrp02 ?? "",
+      cusGrp03: cusGrp03 ?? "",
+      priceListNum,
+      basePriceListNum: await getBasePriceListNum(),
+      stockWarehouseCodes,
+    };
+
+    // The COUNT(*) query can't reuse queryPricedProducts' full LATERAL-joined
+    // query (that would compute pricing for rows never shown) — it needs its
+    // own copy of just the WHERE clause, including the SAME stock-gate
+    // fragment (buildStockGateClause) so "how many" and "which ones" never
+    // disagree on what's visible.
+    const countWhereClauses = ["i.is_active = TRUE", "i.is_manually_hidden = FALSE", ...hiddenClauses];
+    const countParams: (string | number | null)[] = [...hiddenParams];
+    const stockGate = buildStockGateClause(stockWarehouseCodes, ctx.cusGrp01, ctx.cusGrp02, ctx.cusGrp03);
+    if (stockGate.clause) {
+      countWhereClauses.push(stockGate.clause);
+      countParams.push(...stockGate.params);
     }
 
+    const extraWhereSql: string[] = [];
+    const extraWhereParams: (string | number | null)[] = [];
     if (search) {
-      whereClauses.push("(i.item_name_vi LIKE ? OR i.item_name_en LIKE ? OR i.sap_item_code LIKE ?)");
-      params.push(`%${search}%`, `%${search}%`, `%${search}%`);
+      extraWhereSql.push("(i.item_name_vi LIKE ? OR i.item_name_en LIKE ? OR i.sap_item_code LIKE ?)");
+      extraWhereParams.push(`%${search}%`, `%${search}%`, `%${search}%`);
+      countWhereClauses.push("(i.item_name_vi LIKE ? OR i.item_name_en LIKE ? OR i.sap_item_code LIKE ?)");
+      countParams.push(`%${search}%`, `%${search}%`, `%${search}%`);
     }
     if (category) {
-      whereClauses.push("i.category = ?");
-      params.push(category);
+      extraWhereSql.push("i.category = ?");
+      extraWhereParams.push(category);
+      countWhereClauses.push("i.category = ?");
+      countParams.push(category);
     }
-    const whereSql = whereClauses.join(" AND ");
 
     // Skipped when promoOnly — that filter depends on the LATERAL-joined
-    // promo/giveaway matches computed further down, which this simple count
-    // query doesn't have; its `total` is derived from the filtered/sorted
-    // JS array length instead (see below).
+    // promo/giveaway matches queryPricedProducts computes, which this simple
+    // count query doesn't have; its `total` is derived from the filtered/
+    // sorted JS array length instead (see below).
     const promoOnly = searchParams.get("promoOnly") === "true";
     let total = 0;
     if (!promoOnly) {
       const totalRows = await query<{ cnt: number }[]>(
-        `SELECT COUNT(*) as cnt FROM items i WHERE ${whereSql}`,
-        params
+        `SELECT COUNT(*) as cnt FROM items i WHERE ${countWhereClauses.join(" AND ")}`,
+        countParams
       );
       total = totalRows[0]?.cnt ?? 0;
     }
@@ -384,194 +124,30 @@ export async function GET(request: NextRequest) {
     );
     const categories = categoryRows.map((c) => c.category);
 
-    const basePriceListNum = await getBasePriceListNum();
-
-    // "" never matches a real SAP code — safe stand-ins for an
-    // anonymous/unapproved customer with no BP/group codes at all.
-    const custCode = sapCardCode ?? "";
-    const grp01 = cusGrp01 ?? "";
-    const grp02 = cusGrp02 ?? "";
-    const grp03 = cusGrp03 ?? "";
-
     // promoOnly + sort=discount back the "Khuyến mãi" storefront tab: only
     // items with a currently-valid promotion (percent OR buy-give), ranked
     // by combined discount % — which can't be expressed as a plain SQL
     // ORDER BY (it depends on the same sequential contract->promo compounding
-    // computed below in JS), so this mode fetches a capped, unpaginated set
-    // and sorts/paginates in JS instead of at the SQL level.
+    // computed inside queryPricedProducts), so this mode fetches a capped,
+    // unpaginated set and sorts/paginates in JS instead of at the SQL level.
     const sortByDiscount = searchParams.get("sort") === "discount";
     const DISCOUNT_SORT_CAP = 2000;
+    if (promoOnly) {
+      extraWhereSql.push("(promo_best.pct IS NOT NULL OR giveaway_best.give_code IS NOT NULL)");
+    }
 
-    const promoMatch = promotionMatchSql("pd");
-    const giveMatch = promotionMatchSql("pd2");
-    const promoOnlyClause = promoOnly ? " AND (promo_best.pct IS NOT NULL OR giveaway_best.give_code IS NOT NULL)" : "";
+    const orderLimitSql = `ORDER BY i.item_name_vi ASC LIMIT ?${sortByDiscount ? "" : " OFFSET ?"}`;
+    const orderLimitParams = sortByDiscount ? [DISCOUNT_SORT_CAP] : [limit, offset];
 
-    // Same resolved warehouse set as the stock gate above — the quantity
-    // shown to the customer must match the one the gate actually used,
-    // otherwise "in stock" and the number on the card could disagree. NULL
-    // (not 0) when the feature is off entirely, so the UI can tell "unknown/
-    // not tracked" apart from "really zero" and just not show a number.
-    const availableQtySql =
-      stockWarehouseCodes.length > 0
-        ? `(SELECT SUM(iws.in_stock - iws.committed) FROM item_warehouse_stock iws
-            WHERE iws.sap_item_code = i.sap_item_code
-              AND iws.warehouse_code IN (${stockWarehouseCodes.map(() => "?").join(",")})
-              AND ${shelfLifeOkSql("iws")})`
-        : "NULL";
-
-    const rows = await query<ProductRow[]>(
-      `SELECT i.id, i.sap_item_code, i.item_name_vi, i.item_name_en, COALESCE(i.sales_uom, i.uom) AS uom, i.pack_size,
-              i.category, i.base_price, i.image_url, i.is_active,
-              cp_base.price AS channel_price,
-              period_best.pct AS period_disc_pct,
-              cd_best.pct AS contract_disc_pct,
-              promo_best.pct AS promo_disc_pct, promo_best.name AS promo_name,
-              giveaway_best.buy_qty AS buy_qty, giveaway_best.give_code AS give_item_code,
-              giveaway_best.give_name AS give_item_name, giveaway_best.give_qty AS give_qty,
-              ${availableQtySql} AS available_qty
-       FROM items i
-       LEFT JOIN item_channel_prices cp
-         ON cp.sap_item_code = i.sap_item_code AND cp.price_list_num = ?
-       LEFT JOIN item_channel_prices cp_base
-         ON cp_base.sap_item_code = i.sap_item_code AND cp_base.price_list_num = cp.base_price_list_num
-       LEFT JOIN LATERAL (
-         SELECT pdisc.discount_percent AS pct
-         FROM period_discount pdisc
-         WHERE pdisc.price_list_num = ?
-           AND pdisc.sap_item_code = i.sap_item_code
-           AND (pdisc.date_from IS NULL OR pdisc.date_from <= CURDATE())
-           AND (pdisc.date_to IS NULL OR pdisc.date_to >= CURDATE())
-         ORDER BY pdisc.date_from DESC
-         LIMIT 1
-       ) period_best ON TRUE
-       LEFT JOIN LATERAL (
-         SELECT cd.u_base_disc_pct AS pct
-         FROM contract_discount cd
-         WHERE (cd.canceled IS NULL OR cd.canceled != 'Y')
-           AND cd.u_code_cust IN (?, ?, ?, ?)
-           AND cd.u_code_item IN (i.sap_item_code, i.item_cat01, i.item_cat02, i.item_cat03, i.item_cat04, i.item_cat05, i.item_cat06)
-           AND (cd.u_valid_from IS NULL OR cd.u_valid_from <= CURDATE())
-           AND (cd.u_valid_to IS NULL OR cd.u_valid_to >= CURDATE())
-         ORDER BY
-           (CASE WHEN cd.u_code_item = i.sap_item_code THEN 600
-                 WHEN cd.u_code_item = i.item_cat06 THEN 60
-                 WHEN cd.u_code_item = i.item_cat05 THEN 50
-                 WHEN cd.u_code_item = i.item_cat04 THEN 40
-                 WHEN cd.u_code_item = i.item_cat03 THEN 30
-                 WHEN cd.u_code_item = i.item_cat02 THEN 20
-                 WHEN cd.u_code_item = i.item_cat01 THEN 10
-                 ELSE 0 END)
-           +
-           (CASE WHEN cd.u_code_cust = ? THEN 600
-                 WHEN cd.u_code_cust = ? THEN 300
-                 WHEN cd.u_code_cust = ? THEN 200
-                 WHEN cd.u_code_cust = ? THEN 100
-                 ELSE 0 END) DESC,
-           cd.u_base_disc_pct DESC
-         LIMIT 1
-       ) cd_best ON TRUE
-       LEFT JOIN LATERAL (
-         SELECT pd.disc_pct AS pct, pd.promotion_name AS name
-         FROM promotion_discount pd
-         WHERE pd.disc_pct IS NOT NULL
-           AND (pd.selling_qty IS NULL OR pd.selling_qty <= 1)
-           AND (pd.begin_date IS NULL OR pd.begin_date <= CURDATE())
-           AND (pd.end_date IS NULL OR pd.end_date >= CURDATE())
-           AND ${promoMatch.bpSql}
-           AND ${promoMatch.itSql}
-         ORDER BY ${promoMatch.scoreSql} DESC, pd.disc_pct DESC
-         LIMIT 1
-       ) promo_best ON TRUE
-       LEFT JOIN LATERAL (
-         SELECT pd2.selling_qty AS buy_qty, pd2.giving_item_code AS give_code,
-                pd2.giving_item_name AS give_name, pd2.giving_qty AS give_qty
-         FROM promotion_discount pd2
-         WHERE pd2.giving_item_code IS NOT NULL
-           AND (pd2.begin_date IS NULL OR pd2.begin_date <= CURDATE())
-           AND (pd2.end_date IS NULL OR pd2.end_date >= CURDATE())
-           AND ${giveMatch.bpSql}
-           AND ${giveMatch.itSql}
-         ORDER BY ${giveMatch.scoreSql} DESC, pd2.giving_qty DESC
-         LIMIT 1
-       ) giveaway_best ON TRUE
-       WHERE ${whereSql}${promoOnlyClause}
-       ORDER BY i.item_name_vi ASC
-       LIMIT ?${sortByDiscount ? "" : " OFFSET ?"}`,
-      [
-        ...(stockWarehouseCodes.length > 0 ? [...stockWarehouseCodes, cusGrp01, cusGrp02, cusGrp03] : []), // available_qty subquery (SELECT list — comes first in the SQL text)
-        priceListNum ?? basePriceListNum, // cp.price_list_num
-        priceListNum ?? basePriceListNum, // period_discount.price_list_num (same list — SAP scopes these per price list, not per customer)
-        custCode, grp01, grp02, grp03, // contract WHERE u_code_cust IN list
-        custCode, grp03, grp02, grp01, // contract ORDER BY customer-specificity weights
-        custCode, grp01, grp02, grp03, // promo WHERE bp_type='2'/'CG1'/'CG2'/'CG3' match
-        custCode, grp01, grp02, grp03, // giveaway WHERE bp_type='2'/'CG1'/'CG2'/'CG3' match
-        ...params,
-        ...(sortByDiscount ? [DISCOUNT_SORT_CAP] : [limit, offset]),
-      ]
+    const items: ProductWithPricing[] = await queryPricedProducts(
+      ctx, hiddenClauses, hiddenParams, extraWhereSql, extraWhereParams, orderLimitSql, orderLimitParams
     );
 
-    const items: ProductWithPricing[] = rows.map((row) => {
-      const sapBasePrice = Number(row.base_price); // items.base_price (S01) — only used as the fallback when there's no channel price row at all
-      const channelPrice = row.channel_price !== null ? Number(row.channel_price) : null;
-      // The actual reference price the discount waterfall is taken from —
-      // and, per the customer's request, also what's shown as "Base Price"/
-      // the strikethrough and what discountPercent is computed against, so
-      // the displayed "% off" always matches the price that was really cut.
-      const priceBeforeDiscounts = channelPrice && channelPrice > 0 ? channelPrice : sapBasePrice;
-
-      const periodDiscPct = row.period_disc_pct !== null ? Number(row.period_disc_pct) : 0;
-      const contractDiscPct = row.contract_disc_pct !== null ? Number(row.contract_disc_pct) : 0;
-      const promoDiscPct = row.promo_disc_pct !== null ? Number(row.promo_disc_pct) : 0;
-
-      // Sequential flow: Channel Price -> Period Discount Price -> Contract
-      // Discount Price -> Promotion Discount Price. Each step is taken off
-      // the PREVIOUS step's already-discounted price, not off the original
-      // Channel Price.
-      const periodPrice = priceBeforeDiscounts * (1 - periodDiscPct / 100);
-      const contractPrice = periodPrice * (1 - contractDiscPct / 100);
-      const promotionPrice = contractPrice * (1 - promoDiscPct / 100);
-
-      const displayPrice = Math.max(0, promotionPrice);
-
-      const discountPercent =
-        displayPrice < priceBeforeDiscounts && priceBeforeDiscounts > 0
-          ? Math.round(((priceBeforeDiscounts - displayPrice) / priceBeforeDiscounts) * 100)
-          : null;
-
-      return {
-        id: row.id,
-        sapItemCode: row.sap_item_code,
-        itemNameVi: row.item_name_vi || "",
-        itemNameEn: row.item_name_en || "",
-        uom: row.uom || "",
-        packSize: row.pack_size || "",
-        category: row.category || "",
-        basePrice: priceBeforeDiscounts,
-        imageUrl: row.image_url,
-        isActive: !!row.is_active,
-        displayPrice,
-        specialPrice: displayPrice < priceBeforeDiscounts ? displayPrice : null,
-        discountPercent,
-        hasPromotion: promoDiscPct > 0,
-        promotionTitle: promoDiscPct > 0 ? row.promo_name || undefined : undefined,
-        hasBuyGivePromo: row.give_item_code !== null,
-        promoBuyQty: row.buy_qty !== null ? Number(row.buy_qty) : undefined,
-        promoGiveItemCode: row.give_item_code || undefined,
-        promoGiveItemName: row.give_item_name || undefined,
-        promoGiveQty: row.give_qty !== null ? Number(row.give_qty) : undefined,
-        // null = stock tracking is off (or no stock row at all) for this customer's
-        // resolved warehouse set — distinct from a real 0, which means "out of
-        // stock" (though a 0-or-below item wouldn't reach this far: the stock
-        // gate already excludes it from the result set entirely).
-        availableQty: row.available_qty !== null ? Math.floor(Number(row.available_qty)) : null,
-      };
-    });
-
     // "Khuyến mãi" tab: rank by combined discount % descending (computed
-    // above per-item, can't be expressed as a SQL ORDER BY — see comment at
-    // the query), then paginate the already-fetched, already-filtered set.
-    // Tie-break: among equal discount %, an item that ALSO has a buy-give
-    // bonus-item promo ranks above one that doesn't — more benefit shown first.
+    // inside queryPricedProducts, can't be expressed as a SQL ORDER BY — see
+    // comment above), then paginate the already-fetched, already-filtered
+    // set. Tie-break: among equal discount %, an item that ALSO has a
+    // buy-give bonus-item promo ranks above one that doesn't.
     if (sortByDiscount) {
       items.sort((a, b) => {
         const discountDiff = (b.discountPercent ?? -1) - (a.discountPercent ?? -1);

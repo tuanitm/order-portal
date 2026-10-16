@@ -810,6 +810,8 @@ export async function POST(
       DocDate: vnToday,
       DocDueDate: vnToday,
       U_ProdBrand: headerBrand,
+      // Portal order number stamped onto the SAP header so it's visible in SAP B1.
+      U_RefDocNo: orderNumber,
       // "Y" only if at least one Promotion Discount line is actually
       // being pushed — left unset otherwise, not forced to "N".
       U_GetPMStatus: promotionLines.length > 0 ? "Y" : undefined,

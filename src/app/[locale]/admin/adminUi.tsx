@@ -59,6 +59,7 @@ export const ORDER_STATUS_LABELS: Record<string, string> = {
   processing: "Processing",
   sap_draft_created: "SAP Draft Created",
   approved: "Approved",
+  delivered: "Delivered",
   rejected: "Rejected",
   completed: "Completed",
   cancelled: "Cancelled by Customer",
