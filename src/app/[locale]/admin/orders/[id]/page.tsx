@@ -21,7 +21,8 @@ interface OrderDetail {
   id: number; order_number: string; customer_name: string | null; customer_email: string | null;
   delivery_address: string | null; contact_phone: string | null; subtotal: string; discount_total: string;
   grand_total: string; remark: string | null; status: string; sap_doc_entry: number | null;
-  sap_doc_num: number | null; sap_so_number: string | null; created_at: string; sap_card_code: string | null;
+  sap_doc_num: number | null; sap_so_number: string | null; created_at: string;
+  sap_card_code: string | null; sap_card_name: string | null;
 }
 interface OrderLine {
   id: number; sap_item_code: string; item_name: string; quantity: number; uom: string;
@@ -62,6 +63,14 @@ interface OrderMessage {
 
 function formatPrice(v: string) {
   return new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 0 }).format(Number(v)) + "₫";
+}
+
+/** Format a discount % value to exactly 4 decimal places.
+ *  e.g. 20.0003 → "20.0003%",  50.2345 → "50.2345%",  10 → "10.0000%" */
+function formatDisc(v: string | null | undefined): string | null {
+  const n = Number(v);
+  if (!v || isNaN(n) || n <= 0) return null;
+  return n.toFixed(4) + "%";
 }
 
 function formatQty(v: number) {
@@ -347,15 +356,26 @@ export default function AdminOrderDetailPage() {
   return (
     <div style={styles.page}>
       <div style={styles.container}>
-        <div style={styles.header}>
-          <div>
-            <h1 style={styles.title}>{order.order_number}</h1>
-            <p style={styles.subtitle}>
-              {order.sap_card_code ? `${order.sap_card_code} - ` : ""}
-              {order.customer_name || order.customer_email}
-            </p>
+        <div style={{ ...styles.header, alignItems: "center" }}>
+          <div style={{ display: "flex", alignItems: "flex-start", gap: "1rem" }}>
+            <div style={{ paddingTop: "0.35rem" }}>
+              <BackLink href="../orders" label="← Back" />
+            </div>
+            <div>
+              <h1 style={styles.title}>
+                {order.order_number}
+                {(order.sap_card_name || order.customer_name) && (
+                  <span style={{
+                    fontSize: "0.9rem", fontWeight: 400,
+                    color: "var(--text-secondary, #64748B)",
+                    marginLeft: "0.75rem",
+                  }}>
+                    [ {order.sap_card_name || order.customer_name || order.customer_email} ]
+                  </span>
+                )}
+              </h1>
+            </div>
           </div>
-          <BackLink href="../orders" label="← Back to Orders" />
         </div>
 
         <div style={{ ...styles.cardPadded }}>
@@ -496,7 +516,6 @@ export default function AdminOrderDetailPage() {
             <table style={styles.table}>
               <thead>
                 <tr>
-                  <th style={styles.th}>Brand</th>
                   <th style={styles.th}>Item Code</th>
                   <th style={styles.th}>Item Name</th>
                   <th style={styles.th}>Avail Qty</th>
@@ -514,7 +533,6 @@ export default function AdminOrderDetailPage() {
               <tbody>
                 {lines.map((l) => (
                   <tr key={l.id} style={!!l.is_gift_line ? { background: "var(--color-success-light, #ECFDF5)" } : undefined}>
-                    <td style={styles.td}>{l.brand_name || <em style={{ color: "var(--text-tertiary, #94A3B8)" }}>—</em>}</td>
                     <td style={{ ...styles.td, fontFamily: "monospace", fontSize: "0.75rem" }}>{l.sap_item_code}</td>
                     <td style={styles.td}>
                       <div style={{ display: "flex", alignItems: "center", gap: "0.375rem" }}>
@@ -562,13 +580,13 @@ export default function AdminOrderDetailPage() {
                     <td style={styles.td}>{l.uom}</td>
                     <td style={styles.td}>{formatPrice(l.base_unit_price)}</td>
                     <td style={styles.td}>
-                      {Number(l.period_disc_pct) > 0 ? `${l.period_disc_pct}%` : <em style={{ color: "var(--text-tertiary, #94A3B8)" }}>—</em>}
+                      {formatDisc(l.period_disc_pct) ?? <em style={{ color: "var(--text-tertiary, #94A3B8)" }}>—</em>}
                     </td>
                     <td style={styles.td}>
-                      {Number(l.contract_disc_pct) > 0 ? `${l.contract_disc_pct}%` : <em style={{ color: "var(--text-tertiary, #94A3B8)" }}>—</em>}
+                      {formatDisc(l.contract_disc_pct) ?? <em style={{ color: "var(--text-tertiary, #94A3B8)" }}>—</em>}
                     </td>
                     <td style={styles.td}>
-                      {Number(l.promo_disc_pct) > 0 ? `${l.promo_disc_pct}%` : <em style={{ color: "var(--text-tertiary, #94A3B8)" }}>—</em>}
+                      {formatDisc(l.promo_disc_pct) ?? <em style={{ color: "var(--text-tertiary, #94A3B8)" }}>—</em>}
                     </td>
                     <td style={styles.td}>{formatPrice(l.unit_price)}</td>
                     <td style={styles.td}>{formatPrice(l.line_total)}</td>

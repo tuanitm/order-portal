@@ -133,7 +133,7 @@ export async function GET(request: NextRequest) {
     const sortByDiscount = searchParams.get("sort") === "discount";
     const DISCOUNT_SORT_CAP = 2000;
     if (promoOnly) {
-      extraWhereSql.push("(promo_best.pct IS NOT NULL OR giveaway_best.give_code IS NOT NULL)");
+      extraWhereSql.push("(promo_options.options IS NOT NULL OR giveaway_options.options IS NOT NULL)");
     }
 
     const orderLimitSql = `ORDER BY i.item_name_vi ASC LIMIT ?${sortByDiscount ? "" : " OFFSET ?"}`;

@@ -20,8 +20,12 @@ export async function GET(
   if (isNaN(orderId)) return NextResponse.json({ error: "Invalid order ID" }, { status: 400 });
 
   const order = await queryOne(
-    `SELECT o.*, u.email AS customer_email, u.sap_card_code
-     FROM orders o LEFT JOIN users u ON u.id = o.user_id WHERE o.id = ?`,
+    `SELECT o.*, u.email AS customer_email, u.sap_card_code,
+            c.card_name AS sap_card_name
+     FROM orders o
+     LEFT JOIN users u ON u.id = o.user_id
+     LEFT JOIN customers c ON c.sap_card_code = u.sap_card_code
+     WHERE o.id = ?`,
     [orderId]
   );
   if (!order) return NextResponse.json({ error: "Order not found" }, { status: 404 });

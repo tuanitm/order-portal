@@ -506,9 +506,9 @@ CREATE TABLE IF NOT EXISTS order_lines (
   -- which discount type(s) actually applied instead of one opaque %. NULL
   -- on legacy rows predating this column and on gift lines (unit_price is
   -- always 0, so no waterfall percent is meaningful there).
-  period_disc_pct DECIMAL(5,2) NULL,
-  contract_disc_pct DECIMAL(5,2) NULL,
-  promo_disc_pct DECIMAL(5,2) NULL,
+  period_disc_pct DECIMAL(7,4) NULL,
+  contract_disc_pct DECIMAL(7,4) NULL,
+  promo_disc_pct DECIMAL(7,4) NULL,
   -- Which specific promotion_discount PROGRAM (doc_entry/promotion_code,
   -- NOT a single rule row) the customer chose on the product card, when an
   -- item qualified for more than one at once — see
@@ -543,9 +543,9 @@ CREATE TABLE IF NOT EXISTS order_lines (
 -- ALTER TABLE order_lines ADD COLUMN promo_give_qty INT NULL AFTER promo_buy_qty;
 -- ALTER TABLE order_lines ADD FOREIGN KEY (source_line_id) REFERENCES order_lines(id) ON DELETE SET NULL;
 -- ALTER TABLE order_lines ADD COLUMN remark VARCHAR(500) NULL AFTER promo_give_qty;
--- ALTER TABLE order_lines ADD COLUMN period_disc_pct DECIMAL(5,2) NULL AFTER remark;
--- ALTER TABLE order_lines ADD COLUMN contract_disc_pct DECIMAL(5,2) NULL AFTER period_disc_pct;
--- ALTER TABLE order_lines ADD COLUMN promo_disc_pct DECIMAL(5,2) NULL AFTER contract_disc_pct;
+-- ALTER TABLE order_lines ADD COLUMN period_disc_pct DECIMAL(7,4) NULL AFTER remark;
+-- ALTER TABLE order_lines ADD COLUMN contract_disc_pct DECIMAL(7,4) NULL AFTER period_disc_pct;
+-- ALTER TABLE order_lines ADD COLUMN promo_disc_pct DECIMAL(7,4) NULL AFTER contract_disc_pct;
 -- ALTER TABLE order_lines ADD COLUMN promotion_code VARCHAR(50) NULL AFTER promo_disc_pct;
 -- ALTER TABLE order_lines ADD COLUMN promotion_name VARCHAR(255) NULL AFTER promotion_code;
 -- ALTER TABLE order_lines ADD COLUMN giveaway_promotion_code VARCHAR(50) NULL AFTER promotion_name;
