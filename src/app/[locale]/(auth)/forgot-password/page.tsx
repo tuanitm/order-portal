@@ -17,6 +17,7 @@ export default function ForgotPasswordPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
   const [otpCooldown, setOtpCooldown] = useState(0);
+  const [resetToken, setResetToken] = useState("");
   const otpInputRefs = useRef<(HTMLInputElement | null)[]>([]);
 
   // Cooldown timer
@@ -95,7 +96,8 @@ export default function ForgotPasswordPage() {
         body: JSON.stringify({ email, code, purpose: "forgot-password", language: locale }),
       });
       const data = await res.json();
-      if (!res.ok || !data.valid) throw new Error(data.message || t("auth.otpInvalid"));
+      if (!res.ok || !data.valid || !data.resetToken) throw new Error(data.message || t("auth.otpInvalid"));
+      setResetToken(data.resetToken);
       setStep("newPassword");
     } catch (err) {
       setError(err instanceof Error ? err.message : t("auth.otpInvalid"));
@@ -113,11 +115,10 @@ export default function ForgotPasswordPage() {
     setIsLoading(true);
 
     try {
-      // TODO: Call actual password reset API with MySQL
       const res = await fetch("/api/auth/reset-password", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, newPassword }),
+        body: JSON.stringify({ resetToken, newPassword }),
       });
       if (!res.ok) {
         const data = await res.json();

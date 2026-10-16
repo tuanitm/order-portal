@@ -1,10 +1,25 @@
 import { NextRequest, NextResponse } from "next/server";
-import { query } from "@/lib/db/connection";
+import { queryOne } from "@/lib/db/connection";
+
+interface MatchRow {
+  email: string | null;
+  phone: string | null;
+  mst_code: string | null;
+}
 
 /**
- * POST /api/auth/identify — Check if a user exists by email, phone, or MST code
- * Body: { identifier: string }
+ * POST /api/auth/identify — Check if a user exists by email, phone, or MST
+ * (tax) code. Body: { identifier: string }
  * Returns: { exists: boolean, identifierType: 'email' | 'phone' | 'mst' }
+ *
+ * Scans all three columns in one query rather than pre-guessing which one
+ * the identifier is by its shape — a tax code and a phone number are both
+ * plain digit strings of similar length (e.g. "0315832139" is 10 digits,
+ * matching the same 9-15-digit pattern a phone number would), so picking
+ * exactly one column to check based on a regex meant real tax-code logins
+ * were silently never found (looked up only against `phone`, which didn't
+ * match, so the system thought the account didn't exist at all and sent
+ * the customer to signup instead of login).
  */
 export async function POST(request: NextRequest) {
   try {
@@ -19,30 +34,32 @@ export async function POST(request: NextRequest) {
     }
 
     const value = identifier.trim();
+    const normalizedPhone = value.replace(/[+\-\s()]/g, "");
+    const normalizedEmail = value.toLowerCase();
 
-    // Determine identifier type
+    const match = await queryOne<MatchRow>(
+      "SELECT email, phone, mst_code FROM users WHERE email = ? OR phone = ? OR mst_code = ? LIMIT 1",
+      [normalizedEmail, normalizedPhone, value]
+    );
+
+    // Classify AFTER the lookup, from whichever column the match actually
+    // came from — used only for the signup form's own field pre-fill when
+    // no account exists yet, never for the existence check itself.
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     const phoneRegex = /^[0-9]{9,15}$/;
-
     let identifierType: "email" | "phone" | "mst";
-    let sql: string;
-
-    if (emailRegex.test(value)) {
+    if (match) {
+      identifierType = match.phone === normalizedPhone ? "phone" : match.mst_code === value ? "mst" : "email";
+    } else if (emailRegex.test(value)) {
       identifierType = "email";
-      sql = "SELECT id FROM users WHERE email = ? LIMIT 1";
-    } else if (phoneRegex.test(value.replace(/[+\-\s()]/g, ""))) {
+    } else if (phoneRegex.test(normalizedPhone)) {
       identifierType = "phone";
-      sql = "SELECT id FROM users WHERE phone = ? LIMIT 1";
     } else {
       identifierType = "mst";
-      sql = "SELECT id FROM users WHERE mst_code = ? LIMIT 1";
     }
 
-    const rows = await query<{ id: number }[]>(sql, [value]);
-    const exists = Array.isArray(rows) && rows.length > 0;
-
     return NextResponse.json({
-      exists,
+      exists: !!match,
       identifierType,
     });
   } catch (error) {

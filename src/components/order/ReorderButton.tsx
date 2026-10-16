@@ -22,7 +22,7 @@ interface OrderLineRow {
 export default function ReorderButton({ orderId }: { orderId: number }) {
   const t = useTranslations();
   const locale = useLocale();
-  const { addItem } = useCart();
+  const { addItem, openCart } = useCart();
   const [isBusy, setIsBusy] = useState(false);
   const [message, setMessage] = useState("");
 
@@ -42,6 +42,7 @@ export default function ReorderButton({ orderId }: { orderId: number }) {
       }
 
       const unavailable: string[] = [];
+      let addedAny = false;
       for (const [code, quantity] of qtyByCode) {
         const pRes = await fetch(`/api/products?search=${encodeURIComponent(code)}&limit=20`);
         const pData: { items: ProductWithPricing[] } = pRes.ok ? await pRes.json() : { items: [] };
@@ -67,7 +68,14 @@ export default function ReorderButton({ orderId }: { orderId: number }) {
           promoGiveItemCode: product.promoGiveItemCode,
           promoGiveItemName: product.promoGiveItemName,
         });
+        addedAny = true;
       }
+
+      // Unlike a single product-card Add to Cart (silent), reordering adds
+      // several lines at once — opening the cart so the customer can review
+      // them before checkout, same as before this flow's add-to-cart calls
+      // stopped auto-opening the sidebar on their own.
+      if (addedAny) openCart();
 
       if (unavailable.length > 0) {
         setMessage(t("order.reorderUnavailable", { count: unavailable.length, items: unavailable.join(", ") }));

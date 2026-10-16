@@ -19,6 +19,7 @@ export const ALL_ADMIN_PERMISSIONS = [
   "orders",
   "admin-users",
   "admin-roles",
+  "settings",
 ] as const;
 
 export type AdminPermission = (typeof ALL_ADMIN_PERMISSIONS)[number];
@@ -33,7 +34,7 @@ export type AdminPermission = (typeof ALL_ADMIN_PERMISSIONS)[number];
  * to escalate to full control, so these are checked by identity
  * (isSuperAdmin), not by the role's permission list — see hasPermission.
  */
-export const ROOT_ONLY_PERMISSIONS: AdminPermission[] = ["admin-users", "admin-roles"];
+export const ROOT_ONLY_PERMISSIONS: AdminPermission[] = ["admin-users", "admin-roles", "settings"];
 
 /** ALL_ADMIN_PERMISSIONS minus ROOT_ONLY_PERMISSIONS — what a role can actually be given (see the Admin Roles page). */
 export const ASSIGNABLE_ADMIN_PERMISSIONS = ALL_ADMIN_PERMISSIONS.filter(

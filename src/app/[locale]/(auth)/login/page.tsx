@@ -17,6 +17,7 @@ export default function LoginPage() {
 
   const [identifier, setIdentifier] = useState(prefilledIdentifier);
   const [password, setPassword] = useState("");
+  const [rememberMe, setRememberMe] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
   const [approvalStatus, setApprovalStatus] = useState<"pending" | "rejected" | null>(null);
@@ -32,7 +33,7 @@ export default function LoginPage() {
       const res = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ identifier, password }),
+        body: JSON.stringify({ identifier, password, rememberMe }),
       });
 
       const data = await res.json();
@@ -171,7 +172,19 @@ export default function LoginPage() {
               autoComplete="current-password"
               autoFocus={!!prefilledIdentifier}
             />
-            <div style={{ textAlign: "right", marginTop: "0.25rem" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: "0.5rem" }}>
+              <label style={{
+                display: "flex", alignItems: "center", gap: "0.375rem",
+                fontSize: "0.8125rem", color: "var(--text-secondary)", cursor: "pointer",
+              }}>
+                <input
+                  type="checkbox"
+                  checked={rememberMe}
+                  onChange={(e) => setRememberMe(e.target.checked)}
+                  id="remember-me"
+                />
+                {t("auth.rememberMe")}
+              </label>
               <Link href="/forgot-password" style={{
                 fontSize: "0.8125rem", color: "var(--color-primary)",
                 fontWeight: 500, transition: "color 0.2s",

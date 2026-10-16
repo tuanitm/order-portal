@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
+import jwt from "jsonwebtoken";
 import { verifyOtp } from "@/lib/auth/otp";
+
+const JWT_SECRET = process.env.JWT_SECRET || "order-portal-secret-key-change-in-production";
 
 /**
  * POST /api/auth/otp/verify — Verify OTP code
@@ -65,8 +68,19 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // For forgot-password, issue a short-lived signed token proving THIS
+    // email's OTP was just verified — POST /api/auth/reset-password
+    // requires it instead of trusting a bare {email, newPassword} body
+    // (which would otherwise let anyone reset ANY account's password with
+    // no verification at all, since the OTP itself is never sent there).
+    const resetToken =
+      purpose === "forgot-password"
+        ? jwt.sign({ email: email.toLowerCase().trim(), purpose: "password-reset" }, JWT_SECRET, { expiresIn: "10m" })
+        : undefined;
+
     return NextResponse.json({
       valid: true,
+      resetToken,
       message:
         language === "vi"
           ? "Xác thực OTP thành công"

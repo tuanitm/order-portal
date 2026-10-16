@@ -86,10 +86,20 @@ export default function CartSidebar() {
     closeCart,
     removeItem,
     updateQuantity,
+    toastMessage,
   } = useCart();
 
   return (
     <>
+      {/* "Added to cart" confirmation — silent add-to-cart's only feedback;
+          the sidebar itself only opens when the customer clicks the Cart
+          icon (see Navbar's toggleCart), not as a side effect of adding. */}
+      {toastMessage && (
+        <div className="toast toast--success" role="status" id="cart-toast">
+          ✓ {toastMessage}
+        </div>
+      )}
+
       {/* Overlay */}
       <div
         className={`cart-overlay ${isOpen ? "open" : ""}`}

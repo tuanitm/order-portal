@@ -5,6 +5,8 @@ import {
   useContext,
   useReducer,
   useCallback,
+  useRef,
+  useState,
   ReactNode,
 } from "react";
 
@@ -56,6 +58,9 @@ type CartAction =
 function cartReducer(state: CartState, action: CartAction): CartState {
   switch (action.type) {
     case "ADD_ITEM": {
+      // Silent add — the cart sidebar only opens when the customer clicks
+      // the Cart icon (toggleCart/openCart), never as a side effect of
+      // adding an item; a small toast (see showToast) is the confirmation.
       const existingIndex = state.items.findIndex(
         (item) => item.sapItemCode === action.payload.sapItemCode
       );
@@ -65,9 +70,9 @@ function cartReducer(state: CartState, action: CartAction): CartState {
           ...newItems[existingIndex],
           quantity: newItems[existingIndex].quantity + action.payload.quantity,
         };
-        return { ...state, items: newItems, isOpen: true };
+        return { ...state, items: newItems };
       }
-      return { ...state, items: [...state.items, action.payload], isOpen: true };
+      return { ...state, items: [...state.items, action.payload] };
     }
     case "REMOVE_ITEM":
       return {
@@ -120,6 +125,9 @@ interface CartContextType {
   toggleCart: () => void;
   openCart: () => void;
   closeCart: () => void;
+  /** Small "Added to cart"-style confirmation — see CartSidebar, which renders it. Auto-dismisses after ~2s. */
+  toastMessage: string | null;
+  showToast: (message: string) => void;
 }
 
 const CartContext = createContext<CartContextType | null>(null);
@@ -163,6 +171,14 @@ export function CartProvider({ children }: { children: ReactNode }) {
   const openCart = useCallback(() => dispatch({ type: "OPEN_CART" }), []);
   const closeCart = useCallback(() => dispatch({ type: "CLOSE_CART" }), []);
 
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const toastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showToast = useCallback((message: string) => {
+    setToastMessage(message);
+    if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+    toastTimeoutRef.current = setTimeout(() => setToastMessage(null), 2000);
+  }, []);
+
   return (
     <CartContext.Provider
       value={{
@@ -179,6 +195,8 @@ export function CartProvider({ children }: { children: ReactNode }) {
         toggleCart,
         openCart,
         closeCart,
+        toastMessage,
+        showToast,
       }}
     >
       {children}

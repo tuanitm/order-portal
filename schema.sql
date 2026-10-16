@@ -732,3 +732,27 @@ CREATE TABLE IF NOT EXISTS customers (
 -- Migration for existing databases:
 -- ALTER TABLE customers ADD COLUMN account VARCHAR(255) NULL AFTER address;
 -- ALTER TABLE customers ADD COLUMN is_enabled BOOLEAN NOT NULL DEFAULT TRUE AFTER account;
+
+-- Scheduled Sync setting — a single row (id is always 1), root-editable on
+-- the Admin Settings page. Replaces scripts/daily-sync.mjs's role (an
+-- external script registered in Windows Task Scheduler that logs in over
+-- HTTP) with an in-process scheduler — see src/instrumentation.ts, which
+-- runs once when the server boots and polls this row every minute to
+-- decide whether it's time to run runScheduledSync() (src/lib/sap-b1/
+-- scheduledSync.ts) again. ONE combined schedule for every sync type
+-- (SAP Customers, Items, Price Lists, Period Discount, Contract Discount,
+-- Promotion Discount), not a separate schedule per type — simpler to
+-- configure, and matches the existing daily-sync.mjs's own all-together
+-- behavior, just with Period Discount added (the one sync type that
+-- script never covered at all).
+CREATE TABLE IF NOT EXISTS sync_schedule_settings (
+  id INT PRIMARY KEY DEFAULT 1,
+  is_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+  interval_hours INT NOT NULL DEFAULT 24,
+  last_run_at TIMESTAMP NULL,
+  last_run_status ENUM('success', 'partial', 'failed') NULL,
+  last_run_summary TEXT NULL,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  CONSTRAINT chk_sync_schedule_singleton CHECK (id = 1)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+INSERT IGNORE INTO sync_schedule_settings (id) VALUES (1);

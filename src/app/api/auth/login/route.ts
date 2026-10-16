@@ -29,7 +29,7 @@ interface UserRow {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { identifier, password } = body;
+    const { identifier, password, rememberMe } = body;
 
     if (!identifier || !password) {
       return NextResponse.json(
@@ -39,21 +39,17 @@ export async function POST(request: NextRequest) {
     }
 
     const value = identifier.trim();
+    const normalizedPhone = value.replace(/[+\-\s()]/g, "");
+    const normalizedEmail = value.toLowerCase();
 
-    // Determine identifier type and find user
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    const phoneRegex = /^[0-9]{9,15}$/;
-
-    let sql: string;
-    if (emailRegex.test(value)) {
-      sql = "SELECT * FROM users WHERE email = ? LIMIT 1";
-    } else if (phoneRegex.test(value.replace(/[+\-\s()]/g, ""))) {
-      sql = "SELECT * FROM users WHERE phone = ? LIMIT 1";
-    } else {
-      sql = "SELECT * FROM users WHERE mst_code = ? LIMIT 1";
-    }
-
-    const user = await queryOne<UserRow>(sql, [value]);
+    // Scan all three columns in one query rather than pre-guessing which
+    // one the identifier is by its shape — see POST /api/auth/identify's
+    // own comment for why that broke real tax-code logins (a tax code and
+    // a phone number are both plain digit strings of similar length).
+    const user = await queryOne<UserRow>(
+      "SELECT * FROM users WHERE email = ? OR phone = ? OR mst_code = ? LIMIT 1",
+      [normalizedEmail, normalizedPhone, value]
+    );
 
     if (!user) {
       return NextResponse.json(
@@ -117,7 +113,8 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Generate JWT token
+    // Generate JWT token — 30d either way; what differs with "remember me"
+    // is the COOKIE's own lifetime below, not the token's.
     const token = jwt.sign(
       {
         userId: user.id,
@@ -125,7 +122,7 @@ export async function POST(request: NextRequest) {
         fullName: user.full_name,
       },
       JWT_SECRET,
-      { expiresIn: "7d" }
+      { expiresIn: "30d" }
     );
 
     // Set token as HTTP-only cookie
@@ -147,7 +144,11 @@ export async function POST(request: NextRequest) {
       httpOnly: true,
       secure: isHttpsRequest(request),
       sameSite: "lax",
-      maxAge: 7 * 24 * 60 * 60, // 7 days
+      // "Remember me": a persistent 30-day cookie that survives closing the
+      // browser; unchecked, a session cookie (no maxAge) that the browser
+      // clears on its own when closed — the token itself is valid either
+      // way, only the cookie's own lifetime differs.
+      ...(rememberMe ? { maxAge: 30 * 24 * 60 * 60 } : {}),
       path: "/",
     });
 

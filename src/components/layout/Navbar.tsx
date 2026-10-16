@@ -333,6 +333,20 @@ export default function Navbar() {
                     >
                       📦 {t("nav.orders")}
                     </Link>
+                    <Link
+                      href="/change-password"
+                      onClick={() => setShowMenu(false)}
+                      style={{
+                        display: "flex", alignItems: "center", gap: "0.5rem",
+                        padding: "0.5rem 0.75rem", borderRadius: "var(--radius-md, 6px)",
+                        fontSize: "0.8125rem", color: "var(--text-secondary, #64748B)",
+                        textDecoration: "none", transition: "background 0.15s",
+                      }}
+                      onMouseEnter={(e) => (e.currentTarget.style.background = "var(--bg-secondary, #F8FAFC)")}
+                      onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                    >
+                      🔒 {t("auth.changePassword")}
+                    </Link>
                     <button
                       onClick={handleLogout}
                       id="logout-btn"

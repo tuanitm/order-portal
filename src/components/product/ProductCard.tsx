@@ -16,7 +16,7 @@ interface ProductCardProps {
 export default function ProductCard({ product }: ProductCardProps) {
   const t = useTranslations();
   const locale = useLocale();
-  const { addItem } = useCart();
+  const { addItem, showToast } = useCart();
   const showAvailable = useShowAvailable();
 
   // SAP only ever carries one (Vietnamese) item name — item_name_en is never
@@ -49,6 +49,7 @@ export default function ProductCard({ product }: ProductCardProps) {
       promoGiveItemName: product.promoGiveItemName,
     };
     addItem(cartItem);
+    showToast(t("product.addedToCart"));
   };
 
   return (

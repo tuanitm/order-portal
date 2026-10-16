@@ -158,6 +158,7 @@ const NAV_ITEMS: { key: AdminPermission; label: string; href: string; icon: stri
   { key: "orders", label: "Orders", href: "orders", icon: "🧾" },
   { key: "admin-users", label: "Admin Users", href: "admin-users", icon: "🔑", rootOnly: true },
   { key: "admin-roles", label: "Admin Roles", href: "admin-roles", icon: "🛡️", rootOnly: true },
+  { key: "settings", label: "Settings", href: "settings", icon: "⚙️", rootOnly: true },
 ];
 
 export default function AdminLayout({
