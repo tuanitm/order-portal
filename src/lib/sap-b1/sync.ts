@@ -45,17 +45,38 @@ export async function getTrackedPriceListNums(): Promise<number[]> {
 }
 
 /**
- * Pull all SAP price lists into the local cache. Does not touch
+ * Pull SAP price lists into the local cache, restricted to the names in
+ * config.json's masterdata.priceList (if configured):
+ * upserts every listed price list found in SAP, and deletes any existing row
+ * whose price_list_num is no longer in the configured set. Does not touch
  * `is_base`/`is_channel` on lists already known — admin decision.
  */
 export async function syncPriceLists(): Promise<{ listsSynced: number }> {
   const sap = getSapClient();
   const pool = getPool();
-  const lists = await sap.getPriceLists();
+  const cfg = loadConfig();
+  const allowedNames = cfg.masterdata?.priceList
+    ? parseSqlInList(cfg.masterdata.priceList)
+    : null;
+
+  let lists = await sap.getPriceLists();
+  if (allowedNames && allowedNames.size > 0) {
+    lists = lists.filter((l) => allowedNames.has(l.PriceListName));
+  }
 
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
+
+    if (allowedNames && allowedNames.size > 0) {
+      const allowedNums = lists.map((l) => l.PriceListNo);
+      if (allowedNums.length > 0) {
+        await conn.query(`DELETE FROM price_lists WHERE price_list_num NOT IN (?)`, [allowedNums]);
+      } else {
+        await conn.query(`DELETE FROM price_lists`);
+      }
+    }
+
     for (const l of lists) {
       await conn.execute(
         `INSERT INTO price_lists (price_list_num, list_name, last_synced)

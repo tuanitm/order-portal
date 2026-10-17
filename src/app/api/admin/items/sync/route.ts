@@ -11,6 +11,10 @@ export async function POST(request: NextRequest) {
   const guard = await requireAdminPermission(request, "items");
   if (guard.response) return guard.response;
 
+  if (!guard.session.isSuperAdmin) {
+    return NextResponse.json({ error: "Only Super Admin can sync items" }, { status: 403 });
+  }
+
   try {
     const result = await syncItems();
     console.log(`[Admin] Item sync complete: ${result.itemsSynced} items`);

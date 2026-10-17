@@ -8,7 +8,7 @@ export const dynamic = "force-dynamic";
 
 export function generateMetadata(): Metadata {
   return {
-    title: formatAppName("Ordering Portal"),
+    title: formatAppName("Order Portal"),
     description: "Order products directly and manage your orders efficiently.",
   };
 }

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { styles, btn, SyncButton, Toggle, LoadingOrEmpty } from "../adminUi";
+import { useAdminSession } from "../layout";
 
 interface PriceList {
   price_list_num: number;
@@ -57,6 +58,8 @@ function formatPrice(v: string | null) {
 }
 
 export default function PriceListsPage() {
+  const session = useAdminSession();
+  const isSuperAdmin = !!session?.isSuperAdmin;
   const [lists, setLists] = useState<PriceList[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [savingNum, setSavingNum] = useState<number | null>(null);
@@ -74,6 +77,7 @@ export default function PriceListsPage() {
   }, [load]);
 
   const update = async (num: number, body: { isBase?: boolean; isChannel?: boolean }) => {
+    if (!isSuperAdmin) return;
     setSavingNum(num);
     await fetch(`/api/admin/price-lists/${num}`, {
       method: "PATCH",
@@ -202,15 +206,21 @@ export default function PriceListsPage() {
                         <td style={styles.td}>
                           <Toggle
                             checked={!!l.is_base}
-                            disabled={savingNum === l.price_list_num}
-                            onChange={(v) => update(l.price_list_num, { isBase: v })}
+                            disabled={!isSuperAdmin || savingNum === l.price_list_num}
+                            onChange={(v) => {
+                              if (!isSuperAdmin) return;
+                              update(l.price_list_num, { isBase: v });
+                            }}
                           />
                         </td>
                         <td style={styles.td}>
                           <Toggle
                             checked={!!l.is_channel}
-                            disabled={savingNum === l.price_list_num}
-                            onChange={(v) => update(l.price_list_num, { isChannel: v })}
+                            disabled={!isSuperAdmin || savingNum === l.price_list_num}
+                            onChange={(v) => {
+                              if (!isSuperAdmin) return;
+                              update(l.price_list_num, { isChannel: v });
+                            }}
                           />
                         </td>
                         <td style={{ ...styles.td, color: "var(--text-tertiary, #94A3B8)", fontSize: "0.75rem" }}>

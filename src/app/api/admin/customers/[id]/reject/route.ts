@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { query, queryOne } from "@/lib/db/connection";
 import { sendRejectionEmail } from "@/lib/email/sender";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
-import { getAllowedCustomerGroupCodes, inScope } from "@/lib/adminScope";
+import { isCustomerInApprovalScope } from "@/lib/adminScope";
 
 /**
  * POST /api/admin/customers/[id]/reject — Reject a customer
@@ -41,13 +41,21 @@ export async function POST(
       id: number;
       email: string | null;
       full_name: string;
+      sap_card_code: string | null;
       sap_cus_grp01: string | null;
       sap_cus_grp02: string | null;
       sap_cus_grp03: string | null;
       approval_status: string;
       language: "vi" | "en";
     }>(
-      "SELECT id, email, full_name, sap_cus_grp01, sap_cus_grp02, sap_cus_grp03, approval_status, language FROM users WHERE id = ?",
+      `SELECT u.id, u.email, u.full_name, u.sap_card_code,
+              COALESCE(u.sap_cus_grp01, c.cus_grp01) AS sap_cus_grp01,
+              COALESCE(u.sap_cus_grp02, c.cus_grp02) AS sap_cus_grp02,
+              COALESCE(u.sap_cus_grp03, c.cus_grp03) AS sap_cus_grp03,
+              u.approval_status, u.language
+       FROM users u
+       LEFT JOIN customers c ON c.sap_card_code = u.sap_card_code
+       WHERE u.id = ?`,
       [customerId]
     );
 
@@ -58,8 +66,8 @@ export async function POST(
       );
     }
 
-    const allowed = await getAllowedCustomerGroupCodes(session);
-    if (!inScope(allowed, [customer.sap_cus_grp01, customer.sap_cus_grp02, customer.sap_cus_grp03])) {
+    const inScope = await isCustomerInApprovalScope(session, customer);
+    if (!inScope) {
       return NextResponse.json({ error: "Forbidden — this customer is outside your assigned scope" }, { status: 403 });
     }
 

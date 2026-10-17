@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { styles, btn, SyncButton, Toggle, LoadingOrEmpty } from "../adminUi";
+import { useAdminSession } from "../layout";
 
 interface Warehouse {
   sap_warehouse_code: string;
@@ -32,6 +33,8 @@ function formatShelfLife(v: string | null) {
 }
 
 export default function WarehousesPage() {
+  const session = useAdminSession();
+  const isSuperAdmin = !!session?.isSuperAdmin;
   const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [savingCode, setSavingCode] = useState<string | null>(null);
@@ -49,6 +52,7 @@ export default function WarehousesPage() {
   }, [load]);
 
   const toggleIncluded = async (code: string, isIncluded: boolean) => {
+    if (!isSuperAdmin) return;
     setSavingCode(code);
     await fetch(`/api/admin/warehouses/${encodeURIComponent(code)}`, {
       method: "PATCH",
@@ -100,14 +104,16 @@ export default function WarehousesPage() {
               holds until the next sync).
             </p>
           </div>
-          <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
-            <SyncButton url="/api/admin/warehouses/sync" label="Sync warehouses from SAP" onDone={load} />
-            <SyncButton
-              url="/api/admin/inventory/sync"
-              label="Sync stock from SAP"
-              loadingLabel="Syncing (can take a minute)..."
-            />
-          </div>
+          {isSuperAdmin && (
+            <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
+              <SyncButton url="/api/admin/warehouses/sync" label="Sync warehouses from SAP" onDone={load} />
+              <SyncButton
+                url="/api/admin/inventory/sync"
+                label="Sync stock from SAP"
+                loadingLabel="Syncing (can take a minute)..."
+              />
+            </div>
+          )}
         </div>
 
         <div style={{ ...styles.card, marginBottom: "2rem" }}>
@@ -133,8 +139,11 @@ export default function WarehousesPage() {
                       <td style={styles.td}>
                         <Toggle
                           checked={!!w.is_included}
-                          disabled={savingCode === w.sap_warehouse_code}
-                          onChange={(v) => toggleIncluded(w.sap_warehouse_code, v)}
+                          disabled={!isSuperAdmin || savingCode === w.sap_warehouse_code}
+                          onChange={(v) => {
+                            if (!isSuperAdmin) return;
+                            toggleIncluded(w.sap_warehouse_code, v);
+                          }}
                         />
                       </td>
                       <td style={{ ...styles.td, color: "var(--text-tertiary, #94A3B8)", fontSize: "0.75rem" }}>

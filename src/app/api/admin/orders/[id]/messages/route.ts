@@ -4,6 +4,7 @@ import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { listOrderMessages, postOrderMessage, markOrderMessagesReadByAdmin } from "@/lib/orderMessages";
 import { sendOrderMessageEmail } from "@/lib/email/sender";
 import { sendPushToUser } from "@/lib/webPush";
+import { isOrderInAdminScope } from "@/lib/adminScope";
 
 interface OrderCustomerContact {
   order_number: string;
@@ -32,6 +33,10 @@ export async function GET(
   const orderId = parseInt(id, 10);
   if (isNaN(orderId)) return NextResponse.json({ error: "Invalid order ID" }, { status: 400 });
 
+  if (!(await isOrderInAdminScope(guard.session, orderId))) {
+    return NextResponse.json({ error: "Order not found" }, { status: 404 });
+  }
+
   const messages = await listOrderMessages(orderId);
   // Opening the thread is what clears the admin portal's notification
   // badge for this order — same convention as the customer side.
@@ -49,6 +54,10 @@ export async function POST(
   const { id } = await params;
   const orderId = parseInt(id, 10);
   if (isNaN(orderId)) return NextResponse.json({ error: "Invalid order ID" }, { status: 400 });
+
+  if (!(await isOrderInAdminScope(guard.session, orderId))) {
+    return NextResponse.json({ error: "Order not found" }, { status: 404 });
+  }
 
   const body = await request.json();
   const message = typeof body.message === "string" ? body.message.trim() : "";

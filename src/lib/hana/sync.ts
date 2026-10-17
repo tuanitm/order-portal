@@ -12,6 +12,8 @@ interface PromotionRow {
   update_date: string | Date | null;
   begin_date: string | Date | null;
   end_date: string | Date | null;
+  after_cus_disc: string | null;
+  after_price_disc: string | null;
   disc_type: string | null;
   bp_grp_code: string | null;
   bp_grp_name: string | null;
@@ -98,6 +100,8 @@ export async function syncPromotionDiscountsFromHana(): Promise<{ rowsSynced: nu
       toMySQLDate(r.update_date),
       toMySQLDate(r.begin_date),
       toMySQLDate(r.end_date),
+      r.after_cus_disc ?? null,
+      r.after_price_disc ?? null,
       r.bp_grp_code,
       r.bp_grp_name,
       r.bp_code ? "2" : null, // see doc comment: always an exact CardCode once present, never a group
@@ -128,6 +132,7 @@ export async function syncPromotionDiscountsFromHana(): Promise<{ rowsSynced: nu
       await conn.query(
         `INSERT INTO promotion_discount (
            doc_entry, promotion_code, promotion_name, create_date, update_date, begin_date, end_date,
+           after_cus_disc, after_price_disc,
            bp_grp_code, bp_grp_name, bp_type, bp_code, bp_name,
            selling_grp_code, selling_grp_name, it_type, selling_item_code, selling_item_name,
            disc_pct, selling_qty, giving_item_code, giving_item_name, giving_qty, last_synced)

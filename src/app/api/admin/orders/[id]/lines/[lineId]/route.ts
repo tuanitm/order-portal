@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { query, queryOne } from "@/lib/db/connection";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { recalculateLinkedGiftQty } from "@/lib/orderGifts";
+import { isOrderInAdminScope } from "@/lib/adminScope";
 
 /**
  * PATCH /api/admin/orders/[id]/lines/[lineId] — Body: { confirmQty: number }.
@@ -36,6 +37,10 @@ export async function PATCH(
   const orderLineId = parseInt(lineId, 10);
   if (isNaN(orderId) || isNaN(orderLineId)) {
     return NextResponse.json({ error: "Invalid order or line ID" }, { status: 400 });
+  }
+
+  if (!(await isOrderInAdminScope(guard.session, orderId))) {
+    return NextResponse.json({ error: "Order not found" }, { status: 404 });
   }
 
   const body = await request.json();

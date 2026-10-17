@@ -104,24 +104,47 @@ export async function markOrderMessagesReadByAdmin(orderId: number): Promise<voi
  * global, not filtered to the requesting admin), plus one row per order
  * that has any (for the dropdown preview) — newest first.
  */
-export async function getUnreadCustomerMessageSummaryForAdmins(): Promise<{
+export async function getUnreadCustomerMessageSummaryForAdmins(
+  allowedGroupCodes?: Set<string> | null
+): Promise<{
   totalUnread: number;
   orders: UnreadCustomerMessageSummary[];
 }> {
+  let scopeWhere = "";
+  const params: string[] = [];
+
+  if (allowedGroupCodes) {
+    if (allowedGroupCodes.size === 0) {
+      return { totalUnread: 0, orders: [] };
+    }
+    const list = [...allowedGroupCodes];
+    const placeholders = list.map(() => "?").join(",");
+    scopeWhere = `AND (
+      COALESCE(c.cus_grp01, u.sap_cus_grp01) IN (${placeholders}) OR
+      COALESCE(c.cus_grp02, u.sap_cus_grp02) IN (${placeholders}) OR
+      COALESCE(c.cus_grp03, u.sap_cus_grp03) IN (${placeholders})
+    )`;
+    params.push(...list, ...list, ...list);
+  }
+
   const orders = await query<UnreadCustomerMessageSummary[]>(
     `WITH unread AS (
        SELECT om.order_id, om.message, om.created_at, o.order_number, o.customer_name,
               ROW_NUMBER() OVER (PARTITION BY om.order_id ORDER BY om.created_at DESC) AS rn
        FROM order_messages om
        JOIN orders o ON o.id = om.order_id
+       LEFT JOIN users u ON u.id = o.user_id
+       LEFT JOIN customers c ON c.sap_card_code = u.sap_card_code
        WHERE om.sender_type = 'customer' AND om.read_at IS NULL
+         ${scopeWhere}
      )
      SELECT order_id, order_number, customer_name, COUNT(*) AS unread_count,
             MAX(CASE WHEN rn = 1 THEN message END) AS latest_message,
             MAX(created_at) AS latest_created_at
      FROM unread
      GROUP BY order_id, order_number, customer_name
-     ORDER BY latest_created_at DESC`
+     ORDER BY latest_created_at DESC`,
+    params
   );
   const totalUnread = orders.reduce((sum, o) => sum + Number(o.unread_count), 0);
   return { totalUnread, orders };

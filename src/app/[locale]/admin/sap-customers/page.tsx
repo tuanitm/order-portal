@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { styles, SyncButton, LoadingOrEmpty, Toggle } from "../adminUi";
+import { useAdminSession } from "../layout";
 
 interface SapCustomer {
   id: number;
@@ -22,6 +23,8 @@ type SortKey = "sap_card_code" | "card_name" | "mst_code" | "cus_grp01" | "price
 type SortDir = "ASC" | "DESC";
 
 export default function SapCustomersPage() {
+  const session = useAdminSession();
+  const isSuperAdmin = !!session?.isSuperAdmin;
   const [customers, setCustomers] = useState<SapCustomer[]>([]);
   const [total, setTotal] = useState(0);
   const [search, setSearch] = useState("");
@@ -47,6 +50,7 @@ export default function SapCustomersPage() {
   }, [search, sortKey, sortDir, load]);
 
   const toggleEnabled = async (cardCode: string, isEnabled: boolean) => {
+    if (!isSuperAdmin) return;
     setSavingCode(cardCode);
     await fetch(`/api/admin/sap-customers/${cardCode}`, {
       method: "PATCH",
@@ -99,7 +103,9 @@ export default function SapCustomersPage() {
               in or placing orders — they&apos;ll be shown a message to contact Admin at 0908404678.
             </p>
           </div>
-          <SyncButton url="/api/admin/sap-customers/sync" label="Sync from SAP" onDone={() => load(search, sortKey, sortDir)} />
+          {isSuperAdmin && (
+            <SyncButton url="/api/admin/sap-customers/sync" label="Sync from SAP" onDone={() => load(search, sortKey, sortDir)} />
+          )}
         </div>
 
         <div style={{ marginBottom: "1rem" }}>
@@ -148,8 +154,11 @@ export default function SapCustomersPage() {
                       <td style={styles.td}>
                         <Toggle
                           checked={!!c.is_enabled}
-                          disabled={savingCode === c.sap_card_code}
-                          onChange={(v) => toggleEnabled(c.sap_card_code, v)}
+                          disabled={!isSuperAdmin || savingCode === c.sap_card_code}
+                          onChange={(v) => {
+                            if (!isSuperAdmin) return;
+                            toggleEnabled(c.sap_card_code, v);
+                          }}
                         />
                       </td>
                     </tr>

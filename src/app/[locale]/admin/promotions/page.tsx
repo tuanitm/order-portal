@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { styles, Badge, SyncButton, LoadingOrEmpty } from "../adminUi";
+import { useAdminSession } from "../layout";
 
 interface Promotion {
   id: number;
@@ -33,6 +34,8 @@ function isActive(p: Promotion): boolean {
 }
 
 export default function PromotionsPage() {
+  const session = useAdminSession();
+  const isSuperAdmin = !!session?.isSuperAdmin;
   const [promotions, setPromotions] = useState<Promotion[]>([]);
   const [total, setTotal] = useState(0);
   const [searchFilter, setSearchFilter] = useState("");
@@ -82,20 +85,22 @@ export default function PromotionsPage() {
               route to these promotion tables at all. The Excel import below remains as a manual fallback.
             </p>
           </div>
-          <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
-            <SyncButton
-              url="/api/admin/promotions/sync"
-              label="Sync promotion discounts from SAP (HANA)"
-              loadingLabel="Syncing..."
-              onDone={() => load(searchFilter, bpCodeFilter, itemCodeFilter, typeFilter, activeOnly, validDate)}
-            />
-            <SyncButton
-              url="/api/admin/promotions/import"
-              label="Import from Excel file (fallback)"
-              loadingLabel="Importing..."
-              onDone={() => load(searchFilter, bpCodeFilter, itemCodeFilter, typeFilter, activeOnly, validDate)}
-            />
-          </div>
+          {isSuperAdmin && (
+            <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
+              <SyncButton
+                url="/api/admin/promotions/sync"
+                label="Sync promotion discounts from SAP (HANA)"
+                loadingLabel="Syncing..."
+                onDone={() => load(searchFilter, bpCodeFilter, itemCodeFilter, typeFilter, activeOnly, validDate)}
+              />
+              <SyncButton
+                url="/api/admin/promotions/import"
+                label="Import from Excel file (fallback)"
+                loadingLabel="Importing..."
+                onDone={() => load(searchFilter, bpCodeFilter, itemCodeFilter, typeFilter, activeOnly, validDate)}
+              />
+            </div>
+          )}
         </div>
 
         <div style={{ marginBottom: "1rem", display: "flex", gap: "0.75rem", flexWrap: "wrap", alignItems: "center" }}>

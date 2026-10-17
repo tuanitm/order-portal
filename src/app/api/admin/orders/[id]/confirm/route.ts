@@ -6,6 +6,7 @@ import { getSapClient } from "@/lib/sap-b1/client";
 import { recordOrderStatus, notifyCustomerOfStatusChange } from "@/lib/orderHistory";
 import { getLiveAvailabilityForOrder } from "@/lib/orderStock";
 import { getBasePriceListNum } from "@/lib/sap-b1/sync";
+import { isOrderInAdminScope } from "@/lib/adminScope";
 
 interface OrderRow {
   id: number;
@@ -180,6 +181,9 @@ export async function POST(
     [orderId]
   );
   if (!order) {
+    return NextResponse.json({ error: "Order not found" }, { status: 404 });
+  }
+  if (!(await isOrderInAdminScope(guard.session, orderId))) {
     return NextResponse.json({ error: "Order not found" }, { status: 404 });
   }
   if (order.sap_doc_entry) {
@@ -802,51 +806,92 @@ export async function POST(
   // fields just come back unset.
   const businessPartner = await sap.getBusinessPartner(order.sap_card_code);
 
+  // Read the Post SO Mode setting — determines whether to push as SAP Draft or
+  // a confirmed SAP Sales Order. Defaults to 'draft' if the row is missing.
+  const settingsRow = await queryOne<{ post_so_mode: string }>(
+    `SELECT post_so_mode FROM sync_schedule_settings WHERE id = 1`
+  );
+  const postSoMode: "draft" | "sales_order" =
+    settingsRow?.post_so_mode === "sales_order" ? "sales_order" : "draft";
+
+  const sapPayload = {
+    CardCode: order.sap_card_code,
+    Comments: order.remark || undefined,
+    DocDate: vnToday,
+    DocDueDate: vnToday,
+    U_ProdBrand: headerBrand,
+    // Portal order number stamped onto the SAP header so it's visible in SAP B1.
+    U_RelDocs: orderNumber,
+    // "Y" only if at least one Promotion Discount line is actually
+    // being pushed — left unset otherwise, not forced to "N".
+    U_GetPMStatus: promotionLines.length > 0 ? "Y" : undefined,
+    U_InvEmail: businessPartner?.EmailAddress || undefined,
+    U_BPPaymentMethod: "TM/CK",
+    // UDF is 200 chars max (confirmed via /UserFieldsMD) — truncate
+    // defensively rather than let an unusually long address get rejected.
+    U_InvAddress: businessPartner?.Address?.slice(0, 200) || undefined,
+    U_InvTaxNo: businessPartner?.FederalTaxID || undefined,
+    U_InvName: businessPartner?.CardName || undefined,
+    // U_DocNo omitted — it's generated server-side by SAP's own
+    // SBO_SP_TransactionNotification trigger after this Sales Order is
+    // added (format SOO+YYMMDD+3-digit running number), not something
+    // this client sets on create.
+    DocumentLines: documentLines,
+  };
+
   let sapResult: { DocEntry: number; DocNum: number };
   try {
-    sapResult = await sap.createDraftSalesOrder({
-      CardCode: order.sap_card_code,
-      Comments: order.remark || undefined,
-      DocDate: vnToday,
-      DocDueDate: vnToday,
-      U_ProdBrand: headerBrand,
-      // Portal order number stamped onto the SAP header so it's visible in SAP B1.
-      U_RefDocNo: orderNumber,
-      // "Y" only if at least one Promotion Discount line is actually
-      // being pushed — left unset otherwise, not forced to "N".
-      U_GetPMStatus: promotionLines.length > 0 ? "Y" : undefined,
-      U_InvEmail: businessPartner?.EmailAddress || undefined,
-      U_BPPaymentMethod: "TM/CK",
-      // UDF is 200 chars max (confirmed via /UserFieldsMD) — truncate
-      // defensively rather than let an unusually long address get rejected.
-      U_InvAddress: businessPartner?.Address?.slice(0, 200) || undefined,
-      U_InvTaxNo: businessPartner?.FederalTaxID || undefined,
-      U_InvName: businessPartner?.CardName || undefined,
-      // U_DocNo omitted — it's generated server-side by SAP's own
-      // SBO_SP_TransactionNotification trigger after this Sales Order is
-      // added (format SOO+YYMMDD+3-digit running number), not something
-      // this client sets on create.
-      DocumentLines: documentLines,
-    });
+    sapResult = postSoMode === "sales_order"
+      ? await sap.createSalesOrder(sapPayload)
+      : await sap.createDraftSalesOrder(sapPayload);
   } catch (error) {
     console.error("[Admin] Failed to push order to SAP B1:", error);
+    const label = postSoMode === "sales_order" ? "SAP B1 sales order" : "SAP B1 draft order";
     return NextResponse.json(
-      { error: "Failed to create SAP B1 draft order", message: error instanceof Error ? error.message : String(error) },
+      { error: `Failed to create ${label}`, message: error instanceof Error ? error.message : String(error) },
       { status: 502 }
     );
   }
 
+  // Portal status: draft mode → 'sap_draft_created'; direct SO mode → 'approved'
+  // (SAP will immediately process it as a real order, so 'approved' is accurate)
+  const newPortalStatus = postSoMode === "sales_order" ? "approved" : "sap_draft_created";
+
   await query(
-    `UPDATE orders SET status = 'sap_draft_created', sap_doc_entry = ?, sap_doc_num = ? WHERE id = ?`,
-    [sapResult.DocEntry, sapResult.DocNum, orderId]
+    `UPDATE orders SET status = ?, sap_doc_entry = ?, sap_doc_num = ? WHERE id = ?`,
+    [newPortalStatus, sapResult.DocEntry, sapResult.DocNum, orderId]
   );
-  await recordOrderStatus(orderId, "sap_draft_created");
-  await notifyCustomerOfStatusChange(orderId, "sap_draft_created");
+  await recordOrderStatus(orderId, newPortalStatus);
+  await notifyCustomerOfStatusChange(orderId, newPortalStatus);
+
+  // ── Direct Sales Order: read back U_DocNo (e.g. SOO261016001) immediately ──
+  // When posting as a confirmed SO, the DocEntry we just got back IS the real
+  // Sales Order DocEntry (not a Draft), so /Orders(docEntry) will find it.
+  // U_DocNo is filled by SAP's SBO_SP_TransactionNotification trigger during
+  // the INSERT, so it should already be present on a GET right after create.
+  let sapSoNumber: string | null = null;
+  if (postSoMode === "sales_order") {
+    try {
+      const soStatus = await sap.getSalesOrderStatus(sapResult.DocEntry, orderNumber);
+      sapSoNumber = soStatus?.U_DocNo || null;
+      if (sapSoNumber) {
+        await query(
+          `UPDATE orders SET sap_so_number = ? WHERE id = ?`,
+          [sapSoNumber, orderId]
+        );
+        console.log(`[Admin] SO created — U_DocNo=${sapSoNumber} written to sap_so_number for order ${orderId}`);
+      }
+    } catch (err) {
+      // Non-fatal: the scheduled sync will pick it up later
+      console.warn(`[Admin] Could not read back U_DocNo after SO create:`, err);
+    }
+  }
 
   return NextResponse.json({
     success: true,
     sapDocEntry: sapResult.DocEntry,
     sapDocNum: sapResult.DocNum,
+    sapSoNumber,
     // Any line the live pre-confirm check capped below its last saved
     // Confirm Qty — empty on the common path where nothing changed.
     adjustments,

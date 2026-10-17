@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { queryOne } from "@/lib/db/connection";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { getVisibleWarehousesForCustomerGroup } from "@/lib/warehouseVisibility";
+import { isOrderInAdminScope } from "@/lib/adminScope";
 
 /**
  * GET /api/admin/orders/[id]/warehouses — the warehouses this order's
@@ -21,6 +22,10 @@ export async function GET(
   const { id } = await params;
   const orderId = parseInt(id, 10);
   if (isNaN(orderId)) return NextResponse.json({ error: "Invalid order ID" }, { status: 400 });
+
+  if (!(await isOrderInAdminScope(guard.session, orderId))) {
+    return NextResponse.json({ error: "Order not found" }, { status: 404 });
+  }
 
   const order = await queryOne<{ sap_cus_grp02: string | null }>(
     `SELECT u.sap_cus_grp02 FROM orders o LEFT JOIN users u ON u.id = o.user_id WHERE o.id = ?`,

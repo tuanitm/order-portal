@@ -47,11 +47,12 @@ export async function syncOneOrderStatusFromSap(orderId: number): Promise<{
 }> {
   const order = await queryOne<{
     id: number;
+    order_number: string;
     sap_doc_entry: number | null;
     status: string;
     sap_so_number: string | null;
   }>(
-    `SELECT id, sap_doc_entry, status, sap_so_number FROM orders WHERE id = ?`,
+    `SELECT id, order_number, sap_doc_entry, status, sap_so_number FROM orders WHERE id = ?`,
     [orderId]
   );
   if (!order) throw new Error(`Order ${orderId} not found`);
@@ -60,7 +61,7 @@ export async function syncOneOrderStatusFromSap(orderId: number): Promise<{
   }
 
   const sap = getSapClient();
-  const sapOrder = await sap.getSalesOrderStatus(order.sap_doc_entry);
+  const sapOrder = await sap.getSalesOrderStatus(order.sap_doc_entry, order.order_number);
 
   // null → draft not yet converted to a confirmed Sales Order in SAP
   if (!sapOrder) {

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAdminPermission } from '@/lib/auth/adminSession';
 import { syncOneOrderStatusFromSap } from '@/lib/orderStatusSync';
+import { isOrderInAdminScope } from '@/lib/adminScope';
 
 /** POST /api/admin/orders/[id]/sync-status ? manual SAP status sync button */
 export async function POST(
@@ -12,6 +13,10 @@ export async function POST(
   const { id } = await params;
   const orderId = parseInt(id, 10);
   if (isNaN(orderId)) return NextResponse.json({ error: 'Invalid order ID' }, { status: 400 });
+
+  if (!(await isOrderInAdminScope(guard.session, orderId))) {
+    return NextResponse.json({ error: 'Order not found' }, { status: 404 });
+  }
   try {
     const result = await syncOneOrderStatusFromSap(orderId);
     return NextResponse.json({ success: true, ...result });

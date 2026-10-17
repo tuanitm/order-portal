@@ -17,6 +17,7 @@ export const ALL_ADMIN_PERMISSIONS = [
   "contract-discounts",
   "promotions",
   "orders",
+  "inventory",
   "admin-users",
   "admin-roles",
   "settings",
@@ -43,6 +44,7 @@ export const ASSIGNABLE_ADMIN_PERMISSIONS = ALL_ADMIN_PERMISSIONS.filter(
 
 export interface AdminSession {
   email: string;
+  fullName: string;
   isSuperAdmin: boolean;
   adminId: number | null;
   permissions: AdminPermission[];
@@ -96,6 +98,7 @@ export async function getAdminSession(request: NextRequest): Promise<AdminSessio
   if (row.is_root) {
     return {
       email: row.email,
+      fullName: row.full_name || row.email,
       isSuperAdmin: true,
       adminId: row.id,
       permissions: [...ALL_ADMIN_PERMISSIONS],
@@ -113,6 +116,7 @@ export async function getAdminSession(request: NextRequest): Promise<AdminSessio
 
   return {
     email: row.email,
+    fullName: row.full_name || row.email,
     isSuperAdmin: false,
     adminId: row.id,
     permissions,

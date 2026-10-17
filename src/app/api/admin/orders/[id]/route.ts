@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { query, queryOne } from "@/lib/db/connection";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { recordOrderStatus, notifyCustomerOfStatusChange } from "@/lib/orderHistory";
+import { isOrderInAdminScope } from "@/lib/adminScope";
 
 // 'cancelled' is deliberately excluded — cancelling can mean deleting the
 // order's SAP Draft Sales Order too, so it only ever goes through the
@@ -18,6 +19,10 @@ export async function GET(
   const { id } = await params;
   const orderId = parseInt(id, 10);
   if (isNaN(orderId)) return NextResponse.json({ error: "Invalid order ID" }, { status: 400 });
+
+  if (!(await isOrderInAdminScope(guard.session, orderId))) {
+    return NextResponse.json({ error: "Order not found" }, { status: 404 });
+  }
 
   const order = await queryOne(
     `SELECT o.*, u.email AS customer_email, u.sap_card_code,
@@ -57,6 +62,10 @@ export async function PATCH(
   const { id } = await params;
   const orderId = parseInt(id, 10);
   if (isNaN(orderId)) return NextResponse.json({ error: "Invalid order ID" }, { status: 400 });
+
+  if (!(await isOrderInAdminScope(guard.session, orderId))) {
+    return NextResponse.json({ error: "Order not found" }, { status: 404 });
+  }
 
   const body = await request.json();
   if (!VALID_STATUSES.includes(body.status)) {

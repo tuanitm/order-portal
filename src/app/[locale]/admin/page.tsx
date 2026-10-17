@@ -79,8 +79,7 @@ export default function AdminDashboardPage() {
         <div style={styles.cardPadded}>
           <h2 style={{ fontSize: "1.125rem", fontWeight: 700, marginBottom: "1rem" }}>Quick sync</h2>
           <p style={{ fontSize: "0.8125rem", color: "var(--text-tertiary, #94A3B8)", marginBottom: "1rem" }}>
-            Customer Groups and Item Groups are never pulled from SAP automatically — update
-            SAP_Customer_Group.xlsx / SAP_Item_Group.xlsx and import on their own pages. Everything below runs automatically
+            Customer Groups and Item Groups are never pulled from SAP automatically. Everything below runs automatically
             once a day (see scripts/daily-sync.mjs); these buttons just let you run it on demand too.
           </p>
           <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>

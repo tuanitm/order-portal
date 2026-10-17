@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { queryOne } from "@/lib/db/connection";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { syncCustomerGroupsForCard } from "@/lib/sap-b1/sync";
-import { getAllowedCustomerGroupCodes, inScope } from "@/lib/adminScope";
+import { isCustomerInApprovalScope } from "@/lib/adminScope";
 
 /**
  * POST /api/admin/customers/[id]/resync-sap — refresh a customer's channel
@@ -26,13 +26,19 @@ export async function POST(
     sap_cus_grp02: string | null;
     sap_cus_grp03: string | null;
   }>(
-    `SELECT sap_card_code, sap_cus_grp01, sap_cus_grp02, sap_cus_grp03 FROM users WHERE id = ?`,
+    `SELECT u.sap_card_code,
+            COALESCE(u.sap_cus_grp01, c.cus_grp01) AS sap_cus_grp01,
+            COALESCE(u.sap_cus_grp02, c.cus_grp02) AS sap_cus_grp02,
+            COALESCE(u.sap_cus_grp03, c.cus_grp03) AS sap_cus_grp03
+     FROM users u
+     LEFT JOIN customers c ON c.sap_card_code = u.sap_card_code
+     WHERE u.id = ?`,
     [customerId]
   );
   if (!customer) return NextResponse.json({ error: "Customer not found" }, { status: 404 });
 
-  const allowed = await getAllowedCustomerGroupCodes(guard.session);
-  if (!inScope(allowed, [customer.sap_cus_grp01, customer.sap_cus_grp02, customer.sap_cus_grp03])) {
+  const allowed = await isCustomerInApprovalScope(guard.session, customer);
+  if (!allowed) {
     return NextResponse.json({ error: "Forbidden — this customer is outside your assigned scope" }, { status: 403 });
   }
 

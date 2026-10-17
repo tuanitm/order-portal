@@ -37,6 +37,7 @@
   "masterdata": {
     "customerGroup": "'GT'",
     "itemGroup": "'D1','L1'",
+    "priceList": "'S01. IMV Price List','S02. GT Price List'",
     "wareHouse": "'1001','1003','1002','1010','1012','1013'"
   },
   "webPush": {

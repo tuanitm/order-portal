@@ -10,7 +10,7 @@ export function isShowAvailableEnabled(): boolean {
   return loadConfig().admin.showAvailable?.trim().toLowerCase() !== "no";
 }
 
-/** "IMV - Ordering Portal", or "IMV - Ordering Portal (Admin)" for the admin area. */
+/** "IMV - Order Portal", or "IMV - Order Portal (Admin Name)" for the admin area. */
 export function formatAppName(name: string, isAdmin = false): string {
   const prefix = getCompanyPrefix();
   return `${prefix ? `${prefix} - ` : ""}${name}${isAdmin ? " (Admin)" : ""}`;

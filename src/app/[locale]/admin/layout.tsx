@@ -8,6 +8,7 @@ import { useAppName, usePageTitle } from "@/hooks/useAppName";
 
 interface AdminSessionInfo {
   email: string;
+  fullName: string;
   isSuperAdmin: boolean;
   permissions: AdminPermission[];
 }
@@ -143,22 +144,111 @@ function MessageNotificationBell({ locale, pathname }: { locale: string; pathnam
   );
 }
 
-const NAV_ITEMS: { key: AdminPermission; label: string; href: string; icon: string; rootOnly?: boolean }[] = [
-  { key: "dashboard", label: "Dashboard", href: "", icon: "📊" },
-  { key: "customers", label: "Customers Approval", href: "customers", icon: "👥" },
-  { key: "sap-customers", label: "SAP Customers", href: "sap-customers", icon: "🏢" },
-  { key: "customer-groups", label: "Customer Groups", href: "customer-groups", icon: "🏷️" },
-  { key: "catalog-visibility", label: "Catalog Visibility", href: "catalog-visibility", icon: "🔒" },
-  { key: "items", label: "Items", href: "items", icon: "📦" },
-  { key: "item-groups", label: "Item Groups", href: "item-groups", icon: "🗂️" },
-  { key: "price-lists", label: "Price Lists", href: "price-lists", icon: "💲" },
-  { key: "warehouses", label: "Warehouses", href: "warehouses", icon: "🏭" },
-  { key: "contract-discounts", label: "Contract Discounts", href: "contract-discounts", icon: "📄" },
-  { key: "promotions", label: "Promotion Discounts", href: "promotions", icon: "🎁" },
-  { key: "orders", label: "Orders", href: "orders", icon: "🧾" },
-  { key: "admin-users", label: "Admin Users", href: "admin-users", icon: "🔑", rootOnly: true },
-  { key: "admin-roles", label: "Admin Roles", href: "admin-roles", icon: "🛡️", rootOnly: true },
-  { key: "settings", label: "Settings", href: "settings", icon: "⚙️", rootOnly: true },
+interface NavItem { key: AdminPermission | "change-password"; label: string; href: string; icon: string; rootOnly?: boolean; }
+interface NavGroup { label: string; icon: string; items: NavItem[]; }
+
+function NavGroupSection({
+  group, locale, pathname, defaultOpen,
+}: { group: NavGroup; locale: string; pathname: string; defaultOpen: boolean }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div>
+      {/* Group header — click to toggle */}
+      <button
+        onClick={() => setOpen(v => !v)}
+        style={{
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          width: "100%", padding: "0.375rem 0.75rem", borderRadius: "var(--radius-lg, 8px)",
+          background: "transparent", border: "none", cursor: "pointer",
+          fontSize: "0.6875rem", fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase",
+          color: "var(--text-tertiary, #94A3B8)", marginTop: "0.5rem",
+        }}
+      >
+        <span style={{ display: "flex", alignItems: "center", gap: "0.375rem" }}>
+          <span>{group.icon}</span>
+          <span>{group.label}</span>
+        </span>
+        <span style={{
+          fontSize: "0.6rem", transition: "transform 0.2s",
+          transform: open ? "rotate(180deg)" : "rotate(0deg)",
+          display: "inline-block",
+        }}>▼</span>
+      </button>
+
+      {/* Group children */}
+      {open && (
+        <div style={{ display: "flex", flexDirection: "column", gap: "0.0625rem", paddingLeft: "0.625rem" }}>
+          {group.items.map(item => {
+            const href = item.href ? `/${locale}/admin/${item.href}` : `/${locale}/admin`;
+            const isActive = item.href === "" ? pathname === `/${locale}/admin` : pathname.startsWith(href);
+            return (
+              <a key={item.key} href={href} style={{
+                display: "flex", alignItems: "center", gap: "0.5rem",
+                padding: "0.4375rem 0.625rem", borderRadius: "var(--radius-lg, 8px)",
+                fontSize: "0.8125rem", fontWeight: isActive ? 700 : 500,
+                color: isActive ? "var(--color-primary, #2BBCB3)" : "var(--text-secondary, #64748B)",
+                background: isActive ? "rgba(43,188,179,0.1)" : "transparent",
+                textDecoration: "none",
+              }}
+                onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = "var(--bg-secondary, #F8FAFC)"; }}
+                onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = "transparent"; }}
+              >
+                <span style={{ fontSize: "0.875rem" }}>{item.icon}</span>
+                <span>{item.label}</span>
+              </a>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const NAV_GROUPS: NavGroup[] = [
+  {
+    label: "Dashboard", icon: "📊",
+    items: [{ key: "dashboard", label: "Dashboard", href: "", icon: "📊" }],
+  },
+  {
+    label: "Customer Approval", icon: "👥",
+    items: [{ key: "customers", label: "Customer Approval", href: "customers", icon: "👥" }],
+  },
+  {
+    label: "Orders", icon: "🧾",
+    items: [{ key: "orders", label: "Orders", href: "orders", icon: "🧾" }],
+  },
+  {
+    label: "Inventory", icon: "📊",
+    items: [{ key: "inventory", label: "Inventory", href: "inventory", icon: "📊" }],
+  },
+  {
+    label: "Master Data", icon: "🗄️",
+    items: [
+      { key: "customer-groups",    label: "Customer Groups",   href: "customer-groups",    icon: "🏷️" },
+      { key: "sap-customers",      label: "SAP Customers",     href: "sap-customers",      icon: "🏢" },
+      { key: "item-groups",        label: "Item Groups",       href: "item-groups",        icon: "🗂️" },
+      { key: "items",              label: "Items",             href: "items",              icon: "📦" },
+      { key: "warehouses",         label: "Warehouses",        href: "warehouses",         icon: "🏭" },
+    ],
+  },
+  {
+    label: "Price & Discount", icon: "💲",
+    items: [
+      { key: "price-lists",        label: "Price Lists",       href: "price-lists",        icon: "💲" },
+      { key: "contract-discounts", label: "Contract Discount", href: "contract-discounts", icon: "📄" },
+      { key: "promotions",         label: "Promotion Discount",href: "promotions",         icon: "🎁" },
+    ],
+  },
+  {
+    label: "Settings", icon: "⚙️",
+    items: [
+      { key: "change-password",    label: "My Profile",        href: "change-password",    icon: "👤" },
+      { key: "catalog-visibility", label: "Catalog Visibility",href: "catalog-visibility", icon: "🔒" },
+      { key: "settings",           label: "SAP Sync Config",  href: "settings",           icon: "🔄", rootOnly: true },
+      { key: "admin-roles",        label: "Admin Roles",       href: "admin-roles",        icon: "🛡️", rootOnly: true },
+      { key: "admin-users",        label: "Admin Users",       href: "admin-users",        icon: "🔑", rootOnly: true },
+    ],
+  },
 ];
 
 export default function AdminLayout({
@@ -169,13 +259,13 @@ export default function AdminLayout({
   const t = useTranslations();
   const locale = useLocale();
   const pathname = usePathname();
-  const appName = useAppName(true);
   const [session, setSession] = useState<AdminSessionInfo | null>(null);
   const [isChecking, setIsChecking] = useState(true);
   const [adminEmail, setAdminEmail] = useState("");
   const [adminPassword, setAdminPassword] = useState("");
   const [loginError, setLoginError] = useState("");
   const [loginLoading, setLoginLoading] = useState(false);
+  const appName = useAppName(true, session?.fullName);
 
   const checkAuth = useCallback(async () => {
     try {
@@ -198,7 +288,7 @@ export default function AdminLayout({
   // The tab title comes from the root layout ("IMV - Ordering Portal"); this
   // layout is a client component so it can't export metadata — mark the admin
   // area by setting the "(Admin)" title here instead (always English).
-  usePageTitle(true);
+  usePageTitle(true, session?.fullName);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -316,9 +406,26 @@ export default function AdminLayout({
     );
   }
 
-  const visibleNav = NAV_ITEMS.filter((item) =>
-    item.rootOnly ? session.isSuperAdmin : session.isSuperAdmin || session.permissions.includes(item.key)
-  );
+  // Which individual nav items this session can see
+  const canSee = (item: NavItem): boolean =>
+    item.key === "change-password" ? true
+    : (item as { rootOnly?: boolean }).rootOnly ? session.isSuperAdmin
+    : session.isSuperAdmin || session.permissions.includes(item.key as AdminPermission);
+
+  // Build visible groups (only show a group if at least one item is visible)
+  const visibleGroups = NAV_GROUPS
+    .map(g => ({ ...g, items: g.items.filter(canSee) }))
+    .filter(g => g.items.length > 0);
+
+  // Determine which groups are "active" (contain the current page) so they
+  // default to open; others start collapsed.
+  function groupHasActive(g: typeof visibleGroups[0]): boolean {
+    return g.items.some(item => {
+      const href = item.href ? `/${locale}/admin/${item.href}` : `/${locale}/admin`;
+      return item.href === "" ? pathname === `/${locale}/admin` : pathname.startsWith(href);
+    });
+  }
+
   const canSeeOrders = session.isSuperAdmin || session.permissions.includes("orders");
 
   return (
@@ -328,44 +435,53 @@ export default function AdminLayout({
 
         {/* Sidebar */}
         <aside style={{
-          width: "220px", flexShrink: 0, background: "var(--bg-primary, #fff)",
+          width: "240px", flexShrink: 0, background: "var(--bg-primary, #fff)",
           borderRight: "1px solid var(--color-gray-200, #E2E8F0)",
-          padding: "1.5rem 0.75rem", display: "flex", flexDirection: "column",
+          padding: "1.25rem 0.625rem", display: "flex", flexDirection: "column",
+          overflowY: "auto",
         }}>
           <div style={{ padding: "0 0.75rem 1.25rem", fontWeight: 800, fontSize: "1rem", color: "var(--text-primary, #0F172A)" }}>
             {appName}
           </div>
           <nav style={{ display: "flex", flexDirection: "column", gap: "0.125rem", flex: 1 }}>
-            {visibleNav.map((item) => {
-              const href = item.href ? `/${locale}/admin/${item.href}` : `/${locale}/admin`;
-              const isActive = item.href === "" ? pathname === `/${locale}/admin` : pathname.startsWith(href);
+            {visibleGroups.map((group) => {
+              const isGroupActive = groupHasActive(group);
+              // Single-item groups (Dashboard, Customer Approval, Orders) render
+              // as a direct link — no collapsible header needed.
+              if (group.items.length === 1) {
+                const item = group.items[0];
+                const href = item.href ? `/${locale}/admin/${item.href}` : `/${locale}/admin`;
+                const isActive = item.href === "" ? pathname === `/${locale}/admin` : pathname.startsWith(href);
+                return (
+                  <a key={item.key} href={href} style={{
+                    display: "flex", alignItems: "center", gap: "0.5rem",
+                    padding: "0.5rem 0.75rem", borderRadius: "var(--radius-lg, 8px)",
+                    fontSize: "0.8125rem", fontWeight: isActive ? 700 : 600,
+                    color: isActive ? "var(--color-primary, #2BBCB3)" : "var(--text-secondary, #64748B)",
+                    background: isActive ? "rgba(43,188,179,0.1)" : "transparent",
+                    textDecoration: "none",
+                  }}>
+                    <span>{item.icon}</span>
+                    <span>{group.label}</span>
+                  </a>
+                );
+              }
+              // Multi-item groups: collapsible section
               return (
-                <a key={item.key} href={href} style={{
-                  display: "flex", alignItems: "center", gap: "0.5rem",
-                  padding: "0.5rem 0.75rem", borderRadius: "var(--radius-lg, 8px)",
-                  fontSize: "0.8125rem", fontWeight: isActive ? 700 : 500,
-                  color: isActive ? "var(--color-primary, #2BBCB3)" : "var(--text-secondary, #64748B)",
-                  background: isActive ? "rgba(43,188,179,0.1)" : "transparent",
-                  textDecoration: "none",
-                }}>
-                  <span>{item.icon}</span>
-                  <span>{item.label}</span>
-                </a>
+                <NavGroupSection
+                  key={group.label}
+                  group={group}
+                  locale={locale}
+                  pathname={pathname}
+                  defaultOpen={isGroupActive}
+                />
               );
             })}
           </nav>
           <div style={{ borderTop: "1px solid var(--color-gray-200, #E2E8F0)", paddingTop: "0.75rem", marginTop: "0.75rem" }}>
-            <div style={{ fontSize: "0.75rem", color: "var(--text-tertiary, #94A3B8)", padding: "0 0.75rem", marginBottom: "0.5rem", wordBreak: "break-all" }}>
+            <div style={{ fontSize: "0.75rem", color: "var(--text-tertiary, #94A3B8)", padding: "0 0.75rem", marginBottom: "0.25rem", wordBreak: "break-all" }}>
               {session.email}
             </div>
-            <a href={`/${locale}/admin/change-password`} style={{
-              display: "block", padding: "0.5rem 0.75rem", fontSize: "0.8125rem",
-              color: pathname === `/${locale}/admin/change-password` ? "var(--color-primary, #2BBCB3)" : "var(--text-secondary, #64748B)",
-              fontWeight: pathname === `/${locale}/admin/change-password` ? 700 : 500,
-              textDecoration: "none",
-            }}>
-              🔒 Change Password
-            </a>
             <a href={`/${locale}`} style={{
               display: "block", padding: "0.5rem 0.75rem", fontSize: "0.8125rem",
               color: "var(--text-tertiary, #94A3B8)", textDecoration: "none",

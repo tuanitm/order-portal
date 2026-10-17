@@ -17,6 +17,10 @@ export async function PATCH(
   const guard = await requireAdminPermission(request, "sap-customers");
   if (guard.response) return guard.response;
 
+  if (!guard.session.isSuperAdmin) {
+    return NextResponse.json({ error: "Only Super Admin can activate or inactivate SAP customers" }, { status: 403 });
+  }
+
   const { cardCode } = await params;
   const body = await request.json();
   if (typeof body.isEnabled !== "boolean") {

@@ -374,6 +374,8 @@ CREATE TABLE IF NOT EXISTS promotion_discount (
   update_date DATE,
   begin_date DATE,
   end_date DATE,
+  after_cus_disc VARCHAR(10) NULL,
+  after_price_disc VARCHAR(10) NULL,
   bp_grp_code VARCHAR(50),
   bp_grp_name VARCHAR(255),
   bp_type VARCHAR(10),
@@ -397,6 +399,8 @@ CREATE TABLE IF NOT EXISTS promotion_discount (
 -- Migration for an existing DB:
 -- ALTER TABLE promotion_discount ADD COLUMN bp_type VARCHAR(10) NULL AFTER bp_grp_name;
 -- ALTER TABLE promotion_discount ADD COLUMN it_type VARCHAR(10) NULL AFTER selling_grp_name;
+-- ALTER TABLE promotion_discount ADD COLUMN after_cus_disc VARCHAR(10) NULL AFTER end_date;
+-- ALTER TABLE promotion_discount ADD COLUMN after_price_disc VARCHAR(10) NULL AFTER after_cus_disc;
 
 -- Promotions
 CREATE TABLE IF NOT EXISTS promotions (
@@ -795,6 +799,7 @@ CREATE TABLE IF NOT EXISTS sync_schedule_settings (
   id INT PRIMARY KEY DEFAULT 1,
   is_enabled BOOLEAN NOT NULL DEFAULT FALSE,
   interval_hours INT NOT NULL DEFAULT 24,
+  post_so_mode ENUM('draft','sales_order') NOT NULL DEFAULT 'draft',
   last_run_at TIMESTAMP NULL,
   last_run_status ENUM('success', 'partial', 'failed') NULL,
   last_run_summary TEXT NULL,

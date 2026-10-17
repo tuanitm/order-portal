@@ -233,6 +233,8 @@ SELECT DISTINCT
 
     H."U_StartDate"                       AS "begin_date",
     H."U_EndDate"                         AS "end_date",
+    H."U_AfterCusDisc"                    AS "after_cus_disc",
+    H."U_AfterPriceDisc"                  AS "after_price_disc",
     IT."DiscountType"                     AS "disc_type",
 
     /* ---------------- Business Partner ---------------- */

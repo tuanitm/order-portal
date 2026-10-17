@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { styles, SyncButton, Toggle, LoadingOrEmpty } from "../adminUi";
+import { useAdminSession } from "../layout";
 
 interface Item {
   id: number;
@@ -39,6 +40,8 @@ function formatPrice(v: string) {
 }
 
 export default function ItemsPage() {
+  const session = useAdminSession();
+  const isSuperAdmin = !!session?.isSuperAdmin;
   const [items, setItems] = useState<Item[]>([]);
   const [total, setTotal] = useState(0);
   const [search, setSearch] = useState("");
@@ -72,6 +75,7 @@ export default function ItemsPage() {
   }, [search, sortKey, sortDir, load]);
 
   const toggleVisible = async (code: string, value: boolean) => {
+    if (!isSuperAdmin) return;
     setSavingCode(code);
     await fetch(`/api/admin/items/${code}`, {
       method: "PATCH",
@@ -83,6 +87,7 @@ export default function ItemsPage() {
   };
 
   const saveSalesUom = async (code: string) => {
+    if (!isSuperAdmin) return;
     setSavingSalesUomCode(code);
     const salesUom = (salesUomInputs[code] || "").trim();
     await fetch(`/api/admin/items/${code}`, {
@@ -138,7 +143,9 @@ export default function ItemsPage() {
               the synced <strong>UOM</strong>; this also survives future syncs.
             </p>
           </div>
-          <SyncButton url="/api/admin/items/sync" label="Sync from SAP" loadingLabel="Syncing (can take a minute)..." onDone={() => load(search, sortKey, sortDir)} />
+          {isSuperAdmin && (
+            <SyncButton url="/api/admin/items/sync" label="Sync from SAP" loadingLabel="Syncing (can take a minute)..." onDone={() => load(search, sortKey, sortDir)} />
+          )}
         </div>
 
         <div style={{ marginBottom: "1rem" }}>
@@ -177,34 +184,43 @@ export default function ItemsPage() {
                       <td style={styles.td}>{i.item_name_vi}</td>
                       <td style={{ ...styles.td, color: "var(--text-tertiary, #94A3B8)" }}>{i.uom || "—"}</td>
                       <td style={styles.td}>
-                        <div style={{ display: "flex", gap: "0.375rem" }}>
-                          <input
-                            type="text"
-                            value={salesUomInputs[i.sap_item_code] ?? ""}
-                            onChange={(e) => setSalesUomInputs((m) => ({ ...m, [i.sap_item_code]: e.target.value }))}
-                            onKeyDown={(e) => e.key === "Enter" && saveSalesUom(i.sap_item_code)}
-                            placeholder={i.uom || "—"}
-                            style={{ ...styles.input, width: "90px", padding: "0.25rem 0.5rem", fontSize: "0.75rem" }}
-                          />
-                          <button
-                            onClick={() => saveSalesUom(i.sap_item_code)}
-                            disabled={savingSalesUomCode === i.sap_item_code}
-                            style={{
-                              fontSize: "0.7rem", padding: "0 0.5rem", border: "1px solid var(--color-gray-200, #E2E8F0)",
-                              borderRadius: "var(--radius-md, 6px)", background: "var(--bg-primary, #fff)", cursor: "pointer",
-                            }}
-                          >
-                            {savingSalesUomCode === i.sap_item_code ? "..." : "Save"}
-                          </button>
-                        </div>
+                        {isSuperAdmin ? (
+                          <div style={{ display: "flex", gap: "0.375rem" }}>
+                            <input
+                              type="text"
+                              value={salesUomInputs[i.sap_item_code] ?? ""}
+                              onChange={(e) => setSalesUomInputs((m) => ({ ...m, [i.sap_item_code]: e.target.value }))}
+                              onKeyDown={(e) => e.key === "Enter" && saveSalesUom(i.sap_item_code)}
+                              placeholder={i.uom || "—"}
+                              style={{ ...styles.input, width: "90px", padding: "0.25rem 0.5rem", fontSize: "0.75rem" }}
+                            />
+                            <button
+                              onClick={() => saveSalesUom(i.sap_item_code)}
+                              disabled={savingSalesUomCode === i.sap_item_code}
+                              style={{
+                                fontSize: "0.7rem", padding: "0 0.5rem", border: "1px solid var(--color-gray-200, #E2E8F0)",
+                                borderRadius: "var(--radius-md, 6px)", background: "var(--bg-primary, #fff)", cursor: "pointer",
+                              }}
+                            >
+                              {savingSalesUomCode === i.sap_item_code ? "..." : "Save"}
+                            </button>
+                          </div>
+                        ) : (
+                          <span style={{ fontSize: "0.8125rem", color: i.sales_uom ? "inherit" : "var(--text-tertiary, #94A3B8)" }}>
+                            {i.sales_uom || i.uom || "—"}
+                          </span>
+                        )}
                       </td>
                       <td style={{ ...styles.td, fontFamily: "monospace", fontSize: "0.75rem", color: "var(--text-tertiary, #94A3B8)" }}>{itemGroupChain(i)}</td>
                       <td style={styles.td}>{formatPrice(i.base_price)}</td>
                       <td style={styles.td}>
                         <Toggle
                           checked={!!i.is_active && !i.is_manually_hidden}
-                          disabled={savingCode === i.sap_item_code || !i.is_active}
-                          onChange={(v) => toggleVisible(i.sap_item_code, v)}
+                          disabled={!isSuperAdmin || savingCode === i.sap_item_code || !i.is_active}
+                          onChange={(v) => {
+                            if (!isSuperAdmin) return;
+                            toggleVisible(i.sap_item_code, v);
+                          }}
                         />
                       </td>
                     </tr>

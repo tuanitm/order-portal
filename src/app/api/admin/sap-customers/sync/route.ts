@@ -10,6 +10,10 @@ export async function POST(request: NextRequest) {
   const guard = await requireAdminPermission(request, "sap-customers");
   if (guard.response) return guard.response;
 
+  if (!guard.session.isSuperAdmin) {
+    return NextResponse.json({ error: "Only Super Admin can sync SAP customers" }, { status: 403 });
+  }
+
   try {
     const result = await syncSapCustomers();
     return NextResponse.json({ success: true, ...result });

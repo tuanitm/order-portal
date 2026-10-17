@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { styles, btn, SyncButton, LoadingOrEmpty, Toggle } from "../adminUi";
+import { useAdminSession } from "../layout";
 
 interface CustomerGroup {
   id: number;
@@ -19,6 +20,8 @@ interface CustomerGroup {
 const LEVEL_LABELS: Record<number, string> = { 1: "Channel (level 1)", 2: "Sub-group (level 2)", 3: "Finest (level 3)" };
 
 export default function CustomerGroupsPage() {
+  const session = useAdminSession();
+  const isSuperAdmin = !!session?.isSuperAdmin;
   const [groups, setGroups] = useState<CustomerGroup[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -119,40 +122,44 @@ export default function CustomerGroupsPage() {
               them too.
             </p>
           </div>
-          <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
-            <SyncButton url="/api/admin/customer-groups/sync" label="Sync from SAP (HANA)" onDone={load} />
-            <SyncButton url="/api/admin/customer-groups/import" label="Import from Excel file (fallback)" onDone={load} />
-          </div>
+          {isSuperAdmin && (
+            <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
+              <SyncButton url="/api/admin/customer-groups/sync" label="Sync from SAP (HANA)" onDone={load} />
+              <SyncButton url="/api/admin/customer-groups/import" label="Import from Excel file (fallback)" onDone={load} />
+            </div>
+          )}
         </div>
 
         {/* ── Add manually ── */}
-        <div style={styles.cardPadded}>
-          <h2 style={{ fontSize: "1rem", fontWeight: 700, marginBottom: "0.75rem" }}>Add Customer Group Manually</h2>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "0.75rem", alignItems: "flex-end" }}>
-            <div>
-              <label style={{ display: "block", fontSize: "0.75rem", fontWeight: 600, marginBottom: "0.25rem", color: "var(--text-secondary, #64748B)" }}>Level</label>
-              <select value={addLevel} onChange={(e) => setAddLevel(e.target.value)} style={{ ...styles.input, minWidth: 70 }}>
-                {[1, 2, 3].map((l) => <option key={l} value={l}>{l}</option>)}
-              </select>
+        {isSuperAdmin && (
+          <div style={styles.cardPadded}>
+            <h2 style={{ fontSize: "1rem", fontWeight: 700, marginBottom: "0.75rem" }}>Add Customer Group Manually</h2>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "0.75rem", alignItems: "flex-end" }}>
+              <div>
+                <label style={{ display: "block", fontSize: "0.75rem", fontWeight: 600, marginBottom: "0.25rem", color: "var(--text-secondary, #64748B)" }}>Level</label>
+                <select value={addLevel} onChange={(e) => setAddLevel(e.target.value)} style={{ ...styles.input, minWidth: 70 }}>
+                  {[1, 2, 3].map((l) => <option key={l} value={l}>{l}</option>)}
+                </select>
+              </div>
+              <div>
+                <label style={{ display: "block", fontSize: "0.75rem", fontWeight: 600, marginBottom: "0.25rem", color: "var(--text-secondary, #64748B)" }}>Code *</label>
+                <input style={styles.input} value={addCode} onChange={(e) => setAddCode(e.target.value)} placeholder="e.g. GT" />
+              </div>
+              <div>
+                <label style={{ display: "block", fontSize: "0.75rem", fontWeight: 600, marginBottom: "0.25rem", color: "var(--text-secondary, #64748B)" }}>Parent Code</label>
+                <input style={styles.input} value={addParent} onChange={(e) => setAddParent(e.target.value)} placeholder="(optional)" />
+              </div>
+              <div style={{ flex: 1, minWidth: 180 }}>
+                <label style={{ display: "block", fontSize: "0.75rem", fontWeight: 600, marginBottom: "0.25rem", color: "var(--text-secondary, #64748B)" }}>Name</label>
+                <input style={{ ...styles.input, width: "100%" }} value={addName} onChange={(e) => setAddName(e.target.value)} placeholder="Group name" />
+              </div>
+              <button onClick={handleAdd} disabled={addSaving} style={btn("primary", addSaving)}>
+                {addSaving ? "Adding..." : "Add"}
+              </button>
             </div>
-            <div>
-              <label style={{ display: "block", fontSize: "0.75rem", fontWeight: 600, marginBottom: "0.25rem", color: "var(--text-secondary, #64748B)" }}>Code *</label>
-              <input style={styles.input} value={addCode} onChange={(e) => setAddCode(e.target.value)} placeholder="e.g. GT" />
-            </div>
-            <div>
-              <label style={{ display: "block", fontSize: "0.75rem", fontWeight: 600, marginBottom: "0.25rem", color: "var(--text-secondary, #64748B)" }}>Parent Code</label>
-              <input style={styles.input} value={addParent} onChange={(e) => setAddParent(e.target.value)} placeholder="(optional)" />
-            </div>
-            <div style={{ flex: 1, minWidth: 180 }}>
-              <label style={{ display: "block", fontSize: "0.75rem", fontWeight: 600, marginBottom: "0.25rem", color: "var(--text-secondary, #64748B)" }}>Name</label>
-              <input style={{ ...styles.input, width: "100%" }} value={addName} onChange={(e) => setAddName(e.target.value)} placeholder="Group name" />
-            </div>
-            <button onClick={handleAdd} disabled={addSaving} style={btn("primary", addSaving)}>
-              {addSaving ? "Adding..." : "Add"}
-            </button>
+            {addMsg && <p style={{ marginTop: "0.5rem", fontSize: "0.8125rem", color: addMsg.startsWith("✓") ? "#059669" : "#DC2626" }}>{addMsg}</p>}
           </div>
-          {addMsg && <p style={{ marginTop: "0.5rem", fontSize: "0.8125rem", color: addMsg.startsWith("✓") ? "#059669" : "#DC2626" }}>{addMsg}</p>}
-        </div>
+        )}
 
         <LoadingOrEmpty isLoading={isLoading} isEmpty={!isLoading && groups.length === 0} emptyLabel="No customer groups yet — import from SAP_Customer_Group.xlsx or add manually above" />
 
@@ -179,15 +186,19 @@ export default function CustomerGroupsPage() {
                         <td style={{ ...styles.td, fontFamily: "monospace" }}>{g.code}</td>
                         <td style={{ ...styles.td, fontFamily: "monospace", color: "var(--text-tertiary, #94A3B8)" }}>{g.parent_code || "—"}</td>
                         <td style={styles.td}>
-                          {editingId === g.id ? (
+                          {isSuperAdmin && editingId === g.id ? (
                             <div style={{ display: "flex", gap: "0.5rem" }}>
                               <input style={styles.input} value={editValue} onChange={(e) => setEditValue(e.target.value)} autoFocus />
                               <button onClick={() => saveEdit(g.id)} style={{ fontSize: "0.75rem", fontWeight: 600, color: "var(--color-primary, #2BBCB3)" }}>Save</button>
                               <button onClick={() => setEditingId(null)} style={{ fontSize: "0.75rem", color: "var(--text-tertiary, #94A3B8)" }}>Cancel</button>
                             </div>
-                          ) : (
+                          ) : isSuperAdmin ? (
                             <span onClick={() => startEdit(g)} style={{ cursor: "pointer", color: g.name ? "var(--text-primary, #0F172A)" : "var(--text-tertiary, #94A3B8)" }}>
                               {g.name || "(click to name)"}
+                            </span>
+                          ) : (
+                            <span style={{ color: g.name ? "var(--text-primary, #0F172A)" : "var(--text-tertiary, #94A3B8)" }}>
+                              {g.name || "—"}
                             </span>
                           )}
                         </td>
@@ -195,7 +206,7 @@ export default function CustomerGroupsPage() {
                           <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
                             <Toggle
                               checked={!!g.is_active}
-                              disabled={savingActiveId === g.id}
+                              disabled={!isSuperAdmin || savingActiveId === g.id}
                               onChange={(v) => toggleActive(g, v)}
                             />
                             {parentOff && (

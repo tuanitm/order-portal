@@ -427,14 +427,27 @@ export default function AdminOrderDetailPage() {
                     disabled={!selectedWarehouse}
                   />
                 )}
-                <button
-                  type="button"
-                  onClick={cancelOrder}
-                  disabled={isSaving}
-                  style={{ ...btn("secondary", isSaving), color: "#DC2626", borderColor: "#DC2626" }}
-                >
-                  Cancel Order
-                </button>
+                {/* Cancel is disabled once the order is a confirmed SAP Sales Order
+                    (status 'approved' from direct push) or already has a SAP SO # synced back. */}
+                {(() => {
+                  const isSapSalesOrder = order.status === "approved" || !!order.sap_so_number;
+                  return (
+                    <button
+                      type="button"
+                      onClick={cancelOrder}
+                      disabled={isSaving || isSapSalesOrder}
+                      title={isSapSalesOrder ? "Cannot cancel — order is already a confirmed SAP Sales Order" : undefined}
+                      style={{
+                        ...btn("secondary", isSaving || isSapSalesOrder),
+                        color: isSapSalesOrder ? "var(--text-tertiary, #94A3B8)" : "#DC2626",
+                        borderColor: isSapSalesOrder ? "var(--color-gray-200, #E2E8F0)" : "#DC2626",
+                        cursor: isSapSalesOrder ? "not-allowed" : undefined,
+                      }}
+                    >
+                      Cancel Order
+                    </button>
+                  );
+                })()}
               </>
             )}
           </div>

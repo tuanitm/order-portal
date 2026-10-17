@@ -29,12 +29,8 @@ export async function PATCH(
     return NextResponse.json({ error: "Invalid category ID" }, { status: 400 });
   }
 
-  const allowed = await getAllowedItemGroupCodes(guard.session);
-  if (allowed !== null) {
-    const target = await queryOne<{ code: string }>(`SELECT code FROM item_groups WHERE id = ?`, [categoryId]);
-    if (!target || !allowed.has(target.code)) {
-      return NextResponse.json({ error: "Forbidden — this item group is outside your assigned scope" }, { status: 403 });
-    }
+  if (!guard.session.isSuperAdmin) {
+    return NextResponse.json({ error: "Only Super Admin can modify item groups" }, { status: 403 });
   }
 
   const body = await request.json();

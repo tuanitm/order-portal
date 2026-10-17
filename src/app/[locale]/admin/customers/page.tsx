@@ -180,15 +180,6 @@ export default function AdminCustomersPage() {
               Manage and approve new customer accounts
             </p>
           </div>
-          <a href={`/${locale}`} style={{
-            padding: "0.5rem 1rem", borderRadius: "var(--radius-lg, 8px)",
-            fontSize: "0.8125rem", color: "var(--text-secondary, #64748B)",
-            border: "1px solid var(--color-gray-200, #E2E8F0)",
-            textDecoration: "none", fontWeight: 500,
-            background: "var(--bg-primary, #fff)",
-          }}>
-            ← {locale === "vi" ? "Cổng đặt hàng" : "Ordering Portal"}
-          </a>
         </div>
 
         {/* Filter Tabs */}

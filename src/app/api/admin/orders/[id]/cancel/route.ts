@@ -4,6 +4,7 @@ import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { getSapClient } from "@/lib/sap-b1/client";
 import { recordOrderStatus, notifyCustomerOfStatusChange } from "@/lib/orderHistory";
 import { postOrderMessage } from "@/lib/orderMessages";
+import { isOrderInAdminScope } from "@/lib/adminScope";
 
 const TERMINAL_STATUSES = ["cancelled", "completed", "rejected"];
 
@@ -37,6 +38,10 @@ export async function POST(
   const { id } = await params;
   const orderId = parseInt(id, 10);
   if (isNaN(orderId)) return NextResponse.json({ error: "Invalid order ID" }, { status: 400 });
+
+  if (!(await isOrderInAdminScope(guard.session, orderId))) {
+    return NextResponse.json({ error: "Order not found" }, { status: 404 });
+  }
 
   const order = await queryOne<OrderRow>(
     `SELECT status, sap_doc_entry FROM orders WHERE id = ?`,

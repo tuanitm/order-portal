@@ -7,6 +7,7 @@ interface SyncSchedule {
   id: number;
   is_enabled: number;
   interval_hours: number;
+  post_so_mode: "draft" | "sales_order";
   last_run_at: string | null;
   last_run_status: "success" | "partial" | "failed" | null;
   last_run_summary: string | null;
@@ -18,6 +19,7 @@ export default function SettingsPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [isEnabled, setIsEnabled] = useState(false);
   const [intervalHours, setIntervalHours] = useState(24);
+  const [postSoMode, setPostSoMode] = useState<"draft" | "sales_order">("draft");
   const [isSaving, setIsSaving] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const [message, setMessage] = useState("");
@@ -30,6 +32,7 @@ export default function SettingsPage() {
       setSchedule(data.schedule);
       setIsEnabled(!!data.schedule.is_enabled);
       setIntervalHours(data.schedule.interval_hours);
+      setPostSoMode(data.schedule.post_so_mode === "sales_order" ? "sales_order" : "draft");
     }
     setIsLoading(false);
   }, []);
@@ -45,7 +48,7 @@ export default function SettingsPage() {
       const res = await fetch("/api/admin/settings/sync-schedule", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ isEnabled, intervalHours }),
+        body: JSON.stringify({ isEnabled, intervalHours, postSoMode }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to save");
@@ -79,11 +82,90 @@ export default function SettingsPage() {
       <div style={styles.container}>
         <div style={styles.header}>
           <div>
-            <h1 style={styles.title}>Settings</h1>
-            <p style={styles.subtitle}>Root-only. Configure the automated SAP sync schedule.</p>
+            <h1 style={styles.title}>SAP Sync Config</h1>
+            <p style={styles.subtitle}>Root-only. Configure SAP sync schedule and order posting mode.</p>
           </div>
         </div>
 
+        {/* ── Post SO Mode ──────────────────────────────────────────────── */}
+        <Section title="Post SO Mode">
+          <p style={{ fontSize: "0.8125rem", color: "var(--text-tertiary, #94A3B8)", marginBottom: "1.25rem" }}>
+            Controls how portal orders are pushed to SAP B1 when an admin clicks <strong>Post to SAP</strong>.
+          </p>
+
+          {isLoading ? (
+            <div style={styles.empty}>Loading...</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem", maxWidth: "520px" }}>
+              {/* Draft Order option */}
+              <label style={{
+                display: "flex", alignItems: "flex-start", gap: "0.75rem",
+                padding: "1rem", borderRadius: "var(--radius-lg, 8px)",
+                border: `2px solid ${postSoMode === "draft" ? "var(--color-primary, #2BBCB3)" : "var(--color-gray-200, #E2E8F0)"}`,
+                background: postSoMode === "draft" ? "rgba(43,188,179,0.05)" : "var(--bg-primary, #fff)",
+                cursor: "pointer", transition: "all 0.15s",
+              }}>
+                <input
+                  type="radio"
+                  name="postSoMode"
+                  value="draft"
+                  checked={postSoMode === "draft"}
+                  onChange={() => setPostSoMode("draft")}
+                  style={{ marginTop: "2px", cursor: "pointer", accentColor: "var(--color-primary, #2BBCB3)" }}
+                />
+                <div>
+                  <div style={{ fontSize: "0.875rem", fontWeight: 700, color: "var(--text-primary, #0F172A)", marginBottom: "0.25rem" }}>
+                    📋 Draft Order
+                  </div>
+                  <div style={{ fontSize: "0.8125rem", color: "var(--text-secondary, #64748B)" }}>
+                    Pushes the portal order to SAP B1 as a <strong>Draft</strong>. A SAP user must then manually approve
+                    the draft in SAP to convert it into a confirmed Sales Order. <em>(Current default behaviour.)</em>
+                  </div>
+                </div>
+              </label>
+
+              {/* Sales Order option */}
+              <label style={{
+                display: "flex", alignItems: "flex-start", gap: "0.75rem",
+                padding: "1rem", borderRadius: "var(--radius-lg, 8px)",
+                border: `2px solid ${postSoMode === "sales_order" ? "var(--color-primary, #2BBCB3)" : "var(--color-gray-200, #E2E8F0)"}`,
+                background: postSoMode === "sales_order" ? "rgba(43,188,179,0.05)" : "var(--bg-primary, #fff)",
+                cursor: "pointer", transition: "all 0.15s",
+              }}>
+                <input
+                  type="radio"
+                  name="postSoMode"
+                  value="sales_order"
+                  checked={postSoMode === "sales_order"}
+                  onChange={() => setPostSoMode("sales_order")}
+                  style={{ marginTop: "2px", cursor: "pointer", accentColor: "var(--color-primary, #2BBCB3)" }}
+                />
+                <div>
+                  <div style={{ fontSize: "0.875rem", fontWeight: 700, color: "var(--text-primary, #0F172A)", marginBottom: "0.25rem" }}>
+                    ✅ Sales Order
+                  </div>
+                  <div style={{ fontSize: "0.8125rem", color: "var(--text-secondary, #64748B)" }}>
+                    Pushes the portal order directly to SAP B1 as a confirmed <strong>Sales Order</strong> — no manual
+                    approval step required. The order status in the portal will be set to <em>Approved</em> immediately.
+                  </div>
+                </div>
+              </label>
+
+              <div style={{ paddingTop: "0.5rem" }}>
+                <button onClick={save} disabled={isSaving} style={btn("primary", isSaving)}>
+                  {isSaving ? "Saving..." : "Save"}
+                </button>
+                {message && (
+                  <span style={{ marginLeft: "1rem", fontSize: "0.8125rem", color: "var(--text-secondary, #64748B)" }}>
+                    {message}
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+        </Section>
+
+        {/* ── SAP Sync Schedule ──────────────────────────────────────────── */}
         <Section title="SAP Sync Schedule">
           <p style={{ fontSize: "0.8125rem", color: "var(--text-tertiary, #94A3B8)", marginBottom: "1rem" }}>
             One combined run covers: Customer Group, Item Group, SAP Customers, Items, Warehouse, Price List, Channel

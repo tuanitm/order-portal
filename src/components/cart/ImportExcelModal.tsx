@@ -50,6 +50,7 @@ export default function ImportExcelModal({ isOpen, onClose }: { isOpen: boolean;
   const [parseError, setParseError] = useState("");
   const [matched, setMatched] = useState<MatchedRow[]>([]);
   const [unavailable, setUnavailable] = useState<string[]>([]);
+  const [notVisible, setNotVisible] = useState<string[]>([]);
   const [invalidRows, setInvalidRows] = useState<InvalidRow[]>([]);
   const [confirmingReplace, setConfirmingReplace] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -61,6 +62,7 @@ export default function ImportExcelModal({ isOpen, onClose }: { isOpen: boolean;
     setParseError("");
     setMatched([]);
     setUnavailable([]);
+    setNotVisible([]);
     setInvalidRows([]);
     setConfirmingReplace(false);
     if (fileInputRef.current) fileInputRef.current.value = "";
@@ -153,7 +155,7 @@ export default function ImportExcelModal({ isOpen, onClose }: { isOpen: boolean;
         body: JSON.stringify({ codes }),
       });
       if (!res.ok) throw new Error("lookup failed");
-      const data: { items: ProductWithPricing[]; notFound: string[] } = await res.json();
+      const data: { items: ProductWithPricing[]; notFound: string[]; notVisible: string[] } = await res.json();
 
       const matchedRows: MatchedRow[] = data.items.map((product) => {
         const parsed = byCode.get(product.sapItemCode) ?? [...byCode.values()].find(
@@ -163,7 +165,8 @@ export default function ImportExcelModal({ isOpen, onClose }: { isOpen: boolean;
       });
 
       setMatched(matchedRows);
-      setUnavailable(data.notFound);
+      setUnavailable(data.notFound ?? []);
+      setNotVisible(data.notVisible ?? []);
       setStep("preview");
     } catch {
       setParseError(t("import.parseError"));
@@ -329,6 +332,20 @@ export default function ImportExcelModal({ isOpen, onClose }: { isOpen: boolean;
               </div>
             )}
 
+            {/* Not visible — exists in system but blocked by catalog visibility */}
+            {notVisible.length > 0 && (
+              <div style={{ marginBottom: "1rem", padding: "0.75rem", background: "#FFF7ED", borderRadius: "var(--radius-md)", border: "1px solid #FED7AA" }}>
+                <p style={{ fontWeight: 600, fontSize: "0.8125rem", color: "#9A3412", marginBottom: "0.25rem" }}>
+                  ⚠️ {notVisible.length} item{notVisible.length > 1 ? "s" : ""} not available for your account
+                </p>
+                <p style={{ fontSize: "0.75rem", color: "#9A3412", marginBottom: "0.375rem" }}>
+                  These items exist in the system but are not included in your catalog visibility. Please contact your sales representative.
+                </p>
+                <p style={{ fontSize: "0.75rem", fontFamily: "monospace", color: "#9A3412", wordBreak: "break-all" }}>{notVisible.join(", ")}</p>
+              </div>
+            )}
+
+            {/* Not found — code not in system at all */}
             {unavailable.length > 0 && (
               <div style={{ marginBottom: "1rem", padding: "0.75rem", background: "#FEF2F2", borderRadius: "var(--radius-md)" }}>
                 <p style={{ fontWeight: 600, fontSize: "0.8125rem", color: "#991B1B" }}>

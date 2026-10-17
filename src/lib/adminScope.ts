@@ -1,4 +1,5 @@
-import { query } from "@/lib/db/connection";
+import { query, queryOne } from "@/lib/db/connection";
+import { loadConfig } from "@/lib/config";
 import type { AdminSession } from "@/lib/auth/adminSession";
 
 /**
@@ -6,15 +7,13 @@ import type { AdminSession } from "@/lib/auth/adminSession";
  * admin (an `admin_users` row; a root row — is_root=TRUE —
  * is always unrestricted) may see and manage, on the pages that deal in
  * that data directly: Customer Groups, Item Groups, Items, Customers
- * Approval, SAP Customers. See admin_user_customer_groups/
+ * Approval, SAP Customers, and Orders. See admin_user_customer_groups/
  * admin_user_item_groups in schema.sql for the assignment table and the
  * default-deny rule (no rows assigned = sees nothing, not "sees everything").
  *
- * Not yet applied to: Orders, Contract Discounts, Promotion Discounts,
- * Catalog Visibility, Price Lists, Warehouses — those either aren't scoped
- * by a single group field the same direct way, or weren't part of what was
- * asked for. A scoped admin currently sees those pages unrestricted (if
- * their role has the permission at all).
+ * For Orders:
+ * - Superadmin sees all orders under config.json's `masterdata.customerGroup` (and descendants).
+ * - Scoped (non-root) admin only sees orders under their assigned customer groups (and descendants).
  */
 
 export type AllowedCodes = Set<string> | null; // null = unrestricted (root)
@@ -111,3 +110,264 @@ export function inScope(codes: AllowedCodes, candidateCodes: (string | null | un
   if (codes === null) return true;
   return candidateCodes.some((c) => c && codes.has(c));
 }
+
+/**
+ * Scoping for Orders:
+ * - Superadmin sees all orders under config.json's `masterdata.customerGroup` (and all its descendants).
+ * - Scoped (non-root) admin only sees orders under their assigned customer groups (and descendants).
+ * Returns a Set of allowed customer group codes, or an empty Set if no access.
+ */
+export async function getOrderAllowedCustomerGroupCodes(session: AdminSession): Promise<Set<string>> {
+  const allRows = await query<GroupRow[]>(`SELECT id, level, code, parent_code FROM customer_groups`);
+
+  if (session.isSuperAdmin) {
+    const { masterdata } = loadConfig();
+    const configCodes = (masterdata.customerGroup || "")
+      .split(",")
+      .map((s) => s.trim().replace(/^'|'$/g, ""))
+      .filter(Boolean);
+
+    if (configCodes.length === 0) return new Set();
+
+    const matchingIds = new Set(
+      allRows.filter((r) => configCodes.includes(r.code)).map((r) => r.id)
+    );
+    return expandToDescendantCodes(allRows, matchingIds);
+  }
+
+  if (!session.adminId) return new Set();
+
+  const assigned = await query<{ customer_group_id: number }>(
+    `SELECT customer_group_id FROM admin_user_customer_groups WHERE admin_user_id = ?`,
+    [session.adminId]
+  );
+  if (assigned.length === 0) return new Set();
+
+  return expandToDescendantCodes(allRows, new Set(assigned.map((a) => a.customer_group_id)));
+}
+
+/**
+ * SQL clause for filtering orders by customer groups (checks COALESCE(c.cus_grp0X, u.sap_cus_grp0X)).
+ */
+export function orderGroupScopeClause(codes: Set<string>): { sql: string; params: string[] } {
+  return groupScopeClause(codes, [
+    "COALESCE(c.cus_grp01, u.sap_cus_grp01)",
+    "COALESCE(c.cus_grp02, u.sap_cus_grp02)",
+    "COALESCE(c.cus_grp03, u.sap_cus_grp03)",
+  ]);
+}
+
+/**
+ * Checks whether an existing order is within the admin's customer group scope.
+ */
+export async function isOrderInAdminScope(session: AdminSession, orderId: number): Promise<boolean> {
+  const allowed = await getOrderAllowedCustomerGroupCodes(session);
+  if (allowed.size === 0) return false;
+
+  const order = await queryOne<{ grp01: string | null; grp02: string | null; grp03: string | null }>(
+    `SELECT COALESCE(c.cus_grp01, u.sap_cus_grp01) AS grp01,
+            COALESCE(c.cus_grp02, u.sap_cus_grp02) AS grp02,
+            COALESCE(c.cus_grp03, u.sap_cus_grp03) AS grp03
+     FROM orders o
+     LEFT JOIN users u ON u.id = o.user_id
+     LEFT JOIN customers c ON c.sap_card_code = u.sap_card_code
+     WHERE o.id = ?`,
+    [orderId]
+  );
+  if (!order) return false;
+
+  return inScope(allowed, [order.grp01, order.grp02, order.grp03]);
+}
+
+/**
+ * Scoping for Customer Approval:
+ * - Superadmin sees and approves customer requests from config.json's `masterdata.customerGroup` (and descendants).
+ * - Scoped (non-root) admin only sees and approves requests from their assigned customer groups (and descendants).
+ * Returns a Set of allowed customer group codes, or an empty Set if no access.
+ */
+export async function getCustomerApprovalAllowedGroupCodes(session: AdminSession): Promise<Set<string>> {
+  return getOrderAllowedCustomerGroupCodes(session);
+}
+
+/**
+ * Checks whether a customer registration request is within the admin's customer group scope for approval/rejection.
+ */
+export async function isCustomerInApprovalScope(
+  session: AdminSession,
+  customer: {
+    sap_cus_grp01?: string | null;
+    sap_cus_grp02?: string | null;
+    sap_cus_grp03?: string | null;
+    cus_grp01?: string | null;
+    cus_grp02?: string | null;
+    cus_grp03?: string | null;
+    sap_card_code?: string | null;
+  }
+): Promise<boolean> {
+  const allowed = await getCustomerApprovalAllowedGroupCodes(session);
+  if (allowed.size === 0) return false;
+
+  const candidateCodes = [
+    customer.sap_cus_grp01,
+    customer.sap_cus_grp02,
+    customer.sap_cus_grp03,
+    customer.cus_grp01,
+    customer.cus_grp02,
+    customer.cus_grp03,
+  ].filter(Boolean);
+
+  if (candidateCodes.some((c) => c && allowed.has(c))) {
+    return true;
+  }
+
+  if (customer.sap_card_code) {
+    for (const code of allowed) {
+      if (customer.sap_card_code.startsWith(code)) return true;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Resolves allowed customer groups and item groups for Promotion Discounts.
+ * - Non-root admin: strictly scoped to assigned Customer Groups and Item Groups.
+ * - Superadmin: scoped to config.json's masterdata.customerGroup and masterdata.itemGroup (if set).
+ */
+export async function getPromotionAllowedGroups(session: AdminSession): Promise<{
+  customerGroupCodes: Set<string> | null;
+  itemGroupCodes: Set<string> | null;
+}> {
+  if (session.isSuperAdmin) {
+    const { masterdata } = loadConfig();
+    let customerGroupCodes: Set<string> | null = null;
+    let itemGroupCodes: Set<string> | null = null;
+
+    if (masterdata.customerGroup) {
+      const configCodes = masterdata.customerGroup
+        .split(",")
+        .map((s) => s.trim().replace(/^'|'$/g, ""))
+        .filter(Boolean);
+      if (configCodes.length > 0) {
+        const allCustRows = await query<GroupRow[]>(`SELECT id, level, code, parent_code FROM customer_groups`);
+        const matchingIds = new Set(allCustRows.filter((r) => configCodes.includes(r.code)).map((r) => r.id));
+        customerGroupCodes = expandToDescendantCodes(allCustRows, matchingIds);
+        for (const c of configCodes) customerGroupCodes.add(c);
+      }
+    }
+
+    if (masterdata.itemGroup) {
+      const configItemCodes = masterdata.itemGroup
+        .split(",")
+        .map((s) => s.trim().replace(/^'|'$/g, "").replace(/^"|"$/g, ""))
+        .filter(Boolean);
+      if (configItemCodes.length > 0) {
+        const allItemRows = await query<GroupRow[]>(`SELECT id, level, code, parent_code FROM item_groups`);
+        const matchingIds = new Set(allItemRows.filter((r) => configItemCodes.includes(r.code)).map((r) => r.id));
+        itemGroupCodes = expandToDescendantCodes(allItemRows, matchingIds);
+        for (const c of configItemCodes) itemGroupCodes.add(c);
+      }
+    }
+
+    return { customerGroupCodes, itemGroupCodes };
+  }
+
+  // Non-root admin user: strictly scoped by their assignments
+  const customerGroupCodes = await getAllowedCustomerGroupCodes(session);
+  const itemGroupCodes = await getAllowedItemGroupCodes(session);
+  return { customerGroupCodes, itemGroupCodes };
+}
+
+/**
+ * Builds the WHERE condition for matching promotion_discount rows against
+ * allowed customer groups and item groups.
+ */
+export async function buildPromotionScopeFilter(
+  customerGroupCodes: Set<string> | null,
+  itemGroupCodes: Set<string> | null
+): Promise<{ sql: string; params: (string | number)[] }> {
+  const clauses: string[] = [];
+  const params: (string | number)[] = [];
+
+  // Customer Group filter
+  if (customerGroupCodes !== null) {
+    if (customerGroupCodes.size === 0) {
+      return { sql: "1=0", params: [] };
+    }
+    const custCodes = [...customerGroupCodes];
+
+    // Find all customers in MySQL belonging to these groups
+    const custPlaceholders = custCodes.map(() => "?").join(",");
+    const custRows = await query<{ sap_card_code: string }[]>(
+      `SELECT sap_card_code FROM customers
+       WHERE cus_grp01 IN (${custPlaceholders})
+          OR cus_grp02 IN (${custPlaceholders})
+          OR cus_grp03 IN (${custPlaceholders})`,
+      [...custCodes, ...custCodes, ...custCodes]
+    );
+
+    const bpCodes = new Set<string>([...custCodes, ...custRows.map((r) => r.sap_card_code)]);
+    const bpList = [...bpCodes];
+    const bpPlaceholders = bpList.map(() => "?").join(",");
+
+    // Use minimal root prefixes to keep the query fast (e.g. 'GTNO%')
+    const rootCustPrefixes = custCodes.filter(
+      (c) => !custCodes.some((other) => other !== c && c.startsWith(other))
+    );
+    const prefixClauses = rootCustPrefixes.map(() => "bp_code LIKE ?").join(" OR ");
+    const prefixParams = rootCustPrefixes.map((c) => `${c}%`);
+
+    clauses.push(`(bp_code IS NULL OR bp_code IN (${bpPlaceholders}) OR ${prefixClauses})`);
+    params.push(...bpList, ...prefixParams);
+  }
+
+  // Item Group filter
+  if (itemGroupCodes !== null) {
+    if (itemGroupCodes.size === 0) {
+      return { sql: "1=0", params: [] };
+    }
+    const itemCodes = [...itemGroupCodes];
+
+    // Find all items in MySQL belonging to these groups
+    const itemPlaceholders = itemCodes.map(() => "?").join(",");
+    const itemRows = await query<{ sap_item_code: string }[]>(
+      `SELECT sap_item_code FROM items
+       WHERE item_cat01 IN (${itemPlaceholders})
+          OR item_cat02 IN (${itemPlaceholders})
+          OR item_cat03 IN (${itemPlaceholders})
+          OR item_cat04 IN (${itemPlaceholders})
+          OR item_cat05 IN (${itemPlaceholders})
+          OR item_cat06 IN (${itemPlaceholders})`,
+      [...itemCodes, ...itemCodes, ...itemCodes, ...itemCodes, ...itemCodes, ...itemCodes]
+    );
+
+    const validItemCodes = new Set<string>([...itemCodes, ...itemRows.map((r) => r.sap_item_code)]);
+    const validItemList = [...validItemCodes];
+    const validItemPlaceholders = validItemList.map(() => "?").join(",");
+
+    // Group code direct match placeholders
+    const groupPlaceholders = itemCodes.map(() => "?").join(",");
+
+    // Use minimal root prefixes to keep the query fast (e.g. 'D1%', 'L1%')
+    const rootItemPrefixes = itemCodes.filter(
+      (c) => !itemCodes.some((other) => other !== c && c.startsWith(other))
+    );
+    const itemPrefixClauses = rootItemPrefixes.map(() => "selling_item_code LIKE ?").join(" OR ");
+    const itemPrefixParams = rootItemPrefixes.map((c) => `${c}%`);
+
+    clauses.push(
+      `(selling_item_code IN (${validItemPlaceholders}) OR selling_grp_code IN (${groupPlaceholders}) OR ${itemPrefixClauses})`
+    );
+    params.push(...validItemList, ...itemCodes, ...itemPrefixParams);
+  }
+
+  if (clauses.length === 0) {
+    return { sql: "1=1", params: [] };
+  }
+
+  return {
+    sql: clauses.join(" AND "),
+    params,
+  };
+}
+

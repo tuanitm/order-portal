@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query } from "@/lib/db/connection";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
+import { getPromotionAllowedGroups, buildPromotionScopeFilter } from "@/lib/adminScope";
 
 /**
  * GET /api/admin/promotions — the cached Promotion Discount rows (SAP
@@ -17,6 +18,12 @@ export async function GET(request: NextRequest) {
   const guard = await requireAdminPermission(request, "promotions");
   if (guard.response) return guard.response;
 
+  const { customerGroupCodes, itemGroupCodes } = await getPromotionAllowedGroups(guard.session);
+  const scopeFilter = await buildPromotionScopeFilter(customerGroupCodes, itemGroupCodes);
+  if (scopeFilter.sql === "1=0") {
+    return NextResponse.json({ promotions: [], total: 0, page: 1, totalPages: 0 });
+  }
+
   const { searchParams } = new URL(request.url);
   const search = searchParams.get("search")?.trim();
   const bpCode = searchParams.get("bpCode")?.trim();
@@ -29,7 +36,12 @@ export async function GET(request: NextRequest) {
   const offset = (page - 1) * limit;
 
   const whereClauses: string[] = [];
-  const params: string[] = [];
+  const params: (string | number)[] = [];
+
+  if (scopeFilter.sql !== "1=1") {
+    whereClauses.push(scopeFilter.sql);
+    params.push(...scopeFilter.params);
+  }
   if (search) {
     whereClauses.push("(promotion_code LIKE ? OR promotion_name LIKE ?)");
     params.push(`%${search}%`, `%${search}%`);

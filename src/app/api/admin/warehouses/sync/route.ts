@@ -7,6 +7,10 @@ export async function POST(request: NextRequest) {
   const guard = await requireAdminPermission(request, "warehouses");
   if (guard.response) return guard.response;
 
+  if (!guard.session.isSuperAdmin) {
+    return NextResponse.json({ error: "Only Super Admin can sync warehouses" }, { status: 403 });
+  }
+
   try {
     const result = await syncWarehouses();
     return NextResponse.json({ success: true, ...result });

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/auth/session";
 import { getBasePriceListNum } from "@/lib/sap-b1/sync";
 import { getVisibleWarehousesForCustomerGroup } from "@/lib/warehouseVisibility";
+import { query } from "@/lib/db/connection";
 import {
   resolveHiddenItemCategories,
   buildHiddenCategoryClauses,
@@ -12,18 +13,16 @@ import {
 const MAX_CODES = 500;
 
 /**
- * POST /api/products/batch — exact-code pricing lookup for Excel Import
- * (bulk-add from an uploaded order file). Unlike GET /api/products' `search`
- * (a fuzzy LIKE on name/code), this matches `sap_item_code` exactly, in one
- * round trip for every code the customer's file contained, reusing the
- * SAME pricing/visibility core (see src/lib/pricing/productPricing.ts) as
- * the regular product list — a hidden/inactive/out-of-stock code simply
- * won't appear in `items` and therefore surfaces in `notFound`, exactly
- * like it would be excluded from the storefront listing.
+ * POST /api/products/batch — exact-code pricing lookup for Excel Import.
+ *
+ * Applies the SAME visibility/pricing rules as GET /api/products, then
+ * splits codes that were not returned into two buckets:
+ *   - notFound    : code does not exist in the items table at all
+ *   - notVisible  : code exists but is blocked by catalog visibility,
+ *                   inactive, or manually hidden for this customer
  *
  * Body: { codes: string[] }
- * 200:  { items: ProductWithPricing[], notFound: string[] }
- * 400:  missing/empty codes, or more than MAX_CODES distinct codes
+ * 200:  { items: ProductWithPricing[], notFound: string[], notVisible: string[] }
  */
 export async function POST(request: NextRequest) {
   try {
@@ -66,6 +65,7 @@ export async function POST(request: NextRequest) {
       stockWarehouseCodes,
     };
 
+    // ── Step 1: Priced + visible items (passes all catalog visibility checks) ──
     const items = await queryPricedProducts(
       ctx,
       hiddenClauses,
@@ -77,9 +77,31 @@ export async function POST(request: NextRequest) {
     );
 
     const foundCodes = new Set(items.map((i) => i.sapItemCode.toUpperCase()));
-    const notFound = codes.filter((c) => !foundCodes.has(c.toUpperCase()));
+    const missingCodes = codes.filter((c) => !foundCodes.has(c.toUpperCase()));
 
-    return NextResponse.json({ items, notFound });
+    if (missingCodes.length === 0) {
+      return NextResponse.json({ items, notFound: [], notVisible: [] });
+    }
+
+    // ── Step 2: Distinguish "not in system" from "blocked by catalog visibility" ──
+    const placeholders = missingCodes.map(() => "?").join(",");
+    const existingRows = await query<{ sap_item_code: string }>(
+      `SELECT sap_item_code FROM items WHERE sap_item_code IN (${placeholders})`,
+      missingCodes
+    );
+    const existingSet = new Set(existingRows.map((r) => r.sap_item_code.toUpperCase()));
+
+    const notFound: string[] = [];
+    const notVisible: string[] = [];
+    for (const code of missingCodes) {
+      if (existingSet.has(code.toUpperCase())) {
+        notVisible.push(code); // exists but blocked by catalog visibility / inactive / hidden
+      } else {
+        notFound.push(code);   // not in items table at all
+      }
+    }
+
+    return NextResponse.json({ items, notFound, notVisible });
   } catch (error) {
     console.error("[API] Batch product lookup error:", error);
     return NextResponse.json(

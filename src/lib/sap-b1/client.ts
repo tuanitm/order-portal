@@ -245,7 +245,7 @@ export interface SapSalesOrderDraft {
   U_InvName?: string;
   /** Portal order number (e.g. SO-GTSO0701-261015-503) — stamped onto the SAP
    * Sales Order header so the portal reference is visible in SAP. */
-  U_RefDocNo?: string;
+  U_RelDocs?: string;
   DocumentLines: {
     ItemCode: string;
     /** Only set for the synthetic Contract/Promotion Discount lines (see
@@ -839,6 +839,16 @@ export class SapB1Client {
   }
 
   /**
+   * Create a confirmed Sales Order directly in SAP B1 (bypasses the Draft
+   * stage — used when Post SO Mode is set to "Sales Order").
+   * U_DocNo is still generated server-side by SAP's SBO_SP_TransactionNotification.
+   */
+  async createSalesOrder(draft: SapSalesOrderDraft): Promise<SapDocumentResponse> {
+    await this.ensureSession();
+    return this.request<SapDocumentResponse>('POST', '/Orders', draft);
+  }
+
+  /**
    * Get a Draft Sales Order by DocEntry
    */
   async getDraftSalesOrder(docEntry: number): Promise<SapSalesOrderDraft & SapDocumentResponse> {
@@ -867,18 +877,18 @@ export class SapB1Client {
   }
 
   /**
-   * Get a confirmed Sales Order's key status fields by DocEntry — used to
-   * sync U_DocNo (the SOO number SAP generates via SBO_SP_TransactionNotification,
-   * e.g. "SOO261015001") and DocStatus back to the portal after the draft is
-   * approved and becomes a real Sales Order in SAP.
+   * Get a confirmed Sales Order's key status fields — used to sync U_DocNo
+   * (e.g. "SOO261015001") and DocStatus back to the portal after the draft is
+   * approved in SAP and becomes a real Sales Order.
    *
-   * DocStatus values from SAP Service Layer:
-   *   "bost_Open"      → approved/in-progress (maps to portal "approved")
-   *   "bost_Delivered" → delivery issued       (maps to portal "delivered")
-   *   "bost_Closed"    → closed                (maps to portal "completed")
-   * Cancelled = "tYES" → maps to portal "cancelled".
+   * Strategy (Draft DocEntry ≠ Sales Order DocEntry in SAP B1):
+   *   1. Filter /Orders by U_RelDocs eq '<portalOrderNumber>' — unique per order.
+   *   2. Fallback: /Orders(docEntry) for legacy orders before U_RelDocs was added.
    */
-  async getSalesOrderStatus(docEntry: number): Promise<{
+  async getSalesOrderStatus(
+    docEntry: number,
+    orderNumber?: string | null,
+  ): Promise<{
     DocEntry: number;
     DocNum: number;
     U_DocNo: string | null;
@@ -886,20 +896,41 @@ export class SapB1Client {
     Cancelled: string | null;
   } | null> {
     await this.ensureSession();
-    try {
-      const select = encodeURIComponent('DocEntry,DocNum,U_DocNo,DocStatus,Cancelled');
-      const result = await this.request<{
-        DocEntry: number;
-        DocNum: number;
-        U_DocNo: string | null;
-        DocStatus: string | null;
-        Cancelled: string | null;
-      }>('GET', `/Orders(${docEntry})?$select=${select}`);
-      return result;
-    } catch (error) {
-      console.error(`[SAP] Failed to get Sales Order status for DocEntry ${docEntry}:`, error);
-      return null;
+    type Row = { DocEntry: number; DocNum: number; U_DocNo: string | null; DocStatus: string | null; Cancelled: string | null; };
+
+    // ── Attempt 1: filter by U_RelDocs (portal order number) ──────────────
+    if (orderNumber) {
+      try {
+        const filter = encodeURIComponent(`U_RelDocs eq '${orderNumber}'`);
+        const listResult = await this.request<{ value: Row[] }>(
+          'GET',
+          `/Orders?$filter=${filter}&$top=1`
+        );
+        if (listResult?.value?.length) {
+          console.log(`[SAP] Found SO for ${orderNumber} via U_RelDocs (DocEntry=${listResult.value[0].DocEntry})`);
+          return listResult.value[0];
+        }
+        console.log(`[SAP] No SO found by U_RelDocs='${orderNumber}' yet`);
+      } catch (error) {
+        console.warn(`[SAP] U_RelDocs filter failed, trying DocEntry fallback:`, error);
+      }
     }
+
+    // ── Attempt 2: direct DocEntry lookup (legacy / fallback) ─────────────
+    try {
+      const result = await this.request<Row>('GET', `/Orders(${docEntry})`);
+      if (result) {
+        console.log(`[SAP] Found SO via DocEntry=${docEntry}`);
+        return result;
+      }
+    } catch (error) {
+      const status = (error as { httpStatus?: number })?.httpStatus;
+      if (status !== 404) {
+        console.error(`[SAP] getSalesOrderStatus DocEntry=${docEntry} failed:`, error);
+      }
+    }
+
+    return null;
   }
 
 }

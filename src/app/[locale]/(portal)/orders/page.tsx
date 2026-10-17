@@ -110,16 +110,17 @@ export default function OrdersPage() {
                     }}>
                       {formatPrice(Number(order.grand_total))}
                     </div>
-                    <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", justifyContent: "flex-end", flexWrap: "wrap" }}>
+                    <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", justifyContent: "flex-end", flexWrap: "wrap", marginBottom: "0.5rem" }}>
                       <OrderStatusBadge orderId={order.id} status={order.status} clickable={false} />
+                    </div>
+                    <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", justifyContent: "flex-end" }}>
+                      <Link href={`/orders/${order.id}`} className="btn btn-ghost btn-sm"
+                        style={{ flexShrink: 0 }}>
+                        {t("order.detail")} →
+                      </Link>
                       <ReorderButton orderId={order.id} />
                     </div>
                   </div>
-
-                  <Link href={`/orders/${order.id}`} className="btn btn-ghost btn-sm"
-                    style={{ flexShrink: 0 }}>
-                    {t("order.detail")} →
-                  </Link>
                 </div>
               </div>
             ))}

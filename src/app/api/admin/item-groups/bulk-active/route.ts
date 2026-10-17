@@ -16,6 +16,9 @@ import { getAllowedItemGroupCodes } from "@/lib/adminScope";
 export async function POST(request: NextRequest) {
   const guard = await requireAdminPermission(request, "item-groups");
   if (guard.response) return guard.response;
+  if (!guard.session.isSuperAdmin) {
+    return NextResponse.json({ error: "Only Super Admin can activate or inactivate item groups" }, { status: 403 });
+  }
 
   const body = await request.json();
   let changes: { id: number; isActive: boolean }[] = Array.isArray(body.changes)

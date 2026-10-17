@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { getLiveAvailabilityForOrder } from "@/lib/orderStock";
+import { isOrderInAdminScope } from "@/lib/adminScope";
 
 /**
  * GET /api/admin/orders/[id]/stock?warehouseCode=XXXX — LIVE (not the
@@ -24,6 +25,10 @@ export async function GET(
   const { id } = await params;
   const orderId = parseInt(id, 10);
   if (isNaN(orderId)) return NextResponse.json({ error: "Invalid order ID" }, { status: 400 });
+
+  if (!(await isOrderInAdminScope(guard.session, orderId))) {
+    return NextResponse.json({ error: "Order not found" }, { status: 404 });
+  }
 
   const warehouseCode = new URL(request.url).searchParams.get("warehouseCode")?.trim();
   if (!warehouseCode) {

@@ -1,4 +1,4 @@
-import { readFileSync } from "fs";
+import { readFileSync, statSync } from "fs";
 import { execSync } from "child_process";
 import { join } from "path";
 
@@ -52,6 +52,7 @@ export interface AppConfig {
     customerGroup: string;
     itemGroup: string;
     wareHouse: string;
+    priceList?: string;
   };
   /** Web Push VAPID keypair — publicKey is sent to the browser (not
    *  secret), privateKey stays server-side (see src/lib/webPush.ts). */
@@ -64,12 +65,21 @@ export interface AppConfig {
 }
 
 let cachedConfig: AppConfig | null = null;
+let cachedConfigMtime = 0;
 
-/** Load config.json from the project root (cached after first read). */
+/** Load config.json from the project root (reloads if file modified). */
 export function loadConfig(): AppConfig {
-  if (!cachedConfig) {
-    const configPath = join(process.cwd(), "config.json");
-    cachedConfig = JSON.parse(readFileSync(configPath, "utf-8"));
+  const configPath = join(process.cwd(), "config.json");
+  try {
+    const mtime = statSync(configPath).mtimeMs;
+    if (!cachedConfig || mtime !== cachedConfigMtime) {
+      cachedConfig = JSON.parse(readFileSync(configPath, "utf-8"));
+      cachedConfigMtime = mtime;
+    }
+  } catch {
+    if (!cachedConfig) {
+      cachedConfig = JSON.parse(readFileSync(configPath, "utf-8"));
+    }
   }
   return cachedConfig!;
 }

@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query } from "@/lib/db/connection";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
+import { getOrderAllowedCustomerGroupCodes, orderGroupScopeClause } from "@/lib/adminScope";
 
 /**
  * GET /api/admin/orders — list orders, optional status filter.
- * Note: order creation (POST /api/orders → MySQL + SAP draft push) is still
- * a TODO stub — this only manages whatever rows already exist.
+ * Scoped by admin user customer group visibility (or config.json masterdata.customerGroup for root).
  */
 export async function GET(request: NextRequest) {
   const guard = await requireAdminPermission(request, "orders");
@@ -22,6 +22,14 @@ export async function GET(request: NextRequest) {
 
   const whereClauses: string[] = [];
   const params: (string | number)[] = [];
+
+  // Scoping:
+  // - Superadmin sees all orders under config.json's masterdata.customerGroup
+  // - Scoped (non-root) admin only sees orders under their assigned customer groups
+  const allowedGroups = await getOrderAllowedCustomerGroupCodes(guard.session);
+  const scope = orderGroupScopeClause(allowedGroups);
+  whereClauses.push(scope.sql);
+  params.push(...scope.params);
 
   if (status) {
     whereClauses.push("o.status = ?");

@@ -23,6 +23,10 @@ export async function PATCH(
   const guard = await requireAdminPermission(request, "items");
   if (guard.response) return guard.response;
 
+  if (!guard.session.isSuperAdmin) {
+    return NextResponse.json({ error: "Only Super Admin can modify items" }, { status: 403 });
+  }
+
   const { code } = await params;
 
   const allowed = await getAllowedItemGroupCodes(guard.session);

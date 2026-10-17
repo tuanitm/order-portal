@@ -12,6 +12,10 @@ export async function POST(request: NextRequest) {
   const guard = await requireAdminPermission(request, "promotions");
   if (guard.response) return guard.response;
 
+  if (!guard.session.isSuperAdmin) {
+    return NextResponse.json({ error: "Only Super Admin can import promotions" }, { status: 403 });
+  }
+
   try {
     const result = await importPromotionDiscountsFromXlsx();
     return NextResponse.json({ success: true, ...result });

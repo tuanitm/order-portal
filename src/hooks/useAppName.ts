@@ -65,21 +65,21 @@ export function useShowAvailable(): boolean {
 
 /**
  * The portal name with the company prefix from config.json in front —
- * "IMV - Ordering Portal", or "IMV - Ordering Portal (Admin)" when
- * `isAdmin`. The name follows the selected language (for on-screen
- * headings); the browser TAB title never does — it's always English, see
- * `usePageTitle`.
+ * "IMV - Order Portal", or "IMV - Order Portal (Admin NO)" when
+ * `isAdmin` and `adminName` is provided.
  */
-export function useAppName(isAdmin = false): string {
+export function useAppName(isAdmin = false, adminName?: string): string {
   const t = useTranslations();
   const prefix = useCompanyPrefix();
-  return `${prefix ? `${prefix} - ` : ""}${t("common.appName")}${isAdmin ? " (Admin)" : ""}`;
+  const suffix = isAdmin ? ` (${adminName || "Admin"})` : "";
+  return `${prefix ? `${prefix} - ` : ""}${t("common.appName")}${suffix}`;
 }
 
-/** Sets the browser tab title to "{prefix} - Ordering Portal[ (Admin)]" — always English, whatever the UI language. */
-export function usePageTitle(isAdmin = false): void {
+/** Sets the browser tab title to "{prefix} - Order Portal[ (Admin Name)]" — always English, whatever the UI language. */
+export function usePageTitle(isAdmin = false, adminName?: string): void {
   const prefix = useCompanyPrefix();
   useEffect(() => {
-    document.title = `${prefix ? `${prefix} - ` : ""}Ordering Portal${isAdmin ? " (Admin)" : ""}`;
-  }, [prefix, isAdmin]);
+    const suffix = isAdmin ? ` (${adminName || "Admin"})` : "";
+    document.title = `${prefix ? `${prefix} - ` : ""}Order Portal${suffix}`;
+  }, [prefix, isAdmin, adminName]);
 }

@@ -14,6 +14,10 @@ export async function PATCH(
   const guard = await requireAdminPermission(request, "warehouses");
   if (guard.response) return guard.response;
 
+  if (!guard.session.isSuperAdmin) {
+    return NextResponse.json({ error: "Only Super Admin can activate or inactivate warehouses" }, { status: 403 });
+  }
+
   const { code } = await params;
   const body = await request.json();
   if (typeof body.isIncluded !== "boolean") {
