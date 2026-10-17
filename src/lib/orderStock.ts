@@ -56,8 +56,13 @@ export async function getLiveAvailabilityForOrder(
   warehouseCode: string
 ): Promise<LiveItemAvailability[]> {
   const customer = await queryOne<OrderCustomer>(
-    `SELECT u.sap_cus_grp01, u.sap_cus_grp02, u.sap_cus_grp03
-     FROM orders o LEFT JOIN users u ON u.id = o.user_id WHERE o.id = ?`,
+    `SELECT COALESCE(u.sap_cus_grp01, c.cus_grp01) AS sap_cus_grp01,
+            COALESCE(u.sap_cus_grp02, c.cus_grp02) AS sap_cus_grp02,
+            COALESCE(u.sap_cus_grp03, c.cus_grp03) AS sap_cus_grp03
+     FROM orders o
+     LEFT JOIN users u ON u.id = o.user_id
+     LEFT JOIN customers c ON c.sap_card_code = u.sap_card_code
+     WHERE o.id = ?`,
     [orderId]
   );
   if (!customer) return [];

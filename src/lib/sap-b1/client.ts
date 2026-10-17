@@ -324,6 +324,7 @@ export class SapB1Client {
   private userName: string;
   private password: string;
   private sessionId: string | null = null;
+  private loginPromise: Promise<void> | null = null;
 
   constructor() {
     const sapConfig = loadConfig().sapb1;
@@ -346,6 +347,7 @@ export class SapB1Client {
       'Content-Type': 'application/json',
     };
 
+    const usedSessionId = this.sessionId;
     if (this.sessionId) {
       headers['Cookie'] = `B1SESSION=${this.sessionId}`;
     }
@@ -357,10 +359,12 @@ export class SapB1Client {
       dispatcher: insecureDispatcher,
     } as RequestInit);
 
-    // If session expired (401), retry once
-    if (response.status === 401 && this.sessionId) {
-      console.warn('[SAP] Session expired, re-authenticating...');
-      this.sessionId = null;
+    // If session expired or invalid (401), re-authenticate once and retry
+    if (response.status === 401) {
+      console.warn('[SAP] Session expired or invalid (401), re-authenticating...');
+      if (this.sessionId === usedSessionId) {
+        this.sessionId = null;
+      }
       await this.ensureSession();
       headers['Cookie'] = `B1SESSION=${this.sessionId}`;
       response = await fetch(url, {
@@ -381,30 +385,42 @@ export class SapB1Client {
   }
 
   /**
-   * Login to SAP B1 Service Layer
+   * Login to SAP B1 Service Layer (deduplicated across concurrent callers)
    */
   async login(): Promise<void> {
-    const payload: SapLoginPayload = {
-      CompanyDB: this.companyDB,
-      UserName: this.userName,
-      Password: this.password,
-    };
-
-    const response = await fetch(`${this.baseUrl}/Login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-      dispatcher: insecureDispatcher,
-    } as RequestInit);
-
-    if (!response.ok) {
-      const errorBody = await response.text();
-      throw new Error(`SAP B1 Login failed: ${errorBody}`);
+    if (this.loginPromise) {
+      return this.loginPromise;
     }
 
-    const data = await response.json();
-    this.sessionId = data.SessionId;
-    console.log('[SAP] Login successful, session:', this.sessionId?.substring(0, 8) + '...');
+    this.loginPromise = (async () => {
+      try {
+        const payload: SapLoginPayload = {
+          CompanyDB: this.companyDB,
+          UserName: this.userName,
+          Password: this.password,
+        };
+
+        const response = await fetch(`${this.baseUrl}/Login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+          dispatcher: insecureDispatcher,
+        } as RequestInit);
+
+        if (!response.ok) {
+          const errorBody = await response.text();
+          throw new Error(`SAP B1 Login failed: ${errorBody}`);
+        }
+
+        const data = await response.json();
+        this.sessionId = data.SessionId;
+        console.log('[SAP] Login successful, session:', this.sessionId?.substring(0, 8) + '...');
+      } finally {
+        this.loginPromise = null;
+      }
+    })();
+
+    return this.loginPromise;
   }
 
   /**
@@ -427,27 +443,6 @@ export class SapB1Client {
   private async ensureSession(): Promise<void> {
     if (!this.sessionId) {
       await this.login();
-    }
-  }
-
-  /**
-   * Get Business Partner by Federal Tax ID (MST Code)
-   */
-  async getBusinessPartnerByTaxCode(mstCode: string): Promise<SapBusinessPartner | null> {
-    await this.ensureSession();
-    try {
-      const filter = encodeURIComponent(`FederalTaxID eq '${mstCode}'`);
-      const select = encodeURIComponent(
-        'CardCode,CardName,CardType,FederalTaxID,Phone1,EmailAddress,Address,GroupCode,PriceListNum,U_CusGrp01,U_CusGrp02,U_CusGrp03'
-      );
-      const result = await this.request<{ value: SapBusinessPartner[] }>(
-        'GET',
-        `/BusinessPartners?$filter=${filter}&$select=${select}`
-      );
-      return result.value && result.value.length > 0 ? result.value[0] : null;
-    } catch (error) {
-      console.error('[SAP] Failed to get BP by tax code:', error);
-      return null;
     }
   }
 

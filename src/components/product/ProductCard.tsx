@@ -35,10 +35,14 @@ export default function ProductCard({ product }: ProductCardProps) {
   const promoOptions = product.promotionOptions ?? [];
   const giveawayOptionsList = product.giveawayOptions ?? [];
   const [selectedPromoCode, setSelectedPromoCode] = useState<string | undefined>(promoOptions[0]?.code ?? undefined);
-  const [selectedGiveawayCode, setSelectedGiveawayCode] = useState<string | undefined>(giveawayOptionsList[0]?.code ?? undefined);
+  // Keyed by the FREE ITEM's own code, not the promotion program's code —
+  // one program can legitimately offer a choice of several different free
+  // items off the same selling item (same promotion code/name on every
+  // option), so the program code alone can't tell two options apart.
+  const [selectedGiveItemCode, setSelectedGiveItemCode] = useState<string | undefined>(giveawayOptionsList[0]?.giveItemCode ?? undefined);
 
   const selectedPromo = promoOptions.find((o) => o.code === selectedPromoCode) ?? promoOptions[0];
-  const selectedGiveaway = giveawayOptionsList.find((o) => o.code === selectedGiveawayCode) ?? giveawayOptionsList[0];
+  const selectedGiveaway = giveawayOptionsList.find((o) => o.giveItemCode === selectedGiveItemCode) ?? giveawayOptionsList[0];
   const effectivePromoPct = selectedPromo?.pct ?? 0;
 
   // Re-run the same waterfall's last step with whichever promotion the
@@ -215,19 +219,25 @@ export default function ProductCard({ product }: ProductCardProps) {
           </div>
         )}
 
-        {/* Buy-give program picker — same "only when 2+ genuinely compete" rule as the promotion picker above. */}
+        {/* Buy-give program picker — same "only when 2+ genuinely compete" rule
+            as the promotion picker above, BUT here "2+" means 2+ different
+            free items (several options can share one promotion code/name, so
+            the dropdown must be keyed and labeled by the free item itself —
+            see selectedGiveItemCode above). */}
         {giveawayOptionsList.length > 1 && (
           <select
             className="input"
             style={{ fontSize: "0.75rem", padding: "0.25rem 0.5rem", marginTop: "0.375rem", width: "100%" }}
-            value={selectedGiveawayCode}
-            onChange={(e) => setSelectedGiveawayCode(e.target.value)}
+            value={selectedGiveItemCode}
+            onChange={(e) => setSelectedGiveItemCode(e.target.value)}
             onClick={(e) => e.stopPropagation()}
             aria-label={t("product.chooseGiveaway")}
           >
             {giveawayOptionsList.map((o) => (
-              <option key={o.code ?? o.name ?? Math.random()} value={o.code ?? ""}>
-                {o.name || o.code || t("product.promotion")}
+              <option key={`${o.code ?? o.name ?? ""}::${o.giveItemCode}`} value={o.giveItemCode}>
+                {o.giveItemCode === product.sapItemCode
+                  ? t("product.buyGetSamePromo", { buyQty: o.buyQty ?? 1, giveQty: o.giveQty ?? 1 })
+                  : t("product.buyGetPromo", { buyQty: o.buyQty ?? 1, giveQty: o.giveQty ?? 1, giveItem: o.giveItemName || o.giveItemCode })}
               </option>
             ))}
           </select>

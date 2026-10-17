@@ -31,6 +31,15 @@ export default function AdminCustomersPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [activeFilter, setActiveFilter] = useState<string>("pending");
   const [actionLoading, setActionLoading] = useState<number | null>(null);
+  // Surfaced inline instead of window.alert() — alert()/confirm() are
+  // silently blocked (no dialog, no error, no-op) in several contexts admins
+  // actually open this panel from (Teams/Zalo's embedded browser, some
+  // mobile WebViews), which looked exactly like "click Approve, nothing
+  // happens" with zero feedback.
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  // Approve confirm modal
+  const [confirmApproveId, setConfirmApproveId] = useState<number | null>(null);
 
   // Reject modal
   const [showRejectModal, setShowRejectModal] = useState(false);
@@ -59,9 +68,9 @@ export default function AdminCustomersPage() {
     fetchCustomers(activeFilter);
   }, [activeFilter, fetchCustomers]);
 
-  const handleApprove = async (customerId: number) => {
-    if (!confirm(t("admin.approveConfirm"))) return;
-
+  const doApprove = async (customerId: number) => {
+    setConfirmApproveId(null);
+    setActionError(null);
     setActionLoading(customerId);
     try {
       const res = await fetch(`/api/admin/customers/${customerId}/approve`, {
@@ -71,16 +80,18 @@ export default function AdminCustomersPage() {
         await fetchCustomers(activeFilter);
       } else {
         const data = await res.json();
-        alert(data.error || "Failed to approve");
+        setActionError(data.error || "Failed to approve");
       }
     } catch (error) {
       console.error("Approve failed:", error);
+      setActionError("Failed to approve — check your connection and try again.");
     } finally {
       setActionLoading(null);
     }
   };
 
   const handleResync = async (customerId: number) => {
+    setActionError(null);
     setActionLoading(customerId);
     try {
       const res = await fetch(`/api/admin/customers/${customerId}/resync-sap`, { method: "POST" });
@@ -88,10 +99,11 @@ export default function AdminCustomersPage() {
         await fetchCustomers(activeFilter);
       } else {
         const data = await res.json();
-        alert(data.error || "Failed to resync");
+        setActionError(data.error || "Failed to resync");
       }
     } catch (error) {
       console.error("Resync failed:", error);
+      setActionError("Failed to resync — check your connection and try again.");
     } finally {
       setActionLoading(null);
     }
@@ -106,6 +118,7 @@ export default function AdminCustomersPage() {
   const handleReject = async () => {
     if (!rejectCustomerId || !rejectReason.trim()) return;
 
+    setActionError(null);
     setActionLoading(rejectCustomerId);
     setShowRejectModal(false);
     try {
@@ -118,10 +131,11 @@ export default function AdminCustomersPage() {
         await fetchCustomers(activeFilter);
       } else {
         const data = await res.json();
-        alert(data.error || "Failed to reject");
+        setActionError(data.error || "Failed to reject");
       }
     } catch (error) {
       console.error("Reject failed:", error);
+      setActionError("Failed to reject — check your connection and try again.");
     } finally {
       setActionLoading(null);
       setRejectCustomerId(null);
@@ -181,6 +195,20 @@ export default function AdminCustomersPage() {
             </p>
           </div>
         </div>
+
+        {actionError && (
+          <div style={{
+            padding: "0.75rem 1rem", background: "var(--color-error-light, #FEF2F2)",
+            color: "#991B1B", borderRadius: "var(--radius-lg, 8px)",
+            fontSize: "0.875rem", fontWeight: 500, marginBottom: "1rem",
+            display: "flex", justifyContent: "space-between", alignItems: "center", gap: "1rem",
+          }}>
+            <span>{actionError}</span>
+            <button onClick={() => setActionError(null)} style={{ background: "none", border: "none", color: "#991B1B", cursor: "pointer", fontWeight: 700 }}>
+              ✕
+            </button>
+          </div>
+        )}
 
         {/* Filter Tabs */}
         <div style={{
@@ -308,7 +336,7 @@ export default function AdminCustomersPage() {
                         {customer.approval_status === "pending" && (
                           <div style={{ display: "flex", gap: "0.375rem" }}>
                             <button
-                              onClick={() => handleApprove(customer.id)}
+                              onClick={() => setConfirmApproveId(customer.id)}
                               disabled={actionLoading === customer.id}
                               style={{
                                 padding: "0.375rem 0.75rem",
@@ -374,6 +402,63 @@ export default function AdminCustomersPage() {
           )}
         </div>
       </div>
+
+      {/* Approve Confirm Modal */}
+      {confirmApproveId !== null && (
+        <div style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          zIndex: 1000, padding: "1rem",
+        }} onClick={() => setConfirmApproveId(null)}>
+          <div style={{
+            background: "var(--bg-primary, #fff)",
+            borderRadius: "var(--radius-xl, 12px)",
+            padding: "2rem",
+            maxWidth: "420px",
+            width: "100%",
+            boxShadow: "0 20px 60px rgba(0,0,0,0.2)",
+          }} onClick={(e) => e.stopPropagation()}>
+            <h3 style={{ fontSize: "1.125rem", fontWeight: 700, marginBottom: "0.5rem", color: "var(--text-primary, #0F172A)" }}>
+              {t("admin.approveConfirm")}
+            </h3>
+            <p style={{ color: "var(--text-secondary, #64748B)", fontSize: "0.875rem", marginBottom: "1.5rem" }}>
+              {customers.find((c) => c.id === confirmApproveId)?.full_name}
+            </p>
+            <div style={{ display: "flex", gap: "0.75rem", justifyContent: "flex-end" }}>
+              <button
+                onClick={() => setConfirmApproveId(null)}
+                style={{
+                  padding: "0.5rem 1.25rem",
+                  borderRadius: "var(--radius-lg, 8px)",
+                  border: "1px solid var(--color-gray-200, #E2E8F0)",
+                  background: "var(--bg-primary, #fff)",
+                  color: "var(--text-secondary, #64748B)",
+                  fontSize: "0.875rem",
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                {t("common.cancel")}
+              </button>
+              <button
+                onClick={() => doApprove(confirmApproveId)}
+                style={{
+                  padding: "0.5rem 1.25rem",
+                  borderRadius: "var(--radius-lg, 8px)",
+                  border: "none",
+                  background: "linear-gradient(135deg, #10B981, #059669)",
+                  color: "#fff",
+                  fontSize: "0.875rem",
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                {t("admin.approve")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Reject Modal */}
       {showRejectModal && (

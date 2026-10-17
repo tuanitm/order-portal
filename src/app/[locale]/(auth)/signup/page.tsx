@@ -23,12 +23,14 @@ export default function SignupPage() {
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [mstCode, setMstCode] = useState(identifierType === "mst" ? prefilledIdentifier : "");
-  const [mstResult, setMstResult] = useState<{
+  // Set once ANY of email/phone/mstCode matches a row in the SAP customer
+  // cache (see the debounced lookup effect below) — drives both the
+  // "found" banner and the SAP linkage fields sent on signup.
+  const [bpMatch, setBpMatch] = useState<{
     cardCode: string; cardName: string; priceListNum: number | null;
     cusGrp01: string | null; cusGrp02: string | null; cusGrp03: string | null;
   } | null>(null);
-  const [mstError, setMstError] = useState("");
-  const [mstLoading, setMstLoading] = useState(false);
+  const [bpLookupLoading, setBpLookupLoading] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -40,13 +42,65 @@ export default function SignupPage() {
   const [otpVerifying, setOtpVerifying] = useState(false);
   const otpInputRefs = useRef<(HTMLInputElement | null)[]>([]);
 
-  // Auto-lookup MST if pre-filled
+  // Auto BP lookup — fires whenever email, phone, or mstCode changes (any
+  // ONE of the 3 is enough), debounced so it doesn't fire on every single
+  // keystroke. Matches against the locally-synced `customers` cache (see
+  // POST /api/bp/lookup), never a live SAP call. A field only joins the
+  // lookup once it looks "complete enough" to be worth a query — a bare
+  // "a" or "09" would just churn requests with no chance of a match.
+  const emailLooksComplete = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+  const phoneDigits = phone.replace(/[+\-\s()]/g, "");
+  const phoneLooksComplete = phoneDigits.length >= 9;
+  const mstLooksComplete = mstCode.trim().length >= 8;
+
   useEffect(() => {
-    if (identifierType === "mst" && prefilledIdentifier) {
-      handleMstLookup();
+    if (!emailLooksComplete && !phoneLooksComplete && !mstLooksComplete) {
+      setBpMatch(null);
+      return;
     }
+    const controller = new AbortController();
+    const timer = setTimeout(async () => {
+      setBpLookupLoading(true);
+      try {
+        const res = await fetch("/api/bp/lookup", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            email: emailLooksComplete ? email.trim() : undefined,
+            phone: phoneLooksComplete ? phone.trim() : undefined,
+            mstCode: mstLooksComplete ? mstCode.trim() : undefined,
+          }),
+          signal: controller.signal,
+        });
+        if (!res.ok) throw new Error("lookup failed");
+        const data = await res.json();
+        if (data.found) {
+          setBpMatch({
+            cardCode: data.cardCode, cardName: data.cardName, priceListNum: data.priceListNum ?? null,
+            cusGrp01: data.cusGrp01 ?? null, cusGrp02: data.cusGrp02 ?? null, cusGrp03: data.cusGrp03 ?? null,
+          });
+          // Auto-fill the customer name from the matched BP, and whichever
+          // of the other two identifiers the customer hasn't typed yet.
+          if (data.cardName) setFullName(data.cardName);
+          if (data.email && !email) setEmail(data.email);
+          if (data.phone && !phone) setPhone(data.phone);
+          if (data.mstCode && !mstCode) setMstCode(data.mstCode);
+        } else {
+          setBpMatch(null);
+        }
+      } catch (err) {
+        if (err instanceof Error && err.name !== "AbortError") setBpMatch(null);
+      } finally {
+        setBpLookupLoading(false);
+      }
+    }, 600);
+
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [email, phone, mstCode]);
 
   // Cooldown timer
   useEffect(() => {
@@ -56,42 +110,6 @@ export default function SignupPage() {
     }, 1000);
     return () => clearInterval(timer);
   }, [otpCooldown]);
-
-  const handleMstLookup = async () => {
-    if (!mstCode.trim()) return;
-    setMstLoading(true);
-    setMstError("");
-    setMstResult(null);
-    try {
-      const res = await fetch("/api/bp/lookup", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ mstCode: mstCode.trim() }),
-      });
-      if (!res.ok) throw new Error("Lookup failed");
-      const data = await res.json();
-      if (data.found) {
-        setMstResult({
-          cardCode: data.cardCode, cardName: data.cardName, priceListNum: data.priceListNum ?? null,
-          cusGrp01: data.cusGrp01 ?? null, cusGrp02: data.cusGrp02 ?? null, cusGrp03: data.cusGrp03 ?? null,
-        });
-        // Auto-fill customer name from SAP BP
-        if (data.cardName) {
-          setFullName(data.cardName);
-        }
-        // Auto-fill email if available from SAP
-        if (data.email && !email) {
-          setEmail(data.email);
-        }
-      } else {
-        setMstError(t("auth.mstNotFound"));
-      }
-    } catch {
-      setMstError(t("auth.mstNotFound"));
-    } finally {
-      setMstLoading(false);
-    }
-  };
 
   // Send OTP
   const handleSendOtp = async () => {
@@ -222,12 +240,12 @@ export default function SignupPage() {
           phone: phone || undefined,
           password,
           mstCode: mstCode.trim() || undefined,
-          sapCardCode: mstResult?.cardCode || undefined,
-          sapCardName: mstResult?.cardName || undefined,
-          sapPriceListNum: mstResult?.priceListNum ?? undefined,
-          sapCusGrp01: mstResult?.cusGrp01 ?? undefined,
-          sapCusGrp02: mstResult?.cusGrp02 ?? undefined,
-          sapCusGrp03: mstResult?.cusGrp03 ?? undefined,
+          sapCardCode: bpMatch?.cardCode || undefined,
+          sapCardName: bpMatch?.cardName || undefined,
+          sapPriceListNum: bpMatch?.priceListNum ?? undefined,
+          sapCusGrp01: bpMatch?.cusGrp01 ?? undefined,
+          sapCusGrp02: bpMatch?.cusGrp02 ?? undefined,
+          sapCusGrp03: bpMatch?.cusGrp03 ?? undefined,
           emailVerified: true,
         }),
       });
@@ -457,16 +475,19 @@ export default function SignupPage() {
               </span>
             </label>
             <input type="email" className="input" id="email" value={email}
-              onChange={(e) => setEmail(e.target.value)} placeholder="email@example.com" required />
+              onChange={(e) => { setEmail(e.target.value); setBpMatch(null); }} placeholder="email@example.com" required />
           </div>
 
           <div className="input-group">
             <label className="input-label" htmlFor="phone">{t("auth.phone")}</label>
             <input type="tel" className="input" id="phone" value={phone}
-              onChange={(e) => setPhone(e.target.value)} placeholder="0901234567" />
+              onChange={(e) => { setPhone(e.target.value); setBpMatch(null); }} placeholder="0901234567" />
           </div>
 
-          {/* MST Code — always visible, optional */}
+          {/* MST Code — always visible, optional. Matching any ONE of
+              email/phone/mstCode against the SAP customer cache auto-fills
+              the customer name (and the other two identifiers) below — see
+              the debounced lookup effect above. */}
           <div className="input-group">
             <label className="input-label" htmlFor="mstCode">
               {t("auth.mstCode")}
@@ -474,25 +495,23 @@ export default function SignupPage() {
                 ({t("auth.mstOptional")})
               </span>
             </label>
-            <div style={{ display: "flex", gap: "0.5rem" }}>
-              <input type="text" className="input" id="mstCode" value={mstCode}
-                onChange={(e) => { setMstCode(e.target.value); setMstResult(null); setMstError(""); }}
-                placeholder="0123456789" style={{ flex: 1 }} />
-              <button type="button" className="btn btn-secondary" onClick={handleMstLookup}
-                disabled={mstLoading || !mstCode.trim()} id="mst-lookup-btn">
-                {mstLoading ? "..." : t("auth.mstLookup")}
-              </button>
-            </div>
-            {mstResult && (
+            <input type="text" className="input" id="mstCode" value={mstCode}
+              onChange={(e) => { setMstCode(e.target.value); setBpMatch(null); }}
+              placeholder="0123456789" />
+            {bpLookupLoading && (
+              <div style={{ fontSize: "0.75rem", color: "var(--text-tertiary)", marginTop: "0.375rem" }}>
+                {t("auth.mstLookup")}...
+              </div>
+            )}
+            {bpMatch && (
               <div style={{
                 padding: "0.75rem 1rem", background: "var(--color-success-light)",
                 color: "#065F46", borderRadius: "var(--radius-lg)",
                 fontSize: "0.875rem", fontWeight: 500, marginTop: "0.5rem",
               }}>
-                ✓ {t("auth.mstFound")}: <strong>{mstResult.cardName}</strong> ({mstResult.cardCode})
+                ✓ {t("auth.mstFound")}: <strong>{bpMatch.cardName}</strong> ({bpMatch.cardCode})
               </div>
             )}
-            {mstError && <div className="error-text" style={{ marginTop: "0.25rem" }}>{mstError}</div>}
           </div>
 
           <div className="input-group">

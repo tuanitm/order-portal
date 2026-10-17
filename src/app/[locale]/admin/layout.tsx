@@ -479,8 +479,23 @@ export default function AdminLayout({
             })}
           </nav>
           <div style={{ borderTop: "1px solid var(--color-gray-200, #E2E8F0)", paddingTop: "0.75rem", marginTop: "0.75rem" }}>
-            <div style={{ fontSize: "0.75rem", color: "var(--text-tertiary, #94A3B8)", padding: "0 0.75rem", marginBottom: "0.25rem", wordBreak: "break-all" }}>
-              {session.email}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 0.75rem", marginBottom: "0.25rem" }}>
+              <span style={{ fontSize: "0.75rem", color: "var(--text-tertiary, #94A3B8)", wordBreak: "break-all" }}>
+                {session.email}
+              </span>
+              <a
+                href="/api/admin/logout"
+                style={{
+                  fontSize: "0.75rem",
+                  color: "#DC2626",
+                  textDecoration: "none",
+                  fontWeight: 600,
+                  marginLeft: "0.5rem",
+                  cursor: "pointer",
+                }}
+              >
+                {locale === "vi" ? "Đăng xuất" : "Sign out"}
+              </a>
             </div>
             <a href={`/${locale}`} style={{
               display: "block", padding: "0.5rem 0.75rem", fontSize: "0.8125rem",

@@ -208,7 +208,7 @@ export default function HomePage() {
           <div className="product-grid" id="product-grid">
             {products.map((product, index) => (
               <div
-                key={product.sapItemCode}
+                key={product.id}
                 style={{ animationDelay: `${index * 0.05}s` }}
               >
                 <ProductCard product={product} />

@@ -153,6 +153,37 @@ interface GiveawayOptionRow {
 }
 
 /**
+ * A single PROGRAM (promotion_code) can have several matching RULE rows for
+ * the same (customer, item) pair at once — e.g. one row targeting the
+ * customer's exact CardCode and another targeting their customer group,
+ * both satisfied simultaneously — and the promo_options/giveaway_options
+ * LATERAL joins' JSON_ARRAYAGG has no way to collapse those into one entry
+ * (it aggregates per-row, not per-program). Dedupe here by `identityFn` so a
+ * customer never sees — or React never gets a duplicate key for — the exact
+ * same rule listed twice. Keeps the first (highest-score, per the caller's
+ * own prior sort) occurrence of each identity.
+ *
+ * `identityFn` must capture everything that makes two entries genuinely the
+ * SAME choice to the customer, not just the same program — a promo_code
+ * alone is enough for promoOptions (one program = one %), but a single
+ * promotion program can legitimately offer several DIFFERENT free items off
+ * the same selling item (e.g. promo "GT261000011" on item D17423101 giving
+ * a choice of D73405202, D73405103, or D73405104) — all 3 rows share the
+ * same code (and usually the same name), so deduping giveawayOptions by code
+ * alone would wrongly collapse 3 real choices down to 1. Callers must
+ * include giveCode in the identity for giveawayOptions.
+ */
+function dedupeByIdentity<T>(options: T[], identityFn: (o: T) => string): T[] {
+  const seen = new Set<string>();
+  return options.filter((o) => {
+    const identity = identityFn(o);
+    if (seen.has(identity)) return false;
+    seen.add(identity);
+    return true;
+  });
+}
+
+/**
  * JSON_ARRAYAGG results come back as a JS array (recent mysql2 auto-parses
  * JSON-typed result columns) or, depending on driver/version, as a raw JSON
  * string — handle both rather than assuming one.
@@ -228,10 +259,19 @@ export function mapRowToProductWithPricing(row: ProductRow): ProductWithPricing 
   // is "today's winner" — the auto-picked default every existing caller
   // (ProductCard default, ReorderButton, Excel Import) keeps relying on;
   // the full list lets the customer choose a different one on the card.
-  const promoOptionsSorted = parseJsonArray<PromoOptionRow>(row.promo_options_json)
-    .sort((a, b) => b.score - a.score || Number(b.pct) - Number(a.pct));
-  const giveawayOptionsSorted = parseJsonArray<GiveawayOptionRow>(row.giveaway_options_json)
-    .sort((a, b) => b.score - a.score || Number(b.giveQty) - Number(a.giveQty));
+  const promoOptionsSorted = dedupeByIdentity(
+    parseJsonArray<PromoOptionRow>(row.promo_options_json)
+      .sort((a, b) => b.score - a.score || Number(b.pct) - Number(a.pct)),
+    (o) => o.code ?? o.name ?? ""
+  );
+  // Identity includes giveCode — see dedupeByIdentity's own comment on why
+  // code/name alone would wrongly merge distinct free-item choices that
+  // happen to share one promotion program.
+  const giveawayOptionsSorted = dedupeByIdentity(
+    parseJsonArray<GiveawayOptionRow>(row.giveaway_options_json)
+      .sort((a, b) => b.score - a.score || Number(b.giveQty) - Number(a.giveQty)),
+    (o) => `${o.code ?? o.name ?? ""}::${o.giveCode}`
+  );
 
   const promoDiscPct = promoOptionsSorted[0] ? Number(promoOptionsSorted[0].pct) : 0;
 

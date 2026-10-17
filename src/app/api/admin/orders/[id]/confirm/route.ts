@@ -858,11 +858,19 @@ export async function POST(
   const newPortalStatus = postSoMode === "sales_order" ? "approved" : "sap_draft_created";
 
   await query(
-    `UPDATE orders SET status = ?, sap_doc_entry = ?, sap_doc_num = ? WHERE id = ?`,
-    [newPortalStatus, sapResult.DocEntry, sapResult.DocNum, orderId]
+    `UPDATE orders SET status = ?, sap_doc_entry = ?, sap_doc_num = ?, warehouse_code = ? WHERE id = ?`,
+    [newPortalStatus, sapResult.DocEntry, sapResult.DocNum, warehouseCode, orderId]
   );
   await recordOrderStatus(orderId, newPortalStatus);
   await notifyCustomerOfStatusChange(orderId, newPortalStatus);
+
+  // Persist live availability snapshot on order lines at confirm
+  for (const [sapItemCode, availQty] of availabilityByItem.entries()) {
+    await query(
+      `UPDATE order_lines SET avail_qty = ? WHERE order_id = ? AND sap_item_code = ?`,
+      [availQty, orderId, sapItemCode]
+    );
+  }
 
   // ── Direct Sales Order: read back U_DocNo (e.g. SOO261016001) immediately ──
   // When posting as a confirmed SO, the DocEntry we just got back IS the real

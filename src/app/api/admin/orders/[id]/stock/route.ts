@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
+import { query, queryOne } from "@/lib/db/connection";
 import { getLiveAvailabilityForOrder } from "@/lib/orderStock";
 import { isOrderInAdminScope } from "@/lib/adminScope";
 
@@ -30,6 +31,18 @@ export async function GET(
     return NextResponse.json({ error: "Order not found" }, { status: 404 });
   }
 
+  const order = await queryOne<{ sap_doc_entry: number | null }>(
+    `SELECT sap_doc_entry FROM orders WHERE id = ?`,
+    [orderId]
+  );
+  if (!order) return NextResponse.json({ error: "Order not found" }, { status: 404 });
+  if (order.sap_doc_entry) {
+    return NextResponse.json(
+      { error: "Order is already pushed to SAP — live stock cannot be fetched again" },
+      { status: 400 }
+    );
+  }
+
   const warehouseCode = new URL(request.url).searchParams.get("warehouseCode")?.trim();
   if (!warehouseCode) {
     return NextResponse.json({ error: "warehouseCode query param is required" }, { status: 400 });
@@ -44,6 +57,22 @@ export async function GET(
       { error: "Failed to fetch live stock from SAP", message: error instanceof Error ? error.message : String(error) },
       { status: 502 }
     );
+  }
+
+  // Persist live availability snapshot on order lines and warehouse on orders
+  try {
+    for (const item of items) {
+      await query(
+        `UPDATE order_lines SET avail_qty = ? WHERE order_id = ? AND sap_item_code = ?`,
+        [item.availableQty, orderId, item.sapItemCode]
+      );
+    }
+    await query(
+      `UPDATE orders SET warehouse_code = ? WHERE id = ? AND sap_doc_entry IS NULL`,
+      [warehouseCode, orderId]
+    );
+  } catch (err) {
+    console.error("[Admin] Failed to persist stock snapshot:", err);
   }
 
   return NextResponse.json({ warehouseCode, items });

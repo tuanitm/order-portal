@@ -30,7 +30,7 @@
   },
   "hanadb": {
     "hostname": "saphana.imv.com.vn:30015",
-    "schema": "IMV260806",
+    "schema": "IMV",
     "userId": "IMV_REPORT_RO",
     "passWrd": "ENV:HANA_PASSWORD"
   },
@@ -38,7 +38,7 @@
     "customerGroup": "'GT'",
     "itemGroup": "'D1','L1'",
     "priceList": "'S01. IMV Price List','S02. GT Price List'",
-    "wareHouse": "'1001','1003','1002','1010','1012','1013'"
+    "wareHouse": "'1001','1003','1002','1010'"
   },
   "webPush": {
     "publicKey": "BLxvlXnBxaUSId_mRFplDyrko83KutQENb5xpBd-SwHqf3aA_KdGXk1Pz2en1gVK6H2Td8HWyphCgegGfznvgZE",

@@ -23,12 +23,14 @@ interface OrderDetail {
   grand_total: string; remark: string | null; status: string; sap_doc_entry: number | null;
   sap_doc_num: number | null; sap_so_number: string | null; created_at: string;
   sap_card_code: string | null; sap_card_name: string | null;
+  warehouse_code: string | null;
 }
 interface OrderLine {
   id: number; sap_item_code: string; item_name: string; quantity: number; uom: string;
   base_unit_price: string; unit_price: string; discount_percent: string; line_total: string;
   confirm_qty: number; customer_confirm_status: "pending" | "accepted" | "rejected";
   brand_code: string | null; brand_name: string | null;
+  avail_qty: number | null;
   // Already returned by GET /api/admin/orders/[id] (SELECT ol.*) — just not
   // typed/rendered here until now. is_gift_line/source_line_id/promo_buy_qty/
   // promo_give_qty existed before; remark/period_disc_pct/contract_disc_pct/
@@ -248,13 +250,8 @@ export default function AdminOrderDetailPage() {
   const [isLoadingStock, setIsLoadingStock] = useState(false);
   const [stockError, setStockError] = useState("");
 
-  const load = useCallback(async () => {
-    const res = await fetch(`/api/admin/orders/${params.id}`);
-    if (!res.ok) return;
-    const data = await res.json();
-    setOrder(data.order);
-    setLines(data.lines || []);
-  }, [params.id]);
+  const [loadError, setLoadError] = useState("");
+  const isPushedToSap = !!(order?.sap_doc_entry || order?.sap_doc_num);
 
   const loadStock = useCallback(async (warehouseCode: string) => {
     if (!warehouseCode) return;
@@ -278,28 +275,57 @@ export default function AdminOrderDetailPage() {
     }
   }, [params.id]);
 
+  const load = useCallback(async () => {
+    setLoadError("");
+    const res = await fetch(`/api/admin/orders/${params.id}`);
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      setLoadError(errData.error || `Order not found or access denied (${res.status})`);
+      return;
+    }
+    const data = await res.json();
+    const loadedOrder: OrderDetail = data.order;
+    const loadedLines: OrderLine[] = data.lines || [];
+    setOrder(loadedOrder);
+    setLines(loadedLines);
+
+    // Load visible warehouses for customer
+    let whList: Warehouse[] = [];
+    try {
+      const whRes = await fetch(`/api/admin/orders/${params.id}/warehouses`);
+      if (whRes.ok) {
+        const whData = await whRes.json();
+        whList = whData.warehouses || [];
+        setWarehouses(whList);
+      }
+    } catch {
+      // ignore warehouse fetch errors
+    }
+
+    const isPushed = !!(loadedOrder?.sap_doc_entry || loadedOrder?.sap_doc_num);
+    const chosenWh = loadedOrder?.warehouse_code || (whList.length > 0 ? whList[0].code : "");
+    if (chosenWh) {
+      setSelectedWarehouse(chosenWh);
+    }
+
+    if (isPushed) {
+      // Order already pushed to SAP: restore saved avail_qty from lines, do NOT fetch live SAP stock
+      const map: Record<string, number> = {};
+      for (const l of loadedLines) {
+        if (l.avail_qty !== null && l.avail_qty !== undefined) {
+          map[l.sap_item_code] = l.avail_qty;
+        }
+      }
+      setAvailByItem(map);
+    } else if (chosenWh) {
+      // Order not pushed to SAP: fetch live inventory available from SAP
+      loadStock(chosenWh);
+    }
+  }, [params.id, loadStock]);
+
   useEffect(() => {
     load();
   }, [load]);
-
-  // Load the customer's visible warehouses once, then auto-select the
-  // first one — which triggers the stock fetch below.
-  useEffect(() => {
-    (async () => {
-      const res = await fetch(`/api/admin/orders/${params.id}/warehouses`);
-      if (!res.ok) return;
-      const data = await res.json();
-      const list: Warehouse[] = data.warehouses || [];
-      setWarehouses(list);
-      if (list.length > 0) setSelectedWarehouse(list[0].code);
-    })();
-  }, [params.id]);
-
-  // Re-fetch stock whenever the selected warehouse changes (covers both the
-  // initial auto-selection and the admin picking a different one).
-  useEffect(() => {
-    if (selectedWarehouse) loadStock(selectedWarehouse);
-  }, [selectedWarehouse, loadStock]);
 
   const saveConfirmQty = async (lineId: number, confirmQty: number) => {
     const res = await fetch(`/api/admin/orders/${params.id}/lines/${lineId}`, {
@@ -348,6 +374,19 @@ export default function AdminOrderDetailPage() {
       setIsSaving(false);
     }
   };
+
+  if (loadError) {
+    return (
+      <div style={styles.page}>
+        <div style={styles.container}>
+          <div style={{ ...styles.card, padding: "2rem" }}>
+            <div style={{ color: "#DC2626", fontWeight: 600, marginBottom: "1rem" }}>{loadError}</div>
+            <BackLink href="/admin/orders" label="Back to Orders" />
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   if (!order) {
     return <div style={styles.page}><div style={styles.container}>Loading...</div></div>;
@@ -488,19 +527,27 @@ export default function AdminOrderDetailPage() {
 
           {/* Warehouse stock check — "Avail Qty" below is fetched live from
               SAP for whichever warehouse is selected here, not from the
-              daily-synced cache; changing the warehouse re-fetches
-              automatically, and "Get Stock" re-runs it manually. */}
+              daily-synced cache (when not yet pushed to SAP); changing the warehouse
+              re-fetches automatically, and "Get Stock" re-runs it manually.
+              When already pushed to SAP, previously saved stock is shown and Get Stock is disabled. */}
           <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", marginBottom: "1rem", flexWrap: "wrap" }}>
             <label style={{ fontSize: "0.8125rem", fontWeight: 600, color: "var(--text-secondary, #64748B)" }}>
               Warehouse:
             </label>
             <select
               value={selectedWarehouse}
-              onChange={(e) => setSelectedWarehouse(e.target.value)}
-              disabled={warehouses.length === 0}
+              onChange={(e) => {
+                const wh = e.target.value;
+                setSelectedWarehouse(wh);
+                if (!isPushedToSap && wh) loadStock(wh);
+              }}
+              disabled={isPushedToSap || warehouses.length === 0}
               style={styles.input}
             >
               {warehouses.length === 0 && <option value="">No warehouse visible to this customer</option>}
+              {selectedWarehouse && !warehouses.some((w) => w.code === selectedWarehouse) && (
+                <option value={selectedWarehouse}>{selectedWarehouse}</option>
+              )}
               {warehouses.map((w) => (
                 <option key={w.code} value={w.code}>
                   {w.name ? `${w.name} (${w.code})` : w.code}
@@ -509,11 +556,17 @@ export default function AdminOrderDetailPage() {
             </select>
             <button
               onClick={() => loadStock(selectedWarehouse)}
-              disabled={!selectedWarehouse || isLoadingStock}
-              style={btn("secondary", !selectedWarehouse || isLoadingStock)}
+              disabled={isPushedToSap || !selectedWarehouse || isLoadingStock}
+              style={btn("secondary", isPushedToSap || !selectedWarehouse || isLoadingStock)}
+              title={isPushedToSap ? "Order already pushed to SAP — live stock cannot be fetched" : undefined}
             >
               {isLoadingStock ? "Fetching stock..." : "Get Stock"}
             </button>
+            {isPushedToSap && (
+              <span style={{ fontSize: "0.75rem", color: "var(--text-tertiary, #94A3B8)" }}>
+                (Saved stock from when order was pushed to SAP)
+              </span>
+            )}
             {stockError && <span style={{ fontSize: "0.75rem", color: "#DC2626" }}>{stockError}</span>}
           </div>
 
@@ -572,8 +625,16 @@ export default function AdminOrderDetailPage() {
                         </div>
                       )}
                     </td>
-                    <td style={{ ...styles.td, fontWeight: 600, color: (availByItem[l.sap_item_code] ?? 0) >= l.quantity ? "#059669" : "#DC2626" }}>
-                      {isLoadingStock ? "…" : (l.sap_item_code in availByItem ? formatQty(availByItem[l.sap_item_code]) : "—")}
+                    <td style={{
+                      ...styles.td,
+                      fontWeight: 600,
+                      color: ((l.sap_item_code in availByItem ? availByItem[l.sap_item_code] : l.avail_qty) ?? 0) >= l.quantity ? "#059669" : "#DC2626"
+                    }}>
+                      {isLoadingStock ? "…" : (
+                        l.sap_item_code in availByItem
+                          ? formatQty(availByItem[l.sap_item_code])
+                          : (l.avail_qty !== null && l.avail_qty !== undefined ? formatQty(l.avail_qty) : "—")
+                      )}
                     </td>
                     <td style={styles.td}>{formatQty(l.quantity)}</td>
                     <td style={styles.td}>
