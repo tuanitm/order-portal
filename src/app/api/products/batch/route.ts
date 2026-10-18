@@ -85,7 +85,7 @@ export async function POST(request: NextRequest) {
 
     // ── Step 2: Distinguish "not in system" from "blocked by catalog visibility" ──
     const placeholders = missingCodes.map(() => "?").join(",");
-    const existingRows = await query<{ sap_item_code: string }>(
+    const existingRows = await query<{ sap_item_code: string }[]>(
       `SELECT sap_item_code FROM items WHERE sap_item_code IN (${placeholders})`,
       missingCodes
     );

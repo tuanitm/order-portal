@@ -57,6 +57,24 @@ export function calculateFreeQty(item: CartItem): number {
   return Math.floor(item.quantity / item.promoBuyQty) * item.promoGiveQty;
 }
 
+/**
+ * A cart LINE's identity — what makes two adds "the same line" (merge
+ * quantity) vs. two separate lines. The vast majority of items have no
+ * buy-give choice at all, so they key on sapItemCode alone, same as always.
+ * But one selling item can offer a CHOICE of several different free items
+ * (same or different promotion programs) — see ProductCard's per-pair
+ * cards — and the customer must be able to add that same selling item more
+ * than once with a DIFFERENT free item chosen each time, as independent
+ * lines rather than merging into one (which could only ever remember one
+ * choice). Including giveawayCode in the key too (not just promoGiveItemCode)
+ * keeps two DIFFERENT programs that happen to give the same free item apart.
+ */
+export function getCartLineKey(item: Pick<CartItem, "sapItemCode" | "giveawayCode" | "promoGiveItemCode">): string {
+  return item.promoGiveItemCode
+    ? `${item.sapItemCode}::${item.giveawayCode ?? ""}::${item.promoGiveItemCode}`
+    : item.sapItemCode;
+}
+
 // ── Cart State ──
 interface CartState {
   items: CartItem[];
@@ -64,10 +82,13 @@ interface CartState {
 }
 
 // ── Cart Actions ──
+// REMOVE_ITEM/UPDATE_QUANTITY identify the target line by its getCartLineKey()
+// string, not the bare sapItemCode — see that function's own comment on why
+// (multiple lines can share a sapItemCode once free-item choices split them).
 type CartAction =
   | { type: "ADD_ITEM"; payload: CartItem }
   | { type: "REMOVE_ITEM"; payload: string }
-  | { type: "UPDATE_QUANTITY"; payload: { sapItemCode: string; quantity: number } }
+  | { type: "UPDATE_QUANTITY"; payload: { lineKey: string; quantity: number } }
   | { type: "CLEAR_CART" }
   | { type: "TOGGLE_CART" }
   | { type: "OPEN_CART" }
@@ -80,8 +101,9 @@ function cartReducer(state: CartState, action: CartAction): CartState {
       // Silent add — the cart sidebar only opens when the customer clicks
       // the Cart icon (toggleCart/openCart), never as a side effect of
       // adding an item; a small toast (see showToast) is the confirmation.
+      const key = getCartLineKey(action.payload);
       const existingIndex = state.items.findIndex(
-        (item) => item.sapItemCode === action.payload.sapItemCode
+        (item) => getCartLineKey(item) === key
       );
       if (existingIndex >= 0) {
         const newItems = [...state.items];
@@ -96,21 +118,21 @@ function cartReducer(state: CartState, action: CartAction): CartState {
     case "REMOVE_ITEM":
       return {
         ...state,
-        items: state.items.filter((item) => item.sapItemCode !== action.payload),
+        items: state.items.filter((item) => getCartLineKey(item) !== action.payload),
       };
     case "UPDATE_QUANTITY": {
       if (action.payload.quantity <= 0) {
         return {
           ...state,
           items: state.items.filter(
-            (item) => item.sapItemCode !== action.payload.sapItemCode
+            (item) => getCartLineKey(item) !== action.payload.lineKey
           ),
         };
       }
       return {
         ...state,
         items: state.items.map((item) =>
-          item.sapItemCode === action.payload.sapItemCode
+          getCartLineKey(item) === action.payload.lineKey
             ? { ...item, quantity: action.payload.quantity }
             : item
         ),
@@ -138,8 +160,10 @@ interface CartContextType {
   discountTotal: number;
   grandTotal: number;
   addItem: (item: CartItem) => void;
-  removeItem: (sapItemCode: string) => void;
-  updateQuantity: (sapItemCode: string, quantity: number) => void;
+  /** Takes a line's getCartLineKey(), not its bare sapItemCode. */
+  removeItem: (lineKey: string) => void;
+  /** Takes a line's getCartLineKey(), not its bare sapItemCode. */
+  updateQuantity: (lineKey: string, quantity: number) => void;
   clearCart: () => void;
   toggleCart: () => void;
   openCart: () => void;
@@ -177,12 +201,12 @@ export function CartProvider({ children }: { children: ReactNode }) {
     []
   );
   const removeItem = useCallback(
-    (sapItemCode: string) => dispatch({ type: "REMOVE_ITEM", payload: sapItemCode }),
+    (lineKey: string) => dispatch({ type: "REMOVE_ITEM", payload: lineKey }),
     []
   );
   const updateQuantity = useCallback(
-    (sapItemCode: string, quantity: number) =>
-      dispatch({ type: "UPDATE_QUANTITY", payload: { sapItemCode, quantity } }),
+    (lineKey: string, quantity: number) =>
+      dispatch({ type: "UPDATE_QUANTITY", payload: { lineKey, quantity } }),
     []
   );
   const clearCart = useCallback(() => dispatch({ type: "CLEAR_CART" }), []);

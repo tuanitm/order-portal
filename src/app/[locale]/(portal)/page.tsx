@@ -10,6 +10,13 @@ import type { ProductWithPricing, ProductListResponse } from "@/types/product";
 /** Sentinel for the special "Khuyến mãi" filter chip — distinct from a real category string or `null` ("Tất cả"). */
 const PROMO_FILTER = "__promo__";
 
+type GiveawayOption = ProductWithPricing["giveawayOptions"][number];
+interface ProductCardInstance {
+  key: string;
+  product: ProductWithPricing;
+  giveawayOverride: GiveawayOption | undefined;
+}
+
 export default function HomePage() {
   const t = useTranslations();
   const locale = useLocale();
@@ -64,6 +71,22 @@ export default function HomePage() {
       controller.abort();
     };
   }, [searchQuery, activeCategory]);
+
+  // One card PER selling-item + free-item pairing, not one card per product
+  // with an in-card dropdown — a selling item with several giveaway options
+  // (same or different promotion IDs) shows as that many separate cards, so
+  // the customer can see and add each pairing independently (each becomes
+  // its own cart line — see ProductCard's giveawayOverride/getCartLineKey).
+  // An item with 0 or 1 option still renders exactly one card, unchanged.
+  const cardInstances: ProductCardInstance[] = products.flatMap((product) =>
+    product.giveawayOptions.length > 1
+      ? product.giveawayOptions.map((giveawayOverride): ProductCardInstance => ({
+          key: `${product.id}:${giveawayOverride.giveItemCode}`,
+          product,
+          giveawayOverride,
+        }))
+      : [{ key: String(product.id), product, giveawayOverride: undefined }]
+  );
 
   return (
     <div className="page">
@@ -204,14 +227,14 @@ export default function HomePage() {
           <div style={{ textAlign: "center", padding: "4rem 2rem", color: "var(--text-tertiary)" }}>
             {t("common.loading")}
           </div>
-        ) : products.length > 0 ? (
+        ) : cardInstances.length > 0 ? (
           <div className="product-grid" id="product-grid">
-            {products.map((product, index) => (
+            {cardInstances.map(({ key, product, giveawayOverride }, index) => (
               <div
-                key={product.id}
+                key={key}
                 style={{ animationDelay: `${index * 0.05}s` }}
               >
-                <ProductCard product={product} />
+                <ProductCard product={product} giveawayOverride={giveawayOverride} />
               </div>
             ))}
           </div>

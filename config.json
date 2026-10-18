@@ -30,7 +30,7 @@
   },
   "hanadb": {
     "hostname": "saphana.imv.com.vn:30015",
-    "schema": "IMV",
+    "schema": "IMV260806",
     "userId": "IMV_REPORT_RO",
     "passWrd": "ENV:HANA_PASSWORD"
   },

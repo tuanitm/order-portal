@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useTranslations, useLocale } from "next-intl";
-import { useCart, calculateFreeQty } from "@/hooks/useCart";
+import { useCart, calculateFreeQty, getCartLineKey } from "@/hooks/useCart";
 import { Link } from "@/i18n/navigation";
 
 function formatPrice(amount: number): string {
@@ -78,9 +78,13 @@ export default function CheckoutPage() {
   // (recalculated live from cart quantity, see calculateFreeQty) shows as
   // its own line at 0₫, right under the paid item it came from.
   const orderLines: OrderLine[] = items.flatMap((item) => {
+    // Two cart lines can share a sapItemCode now (same selling item, a
+    // different free-item choice each) — see getCartLineKey — so the
+    // React key below must be the full line key, not the bare item code.
+    const lineKey = getCartLineKey(item);
     const lines: OrderLine[] = [
       {
-        key: item.sapItemCode,
+        key: lineKey,
         sapItemCode: item.sapItemCode,
         itemName: item.itemName,
         quantity: item.quantity,
@@ -112,7 +116,7 @@ export default function CheckoutPage() {
       lines[0].promoBuyQty = item.promoBuyQty;
       lines[0].promoGiveQty = item.promoGiveQty;
       lines.push({
-        key: `${item.sapItemCode}-gift`,
+        key: `${lineKey}-gift`,
         sapItemCode: item.promoGiveItemCode || item.sapItemCode,
         itemName: isSameItem ? item.itemName : (item.promoGiveItemName || item.promoGiveItemCode || ""),
         quantity: freeQty,

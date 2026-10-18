@@ -146,7 +146,7 @@ async function getAdminVisibleWarehouses(
 ): Promise<{ code: string; name: string | null }[]> {
   // Superadmin sees all included warehouses that are inside masterdata.wareHouse
   if (session.isSuperAdmin) {
-    const rows = await query<{ sap_warehouse_code: string; warehouse_name: string | null }>(
+    const rows = await query<{ sap_warehouse_code: string; warehouse_name: string | null }[]>(
       `SELECT sap_warehouse_code, warehouse_name FROM warehouses
        WHERE sap_warehouse_code IN (${configWarehouses}) AND is_included = TRUE
        ORDER BY sap_warehouse_code`
@@ -157,14 +157,14 @@ async function getAdminVisibleWarehouses(
   // Non-root admin: must have customer groups assigned
   if (!session.adminId) return [];
 
-  const assigned = await query<{ customer_group_id: number }>(
+  const assigned = await query<{ customer_group_id: number }[]>(
     `SELECT customer_group_id FROM admin_user_customer_groups WHERE admin_user_id = ?`,
     [session.adminId]
   );
   if (assigned.length === 0) return [];
 
   // Load customer group hierarchy to resolve Level 2 codes
-  const allGroups = await query<{ id: number; level: number; code: string; parent_code: string | null }>(
+  const allGroups = await query<{ id: number; level: number; code: string; parent_code: string | null }[]>(
     `SELECT id, level, code, parent_code FROM customer_groups`
   );
 
@@ -200,7 +200,7 @@ async function getAdminVisibleWarehouses(
 
   // Query customer_group_warehouses scoped to Level 2 groups and masterdata.wareHouse
   const placeholders = [...level2GroupCodes].map(() => "?").join(",");
-  const mapped = await query<{ warehouse_code: string; warehouse_name: string | null }>(
+  const mapped = await query<{ warehouse_code: string; warehouse_name: string | null }[]>(
     `SELECT DISTINCT cgw.warehouse_code, w.warehouse_name
      FROM customer_group_warehouses cgw
      JOIN customer_groups cg ON cg.id = cgw.customer_group_id

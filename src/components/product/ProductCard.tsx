@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useTranslations, useLocale } from "next-intl";
-import { useCart, CartItem } from "@/hooks/useCart";
+import { useCart, CartItem, getCartLineKey } from "@/hooks/useCart";
 import { useShowAvailable } from "@/hooks/useAppName";
 import QtyInput from "@/components/common/QtyInput";
 import type { ProductWithPricing } from "@/types/product";
@@ -11,21 +11,24 @@ function formatPrice(amount: number): string {
   return new Intl.NumberFormat("vi-VN", { maximumFractionDigits: 0 }).format(amount) + "₫";
 }
 
+type GiveawayOption = ProductWithPricing["giveawayOptions"][number];
+
 interface ProductCardProps {
   product: ProductWithPricing;
+  /** One FIXED selling-item + free-item pairing to render, when the item
+   *  has more than one giveaway option — the page renders one ProductCard
+   *  per pairing in that case (see page.tsx) rather than a single card with
+   *  an in-card picker, so each pairing is its own separately addable card.
+   *  Omitted (or the item has 0/1 option) falls back to the one auto-best
+   *  default, same as always. */
+  giveawayOverride?: GiveawayOption;
 }
 
-export default function ProductCard({ product }: ProductCardProps) {
+export default function ProductCard({ product, giveawayOverride }: ProductCardProps) {
   const t = useTranslations();
   const locale = useLocale();
   const { items, addItem, updateQuantity, showToast } = useCart();
   const showAvailable = useShowAvailable();
-
-  // How much of THIS item is already in the cart — drives whether the
-  // card shows the "Add to Cart" button or the qty stepper below, so the
-  // customer can see/adjust it without opening the cart sidebar (the
-  // sidebar no longer auto-opens on add — see useCart's ADD_ITEM case).
-  const cartQty = items.find((i) => i.sapItemCode === product.sapItemCode)?.quantity ?? 0;
 
   // Most items have 0 or 1 currently-valid promotion program; a picker only
   // renders when more than one genuinely competes for this item right now
@@ -35,15 +38,25 @@ export default function ProductCard({ product }: ProductCardProps) {
   const promoOptions = product.promotionOptions ?? [];
   const giveawayOptionsList = product.giveawayOptions ?? [];
   const [selectedPromoCode, setSelectedPromoCode] = useState<string | undefined>(promoOptions[0]?.code ?? undefined);
-  // Keyed by the FREE ITEM's own code, not the promotion program's code —
-  // one program can legitimately offer a choice of several different free
-  // items off the same selling item (same promotion code/name on every
-  // option), so the program code alone can't tell two options apart.
-  const [selectedGiveItemCode, setSelectedGiveItemCode] = useState<string | undefined>(giveawayOptionsList[0]?.giveItemCode ?? undefined);
 
   const selectedPromo = promoOptions.find((o) => o.code === selectedPromoCode) ?? promoOptions[0];
-  const selectedGiveaway = giveawayOptionsList.find((o) => o.giveItemCode === selectedGiveItemCode) ?? giveawayOptionsList[0];
+  const selectedGiveaway = giveawayOverride ?? giveawayOptionsList[0];
   const effectivePromoPct = selectedPromo?.pct ?? 0;
+
+  // This card's own cart line identity — includes the chosen free item, so
+  // two ProductCards for the same selling item but different pairings each
+  // track (and add/remove/adjust) their OWN line instead of colliding.
+  const lineKey = getCartLineKey({
+    sapItemCode: product.sapItemCode,
+    giveawayCode: selectedGiveaway?.code ?? undefined,
+    promoGiveItemCode: selectedGiveaway?.giveItemCode,
+  });
+  // How much of THIS specific pairing is already in the cart — drives
+  // whether the card shows the "Add to Cart" button or the qty stepper
+  // below, so the customer can see/adjust it without opening the cart
+  // sidebar (the sidebar no longer auto-opens on add — see useCart's
+  // ADD_ITEM case).
+  const cartQty = items.find((i) => getCartLineKey(i) === lineKey)?.quantity ?? 0;
 
   // Re-run the same waterfall's last step with whichever promotion the
   // customer picked (periodDiscPct/contractDiscPct are already fixed —
@@ -98,18 +111,18 @@ export default function ProductCard({ product }: ProductCardProps) {
   // UPDATE_QUANTITY reducer case already filters out a quantity <= 0.
   const handleDecrement = (e: React.MouseEvent) => {
     e.stopPropagation();
-    updateQuantity(product.sapItemCode, cartQty - 1);
+    updateQuantity(lineKey, cartQty - 1);
   };
   const handleIncrement = (e: React.MouseEvent) => {
     e.stopPropagation();
-    updateQuantity(product.sapItemCode, cartQty + 1);
+    updateQuantity(lineKey, cartQty + 1);
   };
   const handleQtyCommit = (quantity: number) => {
-    updateQuantity(product.sapItemCode, quantity);
+    updateQuantity(lineKey, quantity);
   };
 
   return (
-    <article className="product-card animate-fade-in-up" id={`product-${product.sapItemCode}`}>
+    <article className="product-card animate-fade-in-up" id={`product-${lineKey}`}>
       {/* Image */}
       <div className="product-card__image">
         {product.imageUrl ? (
@@ -219,34 +232,10 @@ export default function ProductCard({ product }: ProductCardProps) {
           </div>
         )}
 
-        {/* Buy-give program picker — same "only when 2+ genuinely compete" rule
-            as the promotion picker above, BUT here "2+" means 2+ different
-            free items (several options can share one promotion code/name, so
-            the dropdown must be keyed and labeled by the free item itself —
-            see selectedGiveItemCode above). */}
-        {giveawayOptionsList.length > 1 && (
-          <select
-            className="input"
-            style={{ fontSize: "0.75rem", padding: "0.25rem 0.5rem", marginTop: "0.375rem", width: "100%" }}
-            value={selectedGiveItemCode}
-            onChange={(e) => setSelectedGiveItemCode(e.target.value)}
-            onClick={(e) => e.stopPropagation()}
-            aria-label={t("product.chooseGiveaway")}
-          >
-            {giveawayOptionsList.map((o) => (
-              <option key={`${o.code ?? o.name ?? ""}::${o.giveItemCode}`} value={o.giveItemCode}>
-                {o.giveItemCode === product.sapItemCode
-                  ? t("product.buyGetSamePromo", { buyQty: o.buyQty ?? 1, giveQty: o.giveQty ?? 1 })
-                  : t("product.buyGetPromo", { buyQty: o.buyQty ?? 1, giveQty: o.giveQty ?? 1, giveItem: o.giveItemName || o.giveItemCode })}
-              </option>
-            ))}
-          </select>
-        )}
-
         {/* Actions */}
         <div className="product-card__actions" style={{ marginTop: "0.75rem" }}>
           {cartQty > 0 ? (
-            <div className="product-card__qty-stepper" id={`qty-stepper-${product.sapItemCode}`}>
+            <div className="product-card__qty-stepper" id={`qty-stepper-${lineKey}`}>
               <button
                 type="button"
                 className="product-card__qty-btn"
@@ -274,7 +263,7 @@ export default function ProductCard({ product }: ProductCardProps) {
             <button
               className="product-card__add-btn"
               onClick={handleAddToCart}
-              id={`add-to-cart-${product.sapItemCode}`}
+              id={`add-to-cart-${lineKey}`}
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                 <line x1="12" y1="5" x2="12" y2="19" />

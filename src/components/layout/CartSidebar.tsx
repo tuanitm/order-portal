@@ -1,7 +1,7 @@
 "use client";
 
 import { useTranslations } from "next-intl";
-import { useCart, calculateFreeQty, type CartItem } from "@/hooks/useCart";
+import { useCart, calculateFreeQty, getCartLineKey, type CartItem } from "@/hooks/useCart";
 import { Link } from "@/i18n/navigation";
 import QtyInput from "@/components/common/QtyInput";
 
@@ -100,8 +100,10 @@ export default function CartSidebar() {
               </p>
             </div>
           ) : (
-            items.map((item) => (
-              <div className="cart-item" key={item.sapItemCode} id={`cart-item-${item.sapItemCode}`}>
+            items.map((item) => {
+              const lineKey = getCartLineKey(item);
+              return (
+              <div className="cart-item" key={lineKey} id={`cart-item-${lineKey}`}>
                 <div className="cart-item__image">
                   {item.imageUrl ? (
                     <img src={item.imageUrl} alt={item.itemName} />
@@ -131,26 +133,26 @@ export default function CartSidebar() {
                   <div className="cart-item__controls">
                     <button
                       className="cart-item__qty-btn"
-                      onClick={() => updateQuantity(item.sapItemCode, item.quantity - 1)}
+                      onClick={() => updateQuantity(lineKey, item.quantity - 1)}
                       aria-label="Decrease"
                     >
                       −
                     </button>
                     <QtyInput
                       value={item.quantity}
-                      onCommit={(q) => updateQuantity(item.sapItemCode, q)}
+                      onCommit={(q) => updateQuantity(lineKey, q)}
                       className="cart-item__qty-input"
                     />
                     <button
                       className="cart-item__qty-btn"
-                      onClick={() => updateQuantity(item.sapItemCode, item.quantity + 1)}
+                      onClick={() => updateQuantity(lineKey, item.quantity + 1)}
                       aria-label="Increase"
                     >
                       +
                     </button>
                     <button
                       className="cart-item__remove"
-                      onClick={() => removeItem(item.sapItemCode)}
+                      onClick={() => removeItem(lineKey)}
                       aria-label={t("cart.remove")}
                     >
                       {t("cart.remove")}
@@ -158,7 +160,8 @@ export default function CartSidebar() {
                   </div>
                 </div>
               </div>
-            ))
+              );
+            })
           )}
         </div>
 

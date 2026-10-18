@@ -137,7 +137,7 @@ export async function getOrderAllowedCustomerGroupCodes(session: AdminSession): 
 
   if (!session.adminId) return new Set();
 
-  const assigned = await query<{ customer_group_id: number }>(
+  const assigned = await query<{ customer_group_id: number }[]>(
     `SELECT customer_group_id FROM admin_user_customer_groups WHERE admin_user_id = ?`,
     [session.adminId]
   );
