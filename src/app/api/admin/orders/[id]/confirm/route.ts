@@ -281,8 +281,11 @@ export async function POST(
   // This admin's own Department Code (dimension 2) — posted onto every
   // line as CostingCode2/COGSCostingCode2. Omitted cleanly (not blocked)
   // if the confirming admin hasn't had one set yet on the Admin Users page.
-  const admin = await queryOne<{ department_code: string | null }>(
-    `SELECT department_code FROM admin_users WHERE company_id = ? AND id = ?`,
+  // owner_code (resolved to DocumentsOwner/U_OwnerName further below, once
+  // `sap` exists) follows the same "set it on Admin Users, or it's skipped
+  // cleanly" rule.
+  const admin = await queryOne<{ department_code: string | null; owner_code: string | null }>(
+    `SELECT department_code, owner_code FROM admin_users WHERE company_id = ? AND id = ?`,
     [companyId, guard.session.adminId]
   );
   const departmentCode = admin?.department_code || undefined;
@@ -813,6 +816,12 @@ export async function POST(
   // fields just come back unset.
   const businessPartner = await sap.getBusinessPartner(order.sap_card_code);
 
+  // Who this order's DocumentsOwner/U_OwnerName should be — see
+  // resolveOrderOwner's own docstring. Never blocks the push: a lookup
+  // failure or no-match leaves orderOwner null and those two header fields
+  // are simply omitted below.
+  const orderOwner = await sap.resolveOrderOwner(admin?.owner_code || null);
+
   // Read the Post SO Mode setting — determines whether to push as SAP Draft or
   // a confirmed SAP Sales Order. Defaults to 'draft' if the row is missing.
   const settingsRow = await queryOne<{ post_so_mode: string }>(
@@ -840,6 +849,12 @@ export async function POST(
     U_InvAddress: businessPartner?.Address?.slice(0, 200) || undefined,
     U_InvTaxNo: businessPartner?.FederalTaxID || undefined,
     U_InvName: businessPartner?.CardName || undefined,
+    // DocumentsOwner (SAP B1's "Owner" authorization field) / U_OwnerName —
+    // see resolveOrderOwner. Omitted entirely if no Employee could be
+    // resolved at all, same "set it up, or it's skipped cleanly" rule as
+    // departmentCode above.
+    DocumentsOwner: orderOwner?.employeeId,
+    U_OwnerName: orderOwner?.ownerName,
     // U_DocNo omitted — it's generated server-side by SAP's own
     // SBO_SP_TransactionNotification trigger after this Sales Order is
     // added (format SOO+YYMMDD+3-digit running number), not something

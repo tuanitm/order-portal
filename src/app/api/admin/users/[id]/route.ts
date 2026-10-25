@@ -64,6 +64,10 @@ export async function PATCH(
     updates.push("department_code = ?");
     values.push(body.departmentCode.trim() || null);
   }
+  if (typeof body.ownerCode === "string") {
+    updates.push("owner_code = ?");
+    values.push(body.ownerCode.trim() || null);
+  }
   if (typeof body.password === "string" && body.password.length > 0) {
     if (body.password.length < 6) {
       return NextResponse.json({ error: "Password must be at least 6 characters" }, { status: 400 });

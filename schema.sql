@@ -738,6 +738,19 @@ CREATE TABLE IF NOT EXISTS admin_users (
   -- /api/admin/orders/[id]/confirm). NULL until set on the Admin Users page;
   -- a push proceeds without those two fields if it's still unset.
   department_code VARCHAR(20) NULL,
+  -- This admin's own SAP Employee lookup key — matched against
+  -- EmployeesInfo.EmployeeCode (OHEM; Human Resources > Employee Master
+  -- Data's own "Code"/"Employee Code" field, NOT ExternalEmployeeNumber,
+  -- which is unused in this company, nor the primary-key EmployeeID
+  -- itself) live at push time (see SapB1Client.resolveOrderOwner). Several
+  -- admins may share the same code (e.g. a sales team all posting as one
+  -- SAP Employee owner) — no uniqueness constraint. When NULL, or when no
+  -- SAP Employee has a matching EmployeeCode, the push falls back to the Employee
+  -- linked to the shared Service Layer integration login (config.json's
+  -- sapb1.userId) instead. Used to fill the pushed Sales Order's
+  -- DocumentsOwner (the Employee's numeric EmployeeID) and U_OwnerName
+  -- (LastName + " " + FirstName) header fields.
+  owner_code VARCHAR(50) NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (role_id) REFERENCES admin_roles(id),
   UNIQUE KEY uk_company_email (company_id, email),
@@ -747,6 +760,7 @@ CREATE TABLE IF NOT EXISTS admin_users (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 -- Migration for an existing DB:
 -- ALTER TABLE admin_users ADD COLUMN department_code VARCHAR(20) NULL AFTER is_active;
+-- ALTER TABLE admin_users ADD COLUMN owner_code VARCHAR(50) NULL AFTER department_code;
 
 -- Price Lists (synced from SAP B1 PriceLists) — admin marks base vs channel lists
 CREATE TABLE IF NOT EXISTS price_lists (

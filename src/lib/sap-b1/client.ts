@@ -246,6 +246,13 @@ export interface SapSalesOrderDraft {
   /** Portal order number (e.g. SO-GTSO0701-261015-503) — stamped onto the SAP
    * Sales Order header so the portal reference is visible in SAP. */
   U_RelDocs?: string;
+  /** SAP B1's "Owner" authorization field (General Authorization's
+   * "Read Own Records Only" restriction checks THIS, not the Service Layer
+   * login that created the document) — the confirming admin's own Employee,
+   * resolved via SapB1Client.resolveOrderOwner. */
+  DocumentsOwner?: number;
+  /** LastName + " " + FirstName of the same Employee as DocumentsOwner — see resolveOrderOwner. */
+  U_OwnerName?: string;
   DocumentLines: {
     ItemCode: string;
     /** Only set for the synthetic Contract/Promotion Discount lines (see
@@ -321,6 +328,14 @@ export interface SapBusinessPartnerTaxMatch {
   CardCode: string;
   CardName: string;
   FederalTaxID: string | null;
+}
+
+/** Which SAP Employee a pushed Sales Order's DocumentsOwner/U_OwnerName header fields should carry — see resolveOrderOwner. */
+export interface SapOrderOwner {
+  /** EmployeesInfo.EmployeeID — posted as the order's DocumentsOwner. */
+  employeeId: number;
+  /** LastName + " " + FirstName — posted as the order's U_OwnerName UDF. */
+  ownerName: string;
 }
 
 /** POST /BusinessPartners body for registering a brand-new company (not yet a SAP BP). */
@@ -556,6 +571,62 @@ export class SapB1Client {
       `/BusinessPartners?$filter=${filter}&$select=CardCode&$orderby=CardCode desc&$top=1`
     );
     return result.value?.[0]?.CardCode || null;
+  }
+
+  /** EmployeesInfo row shape needed by both owner-resolution lookups below. */
+  private async findEmployeeInfo(filter: string): Promise<SapOrderOwner | null> {
+    const select = encodeURIComponent('EmployeeID,FirstName,LastName');
+    const result = await this.request<{ value: { EmployeeID: number; FirstName: string | null; LastName: string | null }[] }>(
+      'GET',
+      `/EmployeesInfo?$filter=${encodeURIComponent(filter)}&$select=${select}&$top=1`
+    );
+    const row = result.value?.[0];
+    if (!row) return null;
+    return { employeeId: row.EmployeeID, ownerName: [row.LastName, row.FirstName].filter(Boolean).join(' ') };
+  }
+
+  /**
+   * Resolves which SAP Employee a pushed Sales Order's DocumentsOwner/
+   * U_OwnerName header fields should carry (see POST
+   * /api/admin/orders/[id]/confirm). Two-step, in order:
+   *  1. If `ownerCode` is given (an admin's own admin_users.owner_code),
+   *     look up the Employee (EmployeesInfo/OHEM) whose EmployeeCode —
+   *     Human Resources > Employee Master Data's own "Code"/"Employee
+   *     Code" field, confirmed empirically (verified live: EmployeeCode
+   *     "VNIMVHCM807376" -> EmployeeID 147) — matches it exactly. NOT
+   *     ExternalEmployeeNumber (that field is unused/always null in this
+   *     company) nor the primary-key EmployeeID itself (numeric only,
+   *     can't hold a code like this). Several admins may share one code,
+   *     pointing at the same Employee.
+   *  2. Otherwise, or if no Employee has that EmployeeCode, fall back to
+   *     the Employee linked to THIS client's own shared Service Layer
+   *     login (config.json's sapb1.userId, e.g. "admin02") via
+   *     Users.UserCode -> Users.InternalKey -> EmployeesInfo.ApplicationUserID.
+   * Returns null if neither step finds an Employee at all (e.g. the
+   * integration login itself has no linked Employee yet) — the caller
+   * should then just omit DocumentsOwner/U_OwnerName from the push rather
+   * than block it; this never throws.
+   */
+  async resolveOrderOwner(ownerCode: string | null | undefined): Promise<SapOrderOwner | null> {
+    await this.ensureSession();
+    try {
+      if (ownerCode) {
+        const byCode = await this.findEmployeeInfo(`EmployeeCode eq '${ownerCode.replace(/'/g, "''")}'`);
+        if (byCode) return byCode;
+      }
+
+      const userResult = await this.request<{ value: { InternalKey: number }[] }>(
+        'GET',
+        `/Users?$filter=${encodeURIComponent(`UserCode eq '${this.userName.replace(/'/g, "''")}'`)}&$select=InternalKey&$top=1`
+      );
+      const internalKey = userResult.value?.[0]?.InternalKey;
+      if (internalKey === undefined) return null;
+
+      return await this.findEmployeeInfo(`ApplicationUserID eq ${internalKey}`);
+    } catch (error) {
+      console.error('[SAP] Failed to resolve order owner:', error);
+      return null;
+    }
   }
 
   /**

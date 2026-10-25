@@ -6,7 +6,8 @@ import { useAdminSession } from "../layout";
 
 interface AdminUserRow {
   id: number; email: string; full_name: string; is_active: number; is_root: number;
-  role_id: number | null; role_name: string | null; department_code: string | null; created_at: string;
+  role_id: number | null; role_name: string | null; department_code: string | null;
+  owner_code: string | null; created_at: string;
 }
 interface Role { id: number; name: string }
 interface CostCenter { ocr_code: string; ocr_name: string | null; is_active: number }
@@ -27,7 +28,7 @@ export default function AdminUsersPage() {
   // form per row, opened by the "Edit" button, distinct from the always-on
   // Active toggle and Customer/Item Group scope inputs above.
   const [editingId, setEditingId] = useState<number | null>(null);
-  const [editForm, setEditForm] = useState({ fullName: "", email: "", roleId: "", password: "", departmentCode: "" });
+  const [editForm, setEditForm] = useState({ fullName: "", email: "", roleId: "", password: "", departmentCode: "", ownerCode: "" });
   const [editError, setEditError] = useState("");
   const [editSaving, setEditSaving] = useState(false);
 
@@ -135,7 +136,7 @@ export default function AdminUsersPage() {
     setEditingId(u.id);
     setEditForm({
       fullName: u.full_name, email: u.email, roleId: u.role_id ? String(u.role_id) : "",
-      password: "", departmentCode: u.department_code || "",
+      password: "", departmentCode: u.department_code || "", ownerCode: u.owner_code || "",
     });
     setEditError("");
   };
@@ -173,7 +174,10 @@ export default function AdminUsersPage() {
     }
     setEditSaving(true);
     try {
-      const body: Record<string, string | number> = { fullName: editForm.fullName, email: editForm.email, departmentCode: editForm.departmentCode };
+      const body: Record<string, string | number> = {
+        fullName: editForm.fullName, email: editForm.email,
+        departmentCode: editForm.departmentCode, ownerCode: editForm.ownerCode,
+      };
       if (!u.is_root && editForm.roleId) body.roleId = Number(editForm.roleId);
       if (editForm.password) body.password = editForm.password;
 
@@ -248,6 +252,7 @@ export default function AdminUsersPage() {
                     <th style={styles.th}>Role</th>
                     <th style={styles.th}>Active</th>
                     <th style={styles.th}>Department</th>
+                    <th style={styles.th}>Owner Code</th>
                     <th style={styles.th}>Customer Groups</th>
                     <th style={styles.th}>Item Groups</th>
                     {session?.isSuperAdmin && <th style={styles.th}>Actions</th>}
@@ -272,6 +277,9 @@ export default function AdminUsersPage() {
                         {u.department_code
                           ? (departments.find((d) => d.ocr_code === u.department_code)?.ocr_name || u.department_code)
                           : <em style={{ color: "var(--text-tertiary, #94A3B8)" }}>— none</em>}
+                      </td>
+                      <td style={{ ...styles.td, fontFamily: "monospace", fontSize: "0.8125rem" }}>
+                        {u.owner_code || <em style={{ fontFamily: "inherit", color: "var(--text-tertiary, #94A3B8)" }}>— none</em>}
                       </td>
                       {u.is_root ? (
                         <>
@@ -337,7 +345,7 @@ export default function AdminUsersPage() {
                     </tr>
                     {editingId === u.id && (
                       <tr>
-                        <td colSpan={session?.isSuperAdmin ? 8 : 7} style={{ ...styles.td, background: "var(--bg-secondary, #F8FAFC)" }}>
+                        <td colSpan={session?.isSuperAdmin ? 9 : 8} style={{ ...styles.td, background: "var(--bg-secondary, #F8FAFC)" }}>
                           {editError && <div style={{ color: "#991B1B", fontSize: "0.8125rem", marginBottom: "0.75rem" }}>{editError}</div>}
                           <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "center" }}>
                             <input style={styles.input} placeholder="Full name" value={editForm.fullName} onChange={(e) => setEditForm({ ...editForm, fullName: e.target.value })} />
@@ -358,6 +366,13 @@ export default function AdminUsersPage() {
                                 <option key={d.ocr_code} value={d.ocr_code}>{d.ocr_name || d.ocr_code}{!d.is_active ? " (inactive)" : ""}</option>
                               ))}
                             </select>
+                            <input
+                              style={{ ...styles.input, width: "180px" }}
+                              placeholder="Owner code (SAP Employee Code)"
+                              title="Matched live against the SAP Employee's Employee Code (Human Resources > Employee Master Data) when this admin pushes an order — sets DocumentsOwner/U_OwnerName. Several admins may share the same code. Leave blank to fall back to the integration login's own Employee."
+                              value={editForm.ownerCode}
+                              onChange={(e) => setEditForm({ ...editForm, ownerCode: e.target.value })}
+                            />
                             <input
                               style={styles.input}
                               type="password"
