@@ -1,7 +1,7 @@
 import { readFileSync, existsSync } from "fs";
 import { join } from "path";
 import { getPool } from "@/lib/db/connection";
-import { loadConfig } from "@/lib/config";
+import { loadConfig, getCompanyId } from "@/lib/config";
 import { queryHana, getHanaSchema } from "@/lib/hana/client";
 
 export interface ImportWarning {
@@ -93,9 +93,9 @@ export async function syncCustomerGroupsFromHana(): Promise<{ rowsRead: number; 
       for (let i = 0; i < levels.length; i++) {
         const lvl = levels[i];
         await conn.execute(
-          `INSERT INTO customer_groups (level, code, parent_code, name) VALUES (?, ?, ?, ?)
+          `INSERT INTO customer_groups (company_id, level, code, parent_code, name) VALUES (?, ?, ?, ?, ?)
            ON DUPLICATE KEY UPDATE parent_code = VALUES(parent_code), name = VALUES(name)`,
-          [i + 1, lvl.code.trim(), parent, lvl.name ? lvl.name.trim() : null]
+          [getCompanyId(), i + 1, lvl.code.trim(), parent, lvl.name ? lvl.name.trim() : null]
         );
         levelsImported++;
         parent = lvl.code.trim();
@@ -167,9 +167,9 @@ async function importFromXlsx(filePath: string): Promise<ImportResult> {
         }
 
         await conn.execute(
-          `INSERT INTO customer_groups (level, code, parent_code, name) VALUES (?, ?, ?, ?)
+          `INSERT INTO customer_groups (company_id, level, code, parent_code, name) VALUES (?, ?, ?, ?, ?)
            ON DUPLICATE KEY UPDATE parent_code = VALUES(parent_code), name = VALUES(name)`,
-          [level, String(lvl.code).trim(), parent, lvl.name ? String(lvl.name).trim() : null]
+          [getCompanyId(), level, String(lvl.code).trim(), parent, lvl.name ? String(lvl.name).trim() : null]
         );
         levelsImported++;
         parent = String(lvl.code).trim();
@@ -203,7 +203,7 @@ interface CustomerGroupRow {
 
 async function loadAllCustomerGroups(): Promise<CustomerGroupRow[]> {
   const { query } = await import("@/lib/db/connection");
-  return query<CustomerGroupRow[]>(`SELECT id, level, code, parent_code, name, is_active FROM customer_groups`);
+  return query<CustomerGroupRow[]>(`SELECT id, level, code, parent_code, name, is_active FROM customer_groups WHERE company_id = ?`, [getCompanyId()]);
 }
 
 /**
@@ -287,9 +287,28 @@ export async function cascadeSetActiveDescendants(rootId: number, isActive: bool
   if (descendantIds.length === 0) return;
   const { query } = await import("@/lib/db/connection");
   await query(
-    `UPDATE customer_groups SET is_active = ? WHERE id IN (${descendantIds.map(() => "?").join(",")})`,
-    [isActive, ...descendantIds]
+    `UPDATE customer_groups SET is_active = ? WHERE company_id = ? AND id IN (${descendantIds.map(() => "?").join(",")})`,
+    [isActive, getCompanyId(), ...descendantIds]
   );
+}
+
+/**
+ * Walks the parent_code chain up from a level-3 customer group code to
+ * resolve its level-1/level-2 ancestors — used to derive U_CusGrp01/02 from
+ * an admin-picked U_CusGrp03 when creating a new SAP Business Partner (see
+ * POST /api/admin/customers/[id]/create-bp). No existing helper does this;
+ * getCustomerGroupPairsFromDB only returns (level-1, level-2) pairs.
+ */
+export async function getCustomerGroupAncestors(
+  level3Code: string
+): Promise<{ level1Code: string; level2Code: string } | null> {
+  const rows = await loadAllCustomerGroups();
+  const byKey = new Map(rows.map((r) => [`${r.level}:${r.code}`, r]));
+  const level3 = byKey.get(`3:${level3Code}`);
+  if (!level3 || !level3.parent_code) return null;
+  const level2 = byKey.get(`2:${level3.parent_code}`);
+  if (!level2 || !level2.parent_code) return null;
+  return { level1Code: level2.parent_code, level2Code: level2.code };
 }
 
 /**

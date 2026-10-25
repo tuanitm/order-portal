@@ -139,10 +139,17 @@ export default function OrderStatusBadge({
         title={t("order.statusHistory")}
         style={{
           border: "none", cursor: "pointer", font: "inherit", fontWeight: 600,
+          // Always red regardless of status — overrides whatever color the
+          // status-badge--${status} class would otherwise apply, per the
+          // customer storefront order detail page's own request (a future
+          // delivery-tracking link/QR code is meant to go right next to
+          // this). Scoped to the clickable (order detail) variant only —
+          // the plain non-clickable span on the orders list is unchanged.
+          color: "#DC2626", background: "transparent",
           ...(large ? { fontSize: "0.875rem", padding: "0.5rem 1rem" } : {}),
         }}
       >
-        {label(status)}
+        {t("order.statusPrefix")}{label(status)}
       </button>
 
       {isOpen && (

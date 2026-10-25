@@ -31,6 +31,23 @@ export default function SignupPage() {
     cusGrp01: string | null; cusGrp02: string | null; cusGrp03: string | null;
   } | null>(null);
   const [bpLookupLoading, setBpLookupLoading] = useState(false);
+  // New-company registration fields — only collected/shown once the MST
+  // lookup above has settled with no match (i.e. this isn't an existing
+  // SAP Business Partner). See POST /api/auth/signup.
+  const [companyName, setCompanyName] = useState("");
+  // Optional — separate from fullName (the login account holder, which
+  // mirrors companyName); becomes ContactEmployees.Name on SAP BP creation
+  // when provided (falls back to fullName otherwise).
+  const [contactPerson, setContactPerson] = useState("");
+  const [billingAddress, setBillingAddress] = useState("");
+  const [shippingAddress, setShippingAddress] = useState("");
+  const [shippingSameAsBilling, setShippingSameAsBilling] = useState(true);
+  // Self-declared region (Customer Group 2) — unverified, used only to
+  // route visibility of the pending registration to the matching regional
+  // admin (see isCustomerInApprovalScope); never written to SAP.
+  const [region, setRegion] = useState("");
+  const [regionOptions, setRegionOptions] = useState<{ code: string; name: string | null }[]>([]);
+  const [remark, setRemark] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -52,6 +69,9 @@ export default function SignupPage() {
   const phoneDigits = phone.replace(/[+\-\s()]/g, "");
   const phoneLooksComplete = phoneDigits.length >= 9;
   const mstLooksComplete = mstCode.trim().length >= 8;
+  // MST typed, lookup settled, no existing BP matched — this is a
+  // brand-new company, so collect the extra fields SAP BP creation needs.
+  const showNewCompanyFields = mstLooksComplete && !bpMatch && !bpLookupLoading;
 
   useEffect(() => {
     if (!emailLooksComplete && !phoneLooksComplete && !mstLooksComplete) {
@@ -101,6 +121,14 @@ export default function SignupPage() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [email, phone, mstCode]);
+
+  // Region options for the new-company self-declared region picker.
+  useEffect(() => {
+    fetch("/api/customer-groups/regions")
+      .then((r) => r.json())
+      .then((d) => setRegionOptions(d.regions || []))
+      .catch(() => {});
+  }, []);
 
   // Cooldown timer
   useEffect(() => {
@@ -158,6 +186,10 @@ export default function SignupPage() {
     }
     if (password.length < 6) {
       setError(t("auth.passwordMin"));
+      return;
+    }
+    if (showNewCompanyFields && (!companyName.trim() || !billingAddress.trim() || !region)) {
+      setError(t("auth.newCompanyHint"));
       return;
     }
 
@@ -227,28 +259,53 @@ export default function SignupPage() {
     }
   };
 
-  // Create account after OTP verification
+  // Create account after OTP verification. `match` null means "new
+  // company, no existing BP" — in that case the Company Name/Address/
+  // Region/Remark fields are sent instead of SAP linkage fields.
+  const submitSignup = async (match: typeof bpMatch) => {
+    return fetch("/api/auth/signup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        fullName,
+        email: email || undefined,
+        phone: phone || undefined,
+        password,
+        mstCode: mstCode.trim() || undefined,
+        sapCardCode: match?.cardCode || undefined,
+        sapCardName: match ? match.cardName : companyName.trim() || undefined,
+        sapPriceListNum: match?.priceListNum ?? undefined,
+        sapCusGrp01: match?.cusGrp01 ?? undefined,
+        sapCusGrp02: match?.cusGrp02 ?? undefined,
+        sapCusGrp03: match?.cusGrp03 ?? undefined,
+        registrationAddress: !match ? billingAddress.trim() || undefined : undefined,
+        registrationShippingAddress: !match && !shippingSameAsBilling ? shippingAddress.trim() || undefined : undefined,
+        registrationRemark: !match ? remark.trim() || undefined : undefined,
+        registrationContactPerson: !match ? contactPerson.trim() || undefined : undefined,
+        declaredRegionCode: !match ? region || undefined : undefined,
+        emailVerified: true,
+      }),
+    });
+  };
+
   const handleCreateAccount = async () => {
     setIsLoading(true);
     try {
-      const res = await fetch("/api/auth/signup", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          fullName,
-          email: email || undefined,
-          phone: phone || undefined,
-          password,
-          mstCode: mstCode.trim() || undefined,
-          sapCardCode: bpMatch?.cardCode || undefined,
-          sapCardName: bpMatch?.cardName || undefined,
-          sapPriceListNum: bpMatch?.priceListNum ?? undefined,
-          sapCusGrp01: bpMatch?.cusGrp01 ?? undefined,
-          sapCusGrp02: bpMatch?.cusGrp02 ?? undefined,
-          sapCusGrp03: bpMatch?.cusGrp03 ?? undefined,
-          emailVerified: true,
-        }),
-      });
+      let res = await submitSignup(bpMatch);
+      // A live SAP check (server-side) found a BP for this tax code after
+      // all — the local cache we checked earlier was stale. Switch to the
+      // existing-customer path instead of creating a duplicate pending row.
+      if (res.status === 409 && !bpMatch) {
+        const data = await res.json();
+        if (data.existingBp) {
+          const found = {
+            cardCode: data.existingBp.cardCode, cardName: data.existingBp.cardName,
+            priceListNum: null, cusGrp01: null, cusGrp02: null, cusGrp03: null,
+          };
+          setBpMatch(found);
+          res = await submitSignup(found);
+        }
+      }
       if (!res.ok) {
         const data = await res.json();
         throw new Error(data.error || "Signup failed");
@@ -513,6 +570,81 @@ export default function SignupPage() {
               </div>
             )}
           </div>
+
+          {/* New-company registration: no existing BP matched this MST —
+              collect the extra fields SAP BP creation needs (see
+              POST /api/auth/signup and the admin's create-bp approval step). */}
+          {showNewCompanyFields && (
+            <>
+              <div style={{
+                padding: "0.75rem 1rem", background: "var(--color-info-light, #EFF6FF)",
+                color: "var(--color-info-dark, #1E40AF)", borderRadius: "var(--radius-lg)",
+                fontSize: "0.8125rem", fontWeight: 500,
+              }}>
+                {t("auth.newCompanyHint")}
+              </div>
+
+              <div className="input-group">
+                <label className="input-label" htmlFor="companyName">{t("auth.companyName")} *</label>
+                <input type="text" className="input" id="companyName" value={companyName}
+                  onChange={(e) => { setCompanyName(e.target.value); setFullName(e.target.value); }} required />
+              </div>
+
+              <div className="input-group">
+                <label className="input-label" htmlFor="contactPerson">
+                  {t("auth.contactPerson")}
+                  <span style={{ fontSize: "0.7rem", color: "var(--text-tertiary)", marginLeft: "0.5rem", fontWeight: 400 }}>
+                    ({t("auth.mstOptional")})
+                  </span>
+                </label>
+                <input type="text" className="input" id="contactPerson" value={contactPerson}
+                  onChange={(e) => setContactPerson(e.target.value)} />
+              </div>
+
+              <div className="input-group">
+                <label className="input-label" htmlFor="region">{t("auth.region")} *</label>
+                <select className="input" id="region" value={region}
+                  onChange={(e) => setRegion(e.target.value)} required>
+                  <option value="">—</option>
+                  {regionOptions.map((r) => (
+                    <option key={r.code} value={r.code}>{r.name ? `${r.name} (${r.code})` : r.code}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="input-group">
+                <label className="input-label" htmlFor="billingAddress">{t("auth.billingAddress")} *</label>
+                <input type="text" className="input" id="billingAddress" value={billingAddress}
+                  onChange={(e) => setBillingAddress(e.target.value)} required />
+              </div>
+
+              <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", fontSize: "0.8125rem", color: "var(--text-secondary)" }}>
+                <input type="checkbox" id="shippingSameAsBilling" checked={shippingSameAsBilling}
+                  onChange={(e) => setShippingSameAsBilling(e.target.checked)} />
+                <label htmlFor="shippingSameAsBilling">{t("auth.shippingSameAsBilling")}</label>
+              </div>
+
+              {!shippingSameAsBilling && (
+                <div className="input-group">
+                  <label className="input-label" htmlFor="shippingAddress">{t("auth.shippingAddress")}</label>
+                  <input type="text" className="input" id="shippingAddress" value={shippingAddress}
+                    onChange={(e) => setShippingAddress(e.target.value)} />
+                </div>
+              )}
+
+              <div className="input-group">
+                <label className="input-label" htmlFor="remark">
+                  {t("auth.remark")}
+                  <span style={{ fontSize: "0.7rem", color: "var(--text-tertiary)", marginLeft: "0.5rem", fontWeight: 400 }}>
+                    ({t("auth.mstOptional")})
+                  </span>
+                </label>
+                <textarea className="input" id="remark" value={remark} rows={2}
+                  style={{ resize: "vertical", minHeight: "60px" }}
+                  onChange={(e) => setRemark(e.target.value)} />
+              </div>
+            </>
+          )}
 
           <div className="input-group">
             <label className="input-label" htmlFor="signupPassword">{t("auth.password")} *</label>

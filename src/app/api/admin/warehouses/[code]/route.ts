@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 
 /**
@@ -24,8 +25,9 @@ export async function PATCH(
     return NextResponse.json({ error: "isIncluded (boolean) is required" }, { status: 400 });
   }
 
-  await query(`UPDATE warehouses SET is_included = ? WHERE sap_warehouse_code = ?`, [
+  await query(`UPDATE warehouses SET is_included = ? WHERE company_id = ? AND sap_warehouse_code = ?`, [
     body.isIncluded,
+    getCompanyId(),
     code,
   ]);
 

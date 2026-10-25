@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query, queryOne } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { recordOrderStatus, notifyCustomerOfStatusChange } from "@/lib/orderHistory";
 import { isOrderInAdminScope } from "@/lib/adminScope";
@@ -24,14 +25,15 @@ export async function GET(
     return NextResponse.json({ error: "Order not found" }, { status: 404 });
   }
 
+  const companyId = getCompanyId();
   const order = await queryOne(
     `SELECT o.*, u.email AS customer_email, u.sap_card_code,
             c.card_name AS sap_card_name
      FROM orders o
-     LEFT JOIN users u ON u.id = o.user_id
-     LEFT JOIN customers c ON c.sap_card_code = u.sap_card_code
-     WHERE o.id = ?`,
-    [orderId]
+     LEFT JOIN users u ON u.company_id = o.company_id AND u.id = o.user_id
+     LEFT JOIN customers c ON c.company_id = o.company_id AND c.sap_card_code = u.sap_card_code
+     WHERE o.company_id = ? AND o.id = ?`,
+    [companyId, orderId]
   );
   if (!order) return NextResponse.json({ error: "Order not found" }, { status: 404 });
 
@@ -42,10 +44,10 @@ export async function GET(
   const lines = await query(
     `SELECT ol.*, i.brand_code, COALESCE(cc.ocr_name, i.brand_code) AS brand_name
      FROM order_lines ol
-     LEFT JOIN items i ON i.sap_item_code = ol.sap_item_code
-     LEFT JOIN cost_centers cc ON cc.ocr_code = i.brand_code AND cc.dimension = 1
-     WHERE ol.order_id = ?`,
-    [orderId]
+     LEFT JOIN items i ON i.company_id = ol.company_id AND i.sap_item_code = ol.sap_item_code
+     LEFT JOIN cost_centers cc ON cc.company_id = ol.company_id AND cc.ocr_code = i.brand_code AND cc.dimension = 1
+     WHERE ol.company_id = ? AND ol.order_id = ?`,
+    [companyId, orderId]
   );
 
   return NextResponse.json({ order, lines });
@@ -72,10 +74,11 @@ export async function PATCH(
     return NextResponse.json({ error: `status must be one of: ${VALID_STATUSES.join(", ")}` }, { status: 400 });
   }
 
-  const current = await queryOne<{ status: string }>(`SELECT status FROM orders WHERE id = ?`, [orderId]);
+  const companyId = getCompanyId();
+  const current = await queryOne<{ status: string }>(`SELECT status FROM orders WHERE company_id = ? AND id = ?`, [companyId, orderId]);
   if (!current) return NextResponse.json({ error: "Order not found" }, { status: 404 });
 
-  await query(`UPDATE orders SET status = ? WHERE id = ?`, [body.status, orderId]);
+  await query(`UPDATE orders SET status = ? WHERE company_id = ? AND id = ?`, [body.status, companyId, orderId]);
   if (current.status !== body.status) {
     await recordOrderStatus(orderId, body.status);
     await notifyCustomerOfStatusChange(orderId, body.status);

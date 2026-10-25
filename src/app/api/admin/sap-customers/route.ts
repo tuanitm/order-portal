@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { getAllowedCustomerGroupCodes, groupScopeClause } from "@/lib/adminScope";
 
@@ -33,8 +34,8 @@ export async function GET(request: NextRequest) {
   const sortDir = searchParams.get("order")?.toUpperCase() === "DESC" ? "DESC" : "ASC";
   const sortCol = SORT_COLUMNS[sortKey] || "sap_card_code";
 
-  const whereClauses: string[] = [];
-  const params: string[] = [];
+  const whereClauses: string[] = ["company_id = ?"];
+  const params: string[] = [getCompanyId()];
   if (search) {
     whereClauses.push("(card_name LIKE ? OR sap_card_code LIKE ? OR mst_code LIKE ?)");
     params.push(`%${search}%`, `%${search}%`, `%${search}%`);

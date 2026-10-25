@@ -1,6 +1,6 @@
 import webpush from "web-push";
 import { query } from "@/lib/db/connection";
-import { loadConfig, resolveEnvSecret } from "@/lib/config";
+import { loadConfig, resolveEnvSecret, getCompanyId } from "@/lib/config";
 
 interface PushSubscriptionRow {
   id: number;
@@ -35,15 +35,15 @@ export async function saveSubscription(
   auth: string
 ): Promise<void> {
   await query(
-    `INSERT INTO push_subscriptions (user_id, endpoint, p256dh, auth) VALUES (?, ?, ?, ?)
+    `INSERT INTO push_subscriptions (company_id, user_id, endpoint, p256dh, auth) VALUES (?, ?, ?, ?, ?)
      ON DUPLICATE KEY UPDATE user_id = VALUES(user_id), p256dh = VALUES(p256dh), auth = VALUES(auth)`,
-    [userId, endpoint, p256dh, auth]
+    [getCompanyId(), userId, endpoint, p256dh, auth]
   );
 }
 
 /** Removes one subscription by its endpoint — called when the customer explicitly turns notifications off on that browser. */
 export async function deleteSubscription(endpoint: string): Promise<void> {
-  await query(`DELETE FROM push_subscriptions WHERE endpoint = ?`, [endpoint]);
+  await query(`DELETE FROM push_subscriptions WHERE company_id = ? AND endpoint = ?`, [getCompanyId(), endpoint]);
 }
 
 /**
@@ -62,8 +62,8 @@ export async function sendPushToUser(
   ensureConfigured();
 
   const subscriptions = await query<PushSubscriptionRow[]>(
-    `SELECT id, endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ?`,
-    [userId]
+    `SELECT id, endpoint, p256dh, auth FROM push_subscriptions WHERE company_id = ? AND user_id = ?`,
+    [getCompanyId(), userId]
   );
   if (subscriptions.length === 0) return;
 

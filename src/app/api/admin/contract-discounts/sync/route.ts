@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { syncSpecialPricesForCard } from "@/lib/sap-b1/sync";
 
@@ -13,7 +14,8 @@ export async function POST(request: NextRequest) {
   if (guard.response) return guard.response;
 
   const customers = await query<{ sap_card_code: string }[]>(
-    `SELECT sap_card_code FROM users WHERE approval_status = 'approved' AND sap_card_code IS NOT NULL`
+    `SELECT sap_card_code FROM users WHERE company_id = ? AND approval_status = 'approved' AND sap_card_code IS NOT NULL`,
+    [getCompanyId()]
   );
 
   let customersSynced = 0;

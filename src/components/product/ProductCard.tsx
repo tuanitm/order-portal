@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useTranslations, useLocale } from "next-intl";
 import { useCart, CartItem, getCartLineKey } from "@/hooks/useCart";
-import { useShowAvailable } from "@/hooks/useAppName";
+import { useShowAvailable, useShowDiscounts } from "@/hooks/useAppName";
 import QtyInput from "@/components/common/QtyInput";
 import type { ProductWithPricing } from "@/types/product";
 
@@ -29,6 +30,16 @@ export default function ProductCard({ product, giveawayOverride }: ProductCardPr
   const locale = useLocale();
   const { items, addItem, updateQuantity, showToast } = useCart();
   const showAvailable = useShowAvailable();
+  const showDiscounts = useShowDiscounts();
+
+  // The Discount 1/Discount 2 hover tooltip is rendered via a portal
+  // straight to document.body, positioned with `position: fixed` from the
+  // badge's own screen coordinates — `.product-card` has `overflow: hidden`
+  // (needed to clip the image to its rounded corners), which would
+  // otherwise truncate an absolutely-positioned tooltip that overflows the
+  // card's narrow width.
+  const discountBadgeRef = useRef<HTMLSpanElement | null>(null);
+  const [discountTooltipPos, setDiscountTooltipPos] = useState<{ top: number; left: number } | null>(null);
 
   // Most items have 0 or 1 currently-valid promotion program; a picker only
   // renders when more than one genuinely competes for this item right now
@@ -50,6 +61,7 @@ export default function ProductCard({ product, giveawayOverride }: ProductCardPr
     sapItemCode: product.sapItemCode,
     giveawayCode: selectedGiveaway?.code ?? undefined,
     promoGiveItemCode: selectedGiveaway?.giveItemCode,
+    promotionCode: selectedPromo?.code ?? undefined,
   });
   // How much of THIS specific pairing is already in the cart — drives
   // whether the card shows the "Add to Cart" button or the qty stepper
@@ -58,17 +70,17 @@ export default function ProductCard({ product, giveawayOverride }: ProductCardPr
   // ADD_ITEM case).
   const cartQty = items.find((i) => getCartLineKey(i) === lineKey)?.quantity ?? 0;
 
-  // Re-run the same waterfall's last step with whichever promotion the
-  // customer picked (periodDiscPct/contractDiscPct are already fixed —
-  // only the Promotion Discount step varies by picker choice), so switching
-  // the dropdown updates price instantly with no extra network round trip.
-  const periodPrice = product.basePrice * (1 - product.periodDiscPct / 100);
-  const contractPrice = periodPrice * (1 - product.contractDiscPct / 100);
-  const displayPrice = Math.max(0, contractPrice * (1 - effectivePromoPct / 100));
+  // product.basePrice is already net of Period Discount (see
+  // mapRowToProductWithPricing) — Contract and Promotion Discount are each
+  // independently a % of THIS price, not chained after it or after each
+  // other, so their percentages simply add. Re-run with whichever promotion
+  // the customer picked (contractDiscPct is already fixed — only the
+  // Promotion Discount varies by picker choice), so switching the dropdown
+  // updates price instantly with no extra network round trip.
+  const combinedDiscPct = product.contractDiscPct + effectivePromoPct;
+  const displayPrice = Math.max(0, product.basePrice * (1 - combinedDiscPct / 100));
   const hasDiscount = displayPrice < product.basePrice;
-  const discountPercent = hasDiscount
-    ? Math.round(((product.basePrice - displayPrice) / product.basePrice) * 100)
-    : 0;
+  const discountPercent = hasDiscount ? Math.round(combinedDiscPct) : 0;
 
   // SAP only ever carries one (Vietnamese) item name — item_name_en is never
   // populated by the sync (see syncItems in sap-b1/sync.ts), so on an "en"
@@ -172,7 +184,44 @@ export default function ProductCard({ product, giveawayOverride }: ProductCardPr
               <span className="product-card__original-price">
                 {formatPrice(product.basePrice)}
               </span>
-              <span className="product-card__discount">-{discountPercent}%</span>
+              <span
+                className="product-card__discount"
+                ref={discountBadgeRef}
+                onMouseEnter={() => {
+                  const rect = discountBadgeRef.current?.getBoundingClientRect();
+                  if (!rect) return;
+                  // Clamp so the tooltip (assumed up to ~260px wide) can't
+                  // run off the left/right edge of the viewport for a card
+                  // in the grid's first/last column.
+                  const halfWidth = 130;
+                  const left = Math.min(
+                    Math.max(rect.left + rect.width / 2, halfWidth + 8),
+                    window.innerWidth - halfWidth - 8
+                  );
+                  setDiscountTooltipPos({ top: rect.top, left });
+                }}
+                onMouseLeave={() => setDiscountTooltipPos(null)}
+              >
+                -{discountPercent}%
+              </span>
+              {/* Generic "Discount 1"/"Discount 2" labels only — never the
+                  real discount-type names (contract/promotion) — per
+                  config.json's admin.showDiscounts. Portal'd to document.body
+                  (position: fixed from the badge's own screen coordinates)
+                  so `.product-card`'s overflow:hidden (needed to clip the
+                  image to its rounded corners) can't truncate it. */}
+              {showDiscounts && discountTooltipPos && (product.contractDiscPct > 0 || effectivePromoPct > 0) &&
+                createPortal(
+                  <div
+                    className="product-card__discount-tooltip"
+                    style={{ top: discountTooltipPos.top, left: discountTooltipPos.left }}
+                  >
+                    {product.contractDiscPct > 0 && `${t("product.discountN", { n: 1 })}: ${product.contractDiscPct}%`}
+                    {product.contractDiscPct > 0 && effectivePromoPct > 0 && " · "}
+                    {effectivePromoPct > 0 && `${t("product.discountN", { n: 2 })}: ${effectivePromoPct}%`}
+                  </div>,
+                  document.body
+                )}
             </>
           )}
         </div>

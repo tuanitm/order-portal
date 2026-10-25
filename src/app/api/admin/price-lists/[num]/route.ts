@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPool, query } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 
 /**
@@ -33,8 +34,9 @@ export async function GET(
   const limit = Math.min(200, Math.max(1, parseInt(searchParams.get("limit") || "50", 10) || 50));
   const offset = (page - 1) * limit;
 
-  const whereClauses: string[] = ["cp.price_list_num = ?"];
-  const params_: (string | number)[] = [priceListNum];
+  const companyId = getCompanyId();
+  const whereClauses: string[] = ["cp.company_id = ?", "cp.price_list_num = ?"];
+  const params_: (string | number)[] = [companyId, priceListNum];
   if (search) {
     whereClauses.push("(i.item_name_vi LIKE ? OR i.item_name_en LIKE ? OR i.sap_item_code LIKE ?)");
     params_.push(`%${search}%`, `%${search}%`, `%${search}%`);
@@ -43,7 +45,7 @@ export async function GET(
 
   const totalRows = await query<{ cnt: number }[]>(
     `SELECT COUNT(*) as cnt FROM item_channel_prices cp
-     JOIN items i ON i.sap_item_code = cp.sap_item_code ${whereSql}`,
+     JOIN items i ON i.company_id = cp.company_id AND i.sap_item_code = cp.sap_item_code ${whereSql}`,
     params_
   );
   const total = totalRows[0]?.cnt ?? 0;
@@ -53,10 +55,10 @@ export async function GET(
             cp.base_price_list_num, bpl.list_name AS base_price_list_name,
             bp.price AS base_price, cp.factor, cp.price, cp.last_synced
      FROM item_channel_prices cp
-     JOIN items i ON i.sap_item_code = cp.sap_item_code
-     LEFT JOIN price_lists bpl ON bpl.price_list_num = cp.base_price_list_num
+     JOIN items i ON i.company_id = cp.company_id AND i.sap_item_code = cp.sap_item_code
+     LEFT JOIN price_lists bpl ON bpl.company_id = cp.company_id AND bpl.price_list_num = cp.base_price_list_num
      LEFT JOIN item_channel_prices bp
-       ON bp.sap_item_code = cp.sap_item_code AND bp.price_list_num = cp.base_price_list_num
+       ON bp.company_id = cp.company_id AND bp.sap_item_code = cp.sap_item_code AND bp.price_list_num = cp.base_price_list_num
      ${whereSql}
      ORDER BY i.item_name_vi ASC
      LIMIT ? OFFSET ?`,
@@ -90,6 +92,7 @@ export async function PATCH(
   }
 
   const body = await request.json();
+  const companyId = getCompanyId();
   const pool = getPool();
   const conn = await pool.getConnection();
   try {
@@ -97,16 +100,18 @@ export async function PATCH(
 
     if (typeof body.isBase === "boolean") {
       if (body.isBase) {
-        await conn.execute(`UPDATE price_lists SET is_base = FALSE WHERE price_list_num != ?`, [priceListNum]);
+        await conn.execute(`UPDATE price_lists SET is_base = FALSE WHERE company_id = ? AND price_list_num != ?`, [companyId, priceListNum]);
       }
-      await conn.execute(`UPDATE price_lists SET is_base = ? WHERE price_list_num = ?`, [
+      await conn.execute(`UPDATE price_lists SET is_base = ? WHERE company_id = ? AND price_list_num = ?`, [
         body.isBase,
+        companyId,
         priceListNum,
       ]);
     }
     if (typeof body.isChannel === "boolean") {
-      await conn.execute(`UPDATE price_lists SET is_channel = ? WHERE price_list_num = ?`, [
+      await conn.execute(`UPDATE price_lists SET is_channel = ? WHERE company_id = ? AND price_list_num = ?`, [
         body.isChannel,
+        companyId,
         priceListNum,
       ]);
     }

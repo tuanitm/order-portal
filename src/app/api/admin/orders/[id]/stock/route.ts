@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { query, queryOne } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import { getLiveAvailabilityForOrder } from "@/lib/orderStock";
 import { isOrderInAdminScope } from "@/lib/adminScope";
 
@@ -31,9 +32,10 @@ export async function GET(
     return NextResponse.json({ error: "Order not found" }, { status: 404 });
   }
 
+  const companyId = getCompanyId();
   const order = await queryOne<{ sap_doc_entry: number | null }>(
-    `SELECT sap_doc_entry FROM orders WHERE id = ?`,
-    [orderId]
+    `SELECT sap_doc_entry FROM orders WHERE company_id = ? AND id = ?`,
+    [companyId, orderId]
   );
   if (!order) return NextResponse.json({ error: "Order not found" }, { status: 404 });
   if (order.sap_doc_entry) {
@@ -63,13 +65,13 @@ export async function GET(
   try {
     for (const item of items) {
       await query(
-        `UPDATE order_lines SET avail_qty = ? WHERE order_id = ? AND sap_item_code = ?`,
-        [item.availableQty, orderId, item.sapItemCode]
+        `UPDATE order_lines SET avail_qty = ? WHERE company_id = ? AND order_id = ? AND sap_item_code = ?`,
+        [item.availableQty, companyId, orderId, item.sapItemCode]
       );
     }
     await query(
-      `UPDATE orders SET warehouse_code = ? WHERE id = ? AND sap_doc_entry IS NULL`,
-      [warehouseCode, orderId]
+      `UPDATE orders SET warehouse_code = ? WHERE company_id = ? AND id = ? AND sap_doc_entry IS NULL`,
+      [warehouseCode, companyId, orderId]
     );
   } catch (err) {
     console.error("[Admin] Failed to persist stock snapshot:", err);

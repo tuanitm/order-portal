@@ -48,6 +48,15 @@
     "mstFound": "Đã tìm thấy đối tác kinh doanh",
     "mstNotFound": "Không tìm thấy MST trong hệ thống",
     "mstOptional": "Không bắt buộc — nhập nếu có",
+    "companyName": "Tên công ty",
+    "companyAddress": "Địa chỉ công ty",
+    "contactPerson": "Người liên hệ",
+    "region": "Khu vực",
+    "billingAddress": "Địa chỉ xuất hóa đơn",
+    "shippingAddress": "Địa chỉ giao hàng",
+    "shippingSameAsBilling": "Địa chỉ giao hàng giống địa chỉ xuất hóa đơn",
+    "remark": "Ghi chú",
+    "newCompanyHint": "Không tìm thấy đối tác kinh doanh với mã số thuế này — vui lòng điền thông tin công ty bên dưới để đăng ký khách hàng mới.",
     "loginBtn": "Đăng nhập",
     "signupBtn": "Đăng ký",
     "noAccount": "Chưa có tài khoản?",
@@ -99,6 +108,7 @@
   "product": {
     "addToCart": "Thêm vào giỏ",
     "addedToCart": "Đã thêm vào giỏ hàng",
+    "discountN": "Giảm giá {n}",
     "originalPrice": "Giá gốc",
     "discountPrice": "Giá ưu đãi",
     "specialPrice": "Giá đặc biệt",
@@ -155,8 +165,8 @@
     "remove": "Xóa",
     "updateQty": "Cập nhật",
     "itemCount": "{count} sản phẩm",
-    "freeGift": "Tặng kèm {qty} {item}",
-    "freeGiftSame": "Tặng kèm {qty} cùng loại"
+    "freeGift": "Tặng kèm <b>{qty}</b> {item}",
+    "freeGiftSame": "Tặng kèm <b>{qty}</b> cùng loại"
   },
   "checkout": {
     "title": "Đặt hàng",
@@ -186,6 +196,7 @@
     "detail": "Chi tiết",
     "noOrders": "Bạn chưa có đơn hàng nào",
     "statusHistory": "Cập nhật trạng thái đơn hàng",
+    "statusPrefix": "Trạng thái: ",
     "statusUpcoming": "Sắp tới",
     "reorder": "Đặt lại",
     "reordering": "Đang thêm...",

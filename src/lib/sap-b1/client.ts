@@ -316,6 +316,42 @@ export interface SapDocumentResponse {
   DocNum: number;
 }
 
+/** Minimal shape returned by the FederalTaxID duplicate check — see findBusinessPartnerByTaxId. */
+export interface SapBusinessPartnerTaxMatch {
+  CardCode: string;
+  CardName: string;
+  FederalTaxID: string | null;
+}
+
+/** POST /BusinessPartners body for registering a brand-new company (not yet a SAP BP). */
+export interface CreateBusinessPartnerPayload {
+  CardCode: string;
+  CardName: string;
+  CardType: 'cCustomer';
+  FederalTaxID: string;
+  GroupCode: number;
+  U_CusGrp01: string;
+  U_CusGrp02: string;
+  U_CusGrp03: string;
+  PriceListNum: number;
+  PayTermsGrpCode: number;
+  CreditLimit: number;
+  SalesPersonCode?: number;
+  Currency?: string;
+  EmailAddress?: string;
+  BPAddresses: {
+    AddressName: string;
+    AddressType: 'bo_BillTo' | 'bo_ShipTo';
+    Street: string;
+    City?: string;
+  }[];
+  ContactEmployees: {
+    Name: string;
+    E_Mail?: string;
+    Phone1?: string;
+  }[];
+}
+
 // ── SAP B1 Service Layer Client ──
 
 export class SapB1Client {
@@ -463,6 +499,74 @@ export class SapB1Client {
       console.error('[SAP] Failed to get BP:', error);
       return null;
     }
+  }
+
+  /**
+   * Look up a Business Partner live by FederalTaxID (MST) — the new-company
+   * registration flow's duplicate check (see POST /api/auth/signup and
+   * POST /api/admin/customers/[id]/create-bp). Unlike getBusinessPartner,
+   * this deliberately THROWS rather than swallowing errors into `null`: a
+   * failed duplicate check must never be silently treated as "no match
+   * found", which would risk creating a duplicate BP if SAP is briefly
+   * unreachable.
+   */
+  async findBusinessPartnerByTaxId(taxId: string): Promise<SapBusinessPartnerTaxMatch | null> {
+    await this.ensureSession();
+    const filter = encodeURIComponent(`FederalTaxID eq '${taxId.replace(/'/g, "''")}'`);
+    const select = encodeURIComponent('CardCode,CardName,FederalTaxID');
+    const result = await this.request<{ value: SapBusinessPartnerTaxMatch[] }>(
+      'GET',
+      `/BusinessPartners?$filter=${filter}&$select=${select}&$top=1`
+    );
+    return result.value?.[0] || null;
+  }
+
+  /**
+   * BP Group Code / Payment Terms Code copied from an existing customer in
+   * the same Customer Group 3 — these are admin-hidden on the new-company
+   * registration dialog and instead derived from a sibling BP (see POST
+   * /api/admin/customers/[id]/create-bp). Returns null if no existing BP
+   * carries this U_CusGrp03 yet (e.g. the very first customer in a brand
+   * new group) — the caller must surface that as an error, not guess.
+   */
+  async findBpCommercialDefaultsByGroup3(cusGrp03: string): Promise<{ GroupCode: number; PayTermsGrpCode: number } | null> {
+    await this.ensureSession();
+    const filter = encodeURIComponent(`CardType eq 'cCustomer' and U_CusGrp03 eq '${cusGrp03.replace(/'/g, "''")}'`);
+    const select = encodeURIComponent('GroupCode,PayTermsGrpCode');
+    const result = await this.request<{ value: { GroupCode: number; PayTermsGrpCode: number }[] }>(
+      'GET',
+      `/BusinessPartners?$filter=${filter}&$select=${select}&$top=1`
+    );
+    return result.value?.[0] || null;
+  }
+
+  /**
+   * Highest existing CardCode starting with `prefix`, queried live against
+   * SAP (not the local `customers` cache) so a newly-generated CardCode
+   * can't collide with a BP created since the last sync. CardCodes under
+   * one prefix are fixed-length, so lexicographic ($orderby) order matches
+   * numeric order. Returns null if none exist yet — see generateCardCode
+   * in src/lib/sap-b1/cardCode.ts for the increment/pad logic.
+   */
+  async findMaxCardCodeWithPrefix(prefix: string): Promise<string | null> {
+    await this.ensureSession();
+    const filter = encodeURIComponent(`startswith(CardCode,'${prefix.replace(/'/g, "''")}')`);
+    const result = await this.request<{ value: { CardCode: string }[] }>(
+      'GET',
+      `/BusinessPartners?$filter=${filter}&$select=CardCode&$orderby=CardCode desc&$top=1`
+    );
+    return result.value?.[0]?.CardCode || null;
+  }
+
+  /**
+   * Create a new Business Partner (CardType cCustomer) — the new-company
+   * registration flow's final step, called once an admin has assigned the
+   * commercial fields and the CardCode has been generated (see
+   * POST /api/admin/customers/[id]/create-bp).
+   */
+  async createBusinessPartner(payload: CreateBusinessPartnerPayload): Promise<{ CardCode: string }> {
+    await this.ensureSession();
+    return this.request<{ CardCode: string }>('POST', '/BusinessPartners', payload);
   }
 
   /**

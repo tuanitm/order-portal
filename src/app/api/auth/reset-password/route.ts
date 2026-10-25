@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { query } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 
 const JWT_SECRET = process.env.JWT_SECRET || "order-portal-secret-key-change-in-production";
 
@@ -49,8 +50,8 @@ export async function POST(request: NextRequest) {
     // Same generic response whether or not a row actually matched — never
     // reveal whether a given email is a registered account.
     await query(
-      "UPDATE users SET password_hash = ? WHERE email = ? AND is_active = TRUE",
-      [passwordHash, decoded.email]
+      "UPDATE users SET password_hash = ? WHERE company_id = ? AND email = ? AND is_active = TRUE",
+      [passwordHash, getCompanyId(), decoded.email]
     );
 
     return NextResponse.json({

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPool, query } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 
 /**
@@ -11,11 +12,14 @@ export async function GET(request: NextRequest) {
   const guard = await requireAdminPermission(request, "catalog-visibility");
   if (guard.response) return guard.response;
 
+  const companyId = getCompanyId();
   const customerGroups = await query<{ id: number; level: number; code: string; parent_code: string | null; name: string | null }[]>(
-    `SELECT id, level, code, parent_code, name FROM customer_groups ORDER BY level ASC, code ASC`
+    `SELECT id, level, code, parent_code, name FROM customer_groups WHERE company_id = ? ORDER BY level ASC, code ASC`,
+    [companyId]
   );
   const itemGroups = await query<{ id: number; level: number; code: string; parent_code: string | null; name: string | null }[]>(
-    `SELECT id, level, code, parent_code, name FROM item_groups WHERE level IN (1, 2, 3) ORDER BY level ASC, code ASC`
+    `SELECT id, level, code, parent_code, name FROM item_groups WHERE company_id = ? AND level IN (1, 2, 3) ORDER BY level ASC, code ASC`,
+    [companyId]
   );
   const rules = await query<
     { id: number; customer_group_id: number; item_category_level: number; item_category_code: string; is_visible: number }[]
@@ -23,8 +27,10 @@ export async function GET(request: NextRequest) {
     `SELECT cv.id, cv.customer_group_id, cv.item_category_level, cv.item_category_code, cv.is_visible,
             cg.code AS cg_code, cg.name AS cg_name, cg.level AS cg_level
      FROM catalog_visibility cv
-     JOIN customer_groups cg ON cg.id = cv.customer_group_id
-     ORDER BY cg.level ASC, cg.code ASC, cv.item_category_level ASC, cv.item_category_code ASC`
+     JOIN customer_groups cg ON cg.company_id = cv.company_id AND cg.id = cv.customer_group_id
+     WHERE cv.company_id = ?
+     ORDER BY cg.level ASC, cg.code ASC, cv.item_category_level ASC, cv.item_category_code ASC`,
+    [companyId]
   );
 
   return NextResponse.json({ customerGroups, itemGroups, rules });
@@ -46,10 +52,10 @@ export async function POST(request: NextRequest) {
   }
 
   await query(
-    `INSERT INTO catalog_visibility (customer_group_id, item_category_level, item_category_code, is_visible)
-     VALUES (?, ?, ?, ?)
+    `INSERT INTO catalog_visibility (company_id, customer_group_id, item_category_level, item_category_code, is_visible)
+     VALUES (?, ?, ?, ?, ?)
      ON DUPLICATE KEY UPDATE is_visible = VALUES(is_visible)`,
-    [customerGroupId, itemCategoryLevel, itemCategoryCode, isVisible !== false]
+    [getCompanyId(), customerGroupId, itemCategoryLevel, itemCategoryCode, isVisible !== false]
   );
 
   return NextResponse.json({ success: true });
@@ -69,16 +75,17 @@ export async function PUT(request: NextRequest) {
     return NextResponse.json({ error: "rules (array) is required" }, { status: 400 });
   }
 
+  const companyId = getCompanyId();
   const pool = getPool();
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
     for (const rule of rules) {
       await conn.execute(
-        `INSERT INTO catalog_visibility (customer_group_id, item_category_level, item_category_code, is_visible)
-         VALUES (?, ?, ?, ?)
+        `INSERT INTO catalog_visibility (company_id, customer_group_id, item_category_level, item_category_code, is_visible)
+         VALUES (?, ?, ?, ?, ?)
          ON DUPLICATE KEY UPDATE is_visible = VALUES(is_visible)`,
-        [rule.customerGroupId, rule.itemCategoryLevel, rule.itemCategoryCode, !!rule.isVisible]
+        [companyId, rule.customerGroupId, rule.itemCategoryLevel, rule.itemCategoryCode, !!rule.isVisible]
       );
     }
     await conn.commit();
@@ -106,6 +113,6 @@ export async function DELETE(request: NextRequest) {
     return NextResponse.json({ error: "id is required" }, { status: 400 });
   }
 
-  await query(`DELETE FROM catalog_visibility WHERE id = ?`, [id]);
+  await query(`DELETE FROM catalog_visibility WHERE company_id = ? AND id = ?`, [getCompanyId(), id]);
   return NextResponse.json({ success: true });
 }

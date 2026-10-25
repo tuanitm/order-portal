@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import jwt from "jsonwebtoken";
 import { queryOne } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 
 const JWT_SECRET = process.env.JWT_SECRET || "order-portal-secret-key-change-in-production";
 
@@ -52,8 +53,8 @@ export async function getSessionUser(request: NextRequest): Promise<SessionUser 
   const user = await queryOne<UserRow>(
     `SELECT id, email, phone, full_name, sap_card_code, sap_card_name, sap_price_list_num,
             sap_cus_grp01, sap_cus_grp02, sap_cus_grp03, language, approval_status
-     FROM users WHERE id = ? AND is_active = TRUE`,
-    [decoded.userId]
+     FROM users WHERE company_id = ? AND id = ? AND is_active = TRUE`,
+    [getCompanyId(), decoded.userId]
   );
   if (!user) return null;
 

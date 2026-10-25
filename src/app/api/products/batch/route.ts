@@ -3,6 +3,7 @@ import { getSessionUser } from "@/lib/auth/session";
 import { getBasePriceListNum } from "@/lib/sap-b1/sync";
 import { getVisibleWarehousesForCustomerGroup } from "@/lib/warehouseVisibility";
 import { query } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import {
   resolveHiddenItemCategories,
   buildHiddenCategoryClauses,
@@ -86,8 +87,8 @@ export async function POST(request: NextRequest) {
     // ── Step 2: Distinguish "not in system" from "blocked by catalog visibility" ──
     const placeholders = missingCodes.map(() => "?").join(",");
     const existingRows = await query<{ sap_item_code: string }[]>(
-      `SELECT sap_item_code FROM items WHERE sap_item_code IN (${placeholders})`,
-      missingCodes
+      `SELECT sap_item_code FROM items WHERE company_id = ? AND sap_item_code IN (${placeholders})`,
+      [getCompanyId(), ...missingCodes]
     );
     const existingSet = new Set(existingRows.map((r) => r.sap_item_code.toUpperCase()));
 

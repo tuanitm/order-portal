@@ -1,4 +1,11 @@
 {
+  "admin": {
+    "entityID": "IMV",
+    "email": "ENV:ADMIN_EMAIL",
+    "password": "ENV:USER_PASSWORD",
+    "showAvailable": "No",
+    "showDiscounts": "Yes"
+  },
   "email": {
     "emailEnable": "yes",
     "smtpServer": "hwhzsmtp.qiye.163.com",
@@ -14,12 +21,6 @@
     "companyID": "IMV260806",
     "userId": "admin02",
     "passWrd": "ENV:SAPB1_PASSWORD"
-  },
-  "admin": {
-    "companyPrefix": "IMV",
-    "email": "ENV:ADMIN_EMAIL",
-    "password": "ENV:USER_PASSWORD",
-    "showAvailable": "No"
   },
   "mysql": {
     "dbIp": "mysql8",

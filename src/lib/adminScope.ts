@@ -1,5 +1,5 @@
 import { query, queryOne } from "@/lib/db/connection";
-import { loadConfig } from "@/lib/config";
+import { loadConfig, getCompanyId } from "@/lib/config";
 import type { AdminSession } from "@/lib/auth/adminSession";
 
 /**
@@ -61,13 +61,14 @@ function expandToDescendantCodes(allRows: GroupRow[], assignedIds: Set<number>):
 export async function getAllowedCustomerGroupCodes(session: AdminSession): Promise<AllowedCodes> {
   if (session.isSuperAdmin || !session.adminId) return null;
 
+  const companyId = getCompanyId();
   const assigned = await query<{ customer_group_id: number }[]>(
-    `SELECT customer_group_id FROM admin_user_customer_groups WHERE admin_user_id = ?`,
-    [session.adminId]
+    `SELECT customer_group_id FROM admin_user_customer_groups WHERE company_id = ? AND admin_user_id = ?`,
+    [companyId, session.adminId]
   );
   if (assigned.length === 0) return new Set();
 
-  const allRows = await query<GroupRow[]>(`SELECT id, level, code, parent_code FROM customer_groups`);
+  const allRows = await query<GroupRow[]>(`SELECT id, level, code, parent_code FROM customer_groups WHERE company_id = ?`, [companyId]);
   return expandToDescendantCodes(allRows, new Set(assigned.map((a) => a.customer_group_id)));
 }
 
@@ -75,13 +76,14 @@ export async function getAllowedCustomerGroupCodes(session: AdminSession): Promi
 export async function getAllowedItemGroupCodes(session: AdminSession): Promise<AllowedCodes> {
   if (session.isSuperAdmin || !session.adminId) return null;
 
+  const companyId = getCompanyId();
   const assigned = await query<{ item_group_id: number }[]>(
-    `SELECT item_group_id FROM admin_user_item_groups WHERE admin_user_id = ?`,
-    [session.adminId]
+    `SELECT item_group_id FROM admin_user_item_groups WHERE company_id = ? AND admin_user_id = ?`,
+    [companyId, session.adminId]
   );
   if (assigned.length === 0) return new Set();
 
-  const allRows = await query<GroupRow[]>(`SELECT id, level, code, parent_code FROM item_groups`);
+  const allRows = await query<GroupRow[]>(`SELECT id, level, code, parent_code FROM item_groups WHERE company_id = ?`, [companyId]);
   return expandToDescendantCodes(allRows, new Set(assigned.map((a) => a.item_group_id)));
 }
 
@@ -118,7 +120,8 @@ export function inScope(codes: AllowedCodes, candidateCodes: (string | null | un
  * Returns a Set of allowed customer group codes, or an empty Set if no access.
  */
 export async function getOrderAllowedCustomerGroupCodes(session: AdminSession): Promise<Set<string>> {
-  const allRows = await query<GroupRow[]>(`SELECT id, level, code, parent_code FROM customer_groups`);
+  const companyId = getCompanyId();
+  const allRows = await query<GroupRow[]>(`SELECT id, level, code, parent_code FROM customer_groups WHERE company_id = ?`, [companyId]);
 
   if (session.isSuperAdmin) {
     const { masterdata } = loadConfig();
@@ -138,8 +141,8 @@ export async function getOrderAllowedCustomerGroupCodes(session: AdminSession): 
   if (!session.adminId) return new Set();
 
   const assigned = await query<{ customer_group_id: number }[]>(
-    `SELECT customer_group_id FROM admin_user_customer_groups WHERE admin_user_id = ?`,
-    [session.adminId]
+    `SELECT customer_group_id FROM admin_user_customer_groups WHERE company_id = ? AND admin_user_id = ?`,
+    [companyId, session.adminId]
   );
   if (assigned.length === 0) return new Set();
 
@@ -164,15 +167,16 @@ export async function isOrderInAdminScope(session: AdminSession, orderId: number
   const allowed = await getOrderAllowedCustomerGroupCodes(session);
   if (allowed.size === 0) return false;
 
+  const companyId = getCompanyId();
   const order = await queryOne<{ grp01: string | null; grp02: string | null; grp03: string | null }>(
     `SELECT COALESCE(c.cus_grp01, u.sap_cus_grp01) AS grp01,
             COALESCE(c.cus_grp02, u.sap_cus_grp02) AS grp02,
             COALESCE(c.cus_grp03, u.sap_cus_grp03) AS grp03
      FROM orders o
-     LEFT JOIN users u ON u.id = o.user_id
-     LEFT JOIN customers c ON c.sap_card_code = u.sap_card_code
-     WHERE o.id = ?`,
-    [orderId]
+     LEFT JOIN users u ON u.company_id = o.company_id AND u.id = o.user_id
+     LEFT JOIN customers c ON c.company_id = o.company_id AND c.sap_card_code = u.sap_card_code
+     WHERE o.company_id = ? AND o.id = ?`,
+    [companyId, orderId]
   );
   if (!order) return false;
 
@@ -191,6 +195,18 @@ export async function getCustomerApprovalAllowedGroupCodes(session: AdminSession
 
 /**
  * Checks whether a customer registration request is within the admin's customer group scope for approval/rejection.
+ *
+ * A brand-new-company registration (see POST /api/admin/customers/[id]/create-bp)
+ * has no REAL group signal at all until an admin assigns one — there's no
+ * `sap_card_code` to prefix-match and no cus_grp0X anywhere, so the normal
+ * group-based scoping has nothing to go on. Root always sees these. A
+ * non-root admin sees one only if its `declared_region_code` — the
+ * customer's own unverified self-declared region, collected at signup —
+ * falls within their assigned scope; this is a routing HINT, not a
+ * security boundary (the customer could have picked wrong), so root
+ * remains the fallback for anything mis-routed. Once a group is assigned
+ * on approval, the row falls under the normal scoping like any other
+ * customer.
  */
 export async function isCustomerInApprovalScope(
   session: AdminSession,
@@ -202,11 +218,9 @@ export async function isCustomerInApprovalScope(
     cus_grp02?: string | null;
     cus_grp03?: string | null;
     sap_card_code?: string | null;
+    declared_region_code?: string | null;
   }
 ): Promise<boolean> {
-  const allowed = await getCustomerApprovalAllowedGroupCodes(session);
-  if (allowed.size === 0) return false;
-
   const candidateCodes = [
     customer.sap_cus_grp01,
     customer.sap_cus_grp02,
@@ -215,6 +229,16 @@ export async function isCustomerInApprovalScope(
     customer.cus_grp02,
     customer.cus_grp03,
   ].filter(Boolean);
+
+  if (candidateCodes.length === 0 && !customer.sap_card_code) {
+    if (session.isSuperAdmin) return true;
+    if (!customer.declared_region_code) return false;
+    const allowed = await getCustomerApprovalAllowedGroupCodes(session);
+    return allowed.has(customer.declared_region_code);
+  }
+
+  const allowed = await getCustomerApprovalAllowedGroupCodes(session);
+  if (allowed.size === 0) return false;
 
   if (candidateCodes.some((c) => c && allowed.has(c))) {
     return true;
@@ -240,6 +264,7 @@ export async function getPromotionAllowedGroups(session: AdminSession): Promise<
 }> {
   if (session.isSuperAdmin) {
     const { masterdata } = loadConfig();
+    const companyId = getCompanyId();
     let customerGroupCodes: Set<string> | null = null;
     let itemGroupCodes: Set<string> | null = null;
 
@@ -249,7 +274,7 @@ export async function getPromotionAllowedGroups(session: AdminSession): Promise<
         .map((s) => s.trim().replace(/^'|'$/g, ""))
         .filter(Boolean);
       if (configCodes.length > 0) {
-        const allCustRows = await query<GroupRow[]>(`SELECT id, level, code, parent_code FROM customer_groups`);
+        const allCustRows = await query<GroupRow[]>(`SELECT id, level, code, parent_code FROM customer_groups WHERE company_id = ?`, [companyId]);
         const matchingIds = new Set(allCustRows.filter((r) => configCodes.includes(r.code)).map((r) => r.id));
         customerGroupCodes = expandToDescendantCodes(allCustRows, matchingIds);
         for (const c of configCodes) customerGroupCodes.add(c);
@@ -262,7 +287,7 @@ export async function getPromotionAllowedGroups(session: AdminSession): Promise<
         .map((s) => s.trim().replace(/^'|'$/g, "").replace(/^"|"$/g, ""))
         .filter(Boolean);
       if (configItemCodes.length > 0) {
-        const allItemRows = await query<GroupRow[]>(`SELECT id, level, code, parent_code FROM item_groups`);
+        const allItemRows = await query<GroupRow[]>(`SELECT id, level, code, parent_code FROM item_groups WHERE company_id = ?`, [companyId]);
         const matchingIds = new Set(allItemRows.filter((r) => configItemCodes.includes(r.code)).map((r) => r.id));
         itemGroupCodes = expandToDescendantCodes(allItemRows, matchingIds);
         for (const c of configItemCodes) itemGroupCodes.add(c);
@@ -288,6 +313,7 @@ export async function buildPromotionScopeFilter(
 ): Promise<{ sql: string; params: (string | number)[] }> {
   const clauses: string[] = [];
   const params: (string | number)[] = [];
+  const companyId = getCompanyId();
 
   // Customer Group filter
   if (customerGroupCodes !== null) {
@@ -300,10 +326,11 @@ export async function buildPromotionScopeFilter(
     const custPlaceholders = custCodes.map(() => "?").join(",");
     const custRows = await query<{ sap_card_code: string }[]>(
       `SELECT sap_card_code FROM customers
-       WHERE cus_grp01 IN (${custPlaceholders})
+       WHERE company_id = ?
+         AND (cus_grp01 IN (${custPlaceholders})
           OR cus_grp02 IN (${custPlaceholders})
-          OR cus_grp03 IN (${custPlaceholders})`,
-      [...custCodes, ...custCodes, ...custCodes]
+          OR cus_grp03 IN (${custPlaceholders}))`,
+      [companyId, ...custCodes, ...custCodes, ...custCodes]
     );
 
     const bpCodes = new Set<string>([...custCodes, ...custRows.map((r) => r.sap_card_code)]);
@@ -332,13 +359,14 @@ export async function buildPromotionScopeFilter(
     const itemPlaceholders = itemCodes.map(() => "?").join(",");
     const itemRows = await query<{ sap_item_code: string }[]>(
       `SELECT sap_item_code FROM items
-       WHERE item_cat01 IN (${itemPlaceholders})
+       WHERE company_id = ?
+         AND (item_cat01 IN (${itemPlaceholders})
           OR item_cat02 IN (${itemPlaceholders})
           OR item_cat03 IN (${itemPlaceholders})
           OR item_cat04 IN (${itemPlaceholders})
           OR item_cat05 IN (${itemPlaceholders})
-          OR item_cat06 IN (${itemPlaceholders})`,
-      [...itemCodes, ...itemCodes, ...itemCodes, ...itemCodes, ...itemCodes, ...itemCodes]
+          OR item_cat06 IN (${itemPlaceholders}))`,
+      [companyId, ...itemCodes, ...itemCodes, ...itemCodes, ...itemCodes, ...itemCodes, ...itemCodes]
     );
 
     const validItemCodes = new Set<string>([...itemCodes, ...itemRows.map((r) => r.sap_item_code)]);

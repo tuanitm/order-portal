@@ -22,11 +22,24 @@ export interface AppConfig {
   admin: {
     /** Shown in front of the portal name, e.g. "IMV - Ordering Portal". Optional. */
     companyPrefix?: string;
+    /** This deployment's multi-tenant key — every row this instance writes
+     *  is tagged with it, and every query this instance runs is scoped to
+     *  it, so several app instances can share one MySQL database/table set
+     *  without seeing each other's data (see getCompanyId()). Deliberately
+     *  separate from sapb1.companyID, which is only the SAP Service Layer
+     *  login identifier for which SAP company database to connect to. */
+    entityID: string;
     email: string;
     password: string;
     /** "Yes"/"No" — whether the storefront shows the available-stock line on
      *  product cards. Optional; shown by default (see isShowAvailableEnabled). */
     showAvailable?: string;
+    /** "Yes"/"No" — whether the storefront shows a Discount 1/Discount 2
+     *  breakdown tooltip on hover (Discount 1 = contract discount %,
+     *  Discount 2 = promotion discount % — labeled generically, never by
+     *  their real discount-type names). Optional; hidden by default (see
+     *  isShowDiscountsEnabled). */
+    showDiscounts?: string;
   };
   mysql: {
     dbIp: string;
@@ -82,6 +95,20 @@ export function loadConfig(): AppConfig {
     }
   }
   return cachedConfig!;
+}
+
+/**
+ * This deployment's multi-tenant key (config.json's admin.entityID) — every
+ * row written anywhere in this app is tagged with it via a `company_id`
+ * column, and every query filters/joins on it, so several app
+ * instances/containers (each configured for a different company) can share
+ * one physical MySQL database and table set without ever reading, writing,
+ * or matching across company boundaries. A single process-wide constant,
+ * NOT a per-request/per-session value — one running instance always serves
+ * exactly one company.
+ */
+export function getCompanyId(): string {
+  return loadConfig().admin.entityID;
 }
 
 /**

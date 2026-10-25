@@ -3,11 +3,27 @@
 -- Database: orderdatasource (existing)
 -- =============================================================
 
+-- Multi-company support: every table below carries a `company_id` column
+-- (config.json's admin.entityID for whichever app instance wrote the row —
+-- see getCompanyId() in src/lib/config.ts). Several app
+-- instances/containers, each configured for a different company, share this
+-- ONE physical database and table set; `company_id` is what keeps their
+-- data apart. Every UNIQUE/PRIMARY key that used to assume a business key
+-- (an item code, a card code, an email, ...) was globally unique now leads
+-- with company_id instead, since the same business key can legitimately
+-- exist for two different companies. For an EXISTING database that
+-- predates this column, run `node migrate_company_id.js` first (adds the
+-- column, backfills every existing row with the currently-configured
+-- entityID, then rebuilds the affected keys as composite) — a fresh
+-- install already gets the composite keys from the CREATE TABLE
+-- statements below.
+
 -- Users & Authentication
 CREATE TABLE IF NOT EXISTS users (
   id INT AUTO_INCREMENT PRIMARY KEY,
-  email VARCHAR(255) UNIQUE,
-  phone VARCHAR(20) UNIQUE,
+  company_id VARCHAR(50) NOT NULL,
+  email VARCHAR(255),
+  phone VARCHAR(20),
   password_hash VARCHAR(255) NOT NULL,
   full_name VARCHAR(255) NOT NULL,
   mst_code VARCHAR(50),
@@ -17,6 +33,30 @@ CREATE TABLE IF NOT EXISTS users (
   sap_cus_grp01 VARCHAR(20) NULL,
   sap_cus_grp02 VARCHAR(20) NULL,
   sap_cus_grp03 VARCHAR(20) NULL,
+  -- New-company registration (customer not yet a SAP Business Partner):
+  -- sap_card_code stays NULL until an admin assigns the commercial fields
+  -- below and the portal creates the BP in SAP (see
+  -- POST /api/admin/customers/[id]/create-bp). sap_card_name doubles as
+  -- the customer-typed "Company Name" in this path. registration_address
+  -- is the Billing Address; registration_shipping_address defaults to it
+  -- (customer picks a separate one only if they override it).
+  -- declared_region_code is the customer's self-declared Customer Group 2
+  -- ("region") — unverified, used only to route visibility of the pending
+  -- registration to the matching regional admin (see isCustomerInApprovalScope);
+  -- the real Customer Group 1/2/3 are only set once an admin approves.
+  -- registration_contact_person is optional (unlike full_name, the login
+  -- account holder) — it becomes the BP's ContactEmployees.Name on SAP
+  -- creation when provided, falling back to full_name otherwise.
+  registration_address TEXT NULL,
+  registration_shipping_address TEXT NULL,
+  registration_remark TEXT NULL,
+  registration_contact_person VARCHAR(255) NULL,
+  declared_region_code VARCHAR(20) NULL,
+  sap_group_code INT NULL,
+  pay_terms_grp_code INT NULL,
+  salesperson_code INT NULL,
+  credit_limit DECIMAL(18,2) NULL,
+  currency VARCHAR(10) NULL,
   language ENUM('vi', 'en') DEFAULT 'vi',
   is_active BOOLEAN DEFAULT TRUE,
   approval_status ENUM('pending', 'approved', 'rejected') DEFAULT 'pending',
@@ -25,6 +65,9 @@ CREATE TABLE IF NOT EXISTS users (
   rejection_reason TEXT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_company_email (company_id, email),
+  UNIQUE KEY uk_company_phone (company_id, phone),
+  INDEX idx_company (company_id),
   INDEX idx_mst_code (mst_code),
   INDEX idx_sap_card_code (sap_card_code),
   INDEX idx_approval_status (approval_status)
@@ -46,13 +89,25 @@ CREATE TABLE IF NOT EXISTS users (
 -- (replaces the old OITB-based group sellability gate — see item_groups below).
 -- Then run `node migrate_contract_discount.js` for the contract_discount table.
 -- Then run `node migrate_sap_customers.js` for the customers table.
+-- Then run `node migrate_company_id.js` for the company_id column + composite
+-- keys on every table (see the top-of-file comment).
+-- Then run `node migrate_new_customer_fields.js` to add
+-- registration_address/sap_group_code/pay_terms_grp_code/salesperson_code/
+-- credit_limit/currency to `users` (new-company registration — see
+-- POST /api/admin/customers/[id]/create-bp).
+-- Then run `node migrate_customer_region_fields.js` to add
+-- registration_shipping_address/registration_remark/declared_region_code
+-- to `users`.
+-- Then run `node migrate_contact_person_field.js` to add
+-- registration_contact_person to `users`.
 
 -- Product Cache (synced from SAP B1). is_active is purely sync-driven
 -- (reflects the current sellable-category filter); is_manually_hidden is a
 -- separate admin override that survives resyncs.
 CREATE TABLE IF NOT EXISTS items (
   id INT AUTO_INCREMENT PRIMARY KEY,
-  sap_item_code VARCHAR(50) UNIQUE NOT NULL,
+  company_id VARCHAR(50) NOT NULL,
+  sap_item_code VARCHAR(50) NOT NULL,
   item_name_vi VARCHAR(255),
   item_name_en VARCHAR(255),
   uom VARCHAR(20),
@@ -93,6 +148,8 @@ CREATE TABLE IF NOT EXISTS items (
   is_manually_hidden BOOLEAN NOT NULL DEFAULT FALSE,
   last_synced TIMESTAMP NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_company_item (company_id, sap_item_code),
+  INDEX idx_company (company_id),
   INDEX idx_category (category),
   INDEX idx_active (is_active)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -112,12 +169,13 @@ CREATE TABLE IF NOT EXISTS items (
 -- CostingCode(N)/COGSCostingCode(N) fields — NOT the RDR1 SQL column names
 -- OcrCode(N)/CogsOcrCo(N), which Service Layer silently ignores.
 CREATE TABLE IF NOT EXISTS cost_centers (
+  company_id VARCHAR(50) NOT NULL,
   ocr_code VARCHAR(20) NOT NULL,
   dimension TINYINT NOT NULL,
   ocr_name VARCHAR(255),
   is_active BOOLEAN DEFAULT TRUE,
   last_synced TIMESTAMP NULL,
-  PRIMARY KEY (ocr_code, dimension)
+  PRIMARY KEY (company_id, ocr_code, dimension)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Item Groups (SAP BusinessOne UDFs Items.U_ItemCat01..06 — a 6-level
@@ -135,13 +193,14 @@ CREATE TABLE IF NOT EXISTS cost_centers (
 -- this column, so the toggle survives a re-import of SAP_Item_Group.xlsx.
 CREATE TABLE IF NOT EXISTS item_groups (
   id INT AUTO_INCREMENT PRIMARY KEY,
+  company_id VARCHAR(50) NOT NULL,
   level TINYINT NOT NULL,
   code VARCHAR(20) NOT NULL,
   parent_code VARCHAR(20) NULL,
   name VARCHAR(255) NULL,
   is_sellable BOOLEAN NOT NULL DEFAULT FALSE,
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
-  UNIQUE KEY uk_level_code (level, code)
+  UNIQUE KEY uk_company_level_code (company_id, level, code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 -- Migration for an existing DB:
 -- ALTER TABLE item_groups ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT TRUE;
@@ -159,13 +218,14 @@ CREATE TABLE IF NOT EXISTS item_groups (
 -- own Price List screen; nothing needs to recompute `price` from them.
 CREATE TABLE IF NOT EXISTS item_channel_prices (
   id INT AUTO_INCREMENT PRIMARY KEY,
+  company_id VARCHAR(50) NOT NULL,
   sap_item_code VARCHAR(50) NOT NULL,
   price_list_num INT NOT NULL,
   base_price_list_num INT NULL,
   factor DECIMAL(10,4) NULL DEFAULT 1,
   price DECIMAL(18,2) NOT NULL DEFAULT 0,
   last_synced TIMESTAMP NULL,
-  UNIQUE KEY uk_item_pricelist (sap_item_code, price_list_num),
+  UNIQUE KEY uk_company_item_pricelist (company_id, sap_item_code, price_list_num),
   INDEX idx_item_code (sap_item_code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -176,6 +236,7 @@ CREATE TABLE IF NOT EXISTS item_channel_prices (
 -- Special Prices (synced from SAP B1)
 CREATE TABLE IF NOT EXISTS special_prices (
   id INT AUTO_INCREMENT PRIMARY KEY,
+  company_id VARCHAR(50) NOT NULL,
   sap_card_code VARCHAR(50) NOT NULL,
   sap_item_code VARCHAR(50) NOT NULL,
   special_price DECIMAL(18,2) NOT NULL,
@@ -183,7 +244,7 @@ CREATE TABLE IF NOT EXISTS special_prices (
   valid_from DATE,
   valid_to DATE,
   last_synced TIMESTAMP NULL,
-  UNIQUE KEY uk_bp_item (sap_card_code, sap_item_code),
+  UNIQUE KEY uk_company_bp_item (company_id, sap_card_code, sap_item_code),
   INDEX idx_card_code (sap_card_code),
   INDEX idx_item_code (sap_item_code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -209,6 +270,7 @@ CREATE TABLE IF NOT EXISTS special_prices (
 --   ALTER TABLE period_discount MODIFY COLUMN discount_percent DECIMAL(7,4);
 CREATE TABLE IF NOT EXISTS period_discount (
   id INT AUTO_INCREMENT PRIMARY KEY,
+  company_id VARCHAR(50) NOT NULL,
   price_list_num INT NOT NULL,
   sap_item_code VARCHAR(50) NOT NULL,
   base_price DECIMAL(18,2),
@@ -217,7 +279,7 @@ CREATE TABLE IF NOT EXISTS period_discount (
   date_from DATE,
   date_to DATE,
   last_synced TIMESTAMP NULL,
-  UNIQUE KEY uk_pricelist_item_from (price_list_num, sap_item_code, date_from),
+  UNIQUE KEY uk_company_pricelist_item_from (company_id, price_list_num, sap_item_code, date_from),
   INDEX idx_price_list (price_list_num),
   INDEX idx_item_code (sap_item_code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -233,6 +295,7 @@ CREATE TABLE IF NOT EXISTS period_discount (
 -- calculation — sync/admin-visibility only until that's decided.
 CREATE TABLE IF NOT EXISTS special_discount (
   id INT AUTO_INCREMENT PRIMARY KEY,
+  company_id VARCHAR(50) NOT NULL,
   sap_card_code VARCHAR(50) NOT NULL,
   sap_item_code VARCHAR(50) NOT NULL,
   special_price DECIMAL(18,2) NOT NULL,
@@ -240,7 +303,7 @@ CREATE TABLE IF NOT EXISTS special_discount (
   valid_from DATE,
   valid_to DATE,
   last_synced TIMESTAMP NULL,
-  UNIQUE KEY uk_bp_item_from (sap_card_code, sap_item_code, valid_from),
+  UNIQUE KEY uk_company_bp_item_from (company_id, sap_card_code, sap_item_code, valid_from),
   INDEX idx_card_code (sap_card_code),
   INDEX idx_item_code (sap_item_code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -257,11 +320,13 @@ CREATE TABLE IF NOT EXISTS special_discount (
 -- *_IN TRANSIT, FACTORY_*, which should not count) — admins should review
 -- this on the Warehouses admin page rather than trust the default blindly.
 CREATE TABLE IF NOT EXISTS warehouses (
-  sap_warehouse_code VARCHAR(20) PRIMARY KEY,
+  company_id VARCHAR(50) NOT NULL,
+  sap_warehouse_code VARCHAR(20) NOT NULL,
   warehouse_name VARCHAR(150),
   is_inactive_in_sap BOOLEAN DEFAULT FALSE,
   is_included BOOLEAN NOT NULL DEFAULT FALSE,
-  last_synced TIMESTAMP NULL
+  last_synced TIMESTAMP NULL,
+  PRIMARY KEY (company_id, sap_warehouse_code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Per-item, per-warehouse stock (synced from SAP B1's OITW table via a
@@ -281,6 +346,7 @@ CREATE TABLE IF NOT EXISTS warehouses (
 -- treated as "no shelf-life restriction" wherever this is read.
 CREATE TABLE IF NOT EXISTS item_warehouse_stock (
   id INT AUTO_INCREMENT PRIMARY KEY,
+  company_id VARCHAR(50) NOT NULL,
   sap_item_code VARCHAR(50) NOT NULL,
   warehouse_code VARCHAR(20) NOT NULL,
   in_stock DECIMAL(18,3) NOT NULL DEFAULT 0,
@@ -288,7 +354,7 @@ CREATE TABLE IF NOT EXISTS item_warehouse_stock (
   ordered DECIMAL(18,3) NOT NULL DEFAULT 0,
   shelf_life_pct DECIMAL(6,2) NULL,
   last_synced TIMESTAMP NULL,
-  UNIQUE KEY uk_item_warehouse (sap_item_code, warehouse_code),
+  UNIQUE KEY uk_company_item_warehouse (company_id, sap_item_code, warehouse_code),
   INDEX idx_item_code (sap_item_code),
   INDEX idx_warehouse_code (warehouse_code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -301,6 +367,7 @@ CREATE TABLE IF NOT EXISTS item_warehouse_stock (
 -- applies — see sync.ts CONTRACT_DISCOUNT_TYPE constants.
 CREATE TABLE IF NOT EXISTS contract_discount (
   id INT AUTO_INCREMENT PRIMARY KEY,
+  company_id VARCHAR(50) NOT NULL,
   doc_entry INT NOT NULL,
   doc_num INT NULL,
   line_id INT NOT NULL,
@@ -321,7 +388,7 @@ CREATE TABLE IF NOT EXISTS contract_discount (
   u_name_item VARCHAR(255) NULL,
   u_base_disc_pct DECIMAL(6,2) NULL,
   last_synced TIMESTAMP NULL,
-  UNIQUE KEY uk_doc_line (doc_entry, line_id),
+  UNIQUE KEY uk_company_doc_line (company_id, doc_entry, line_id),
   INDEX idx_code_cust (u_code_cust),
   INDEX idx_code_item (u_code_item)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -341,6 +408,7 @@ CREATE TABLE IF NOT EXISTS contract_discount (
 -- scope filtering in syncCustomerRequiredShelfLife).
 CREATE TABLE IF NOT EXISTS customer_require_shelflife (
   id INT AUTO_INCREMENT PRIMARY KEY,
+  company_id VARCHAR(50) NOT NULL,
   doc_entry INT NOT NULL,
   cust_group_code VARCHAR(50) NOT NULL,
   cust_group_name VARCHAR(255) NULL,
@@ -351,7 +419,7 @@ CREATE TABLE IF NOT EXISTS customer_require_shelflife (
   shelf_life_from DECIMAL(6,2) NULL,
   shelf_life_to DECIMAL(6,2) NULL,
   last_synced TIMESTAMP NULL,
-  UNIQUE KEY uk_doc_itemgroup (doc_entry, item_group_code),
+  UNIQUE KEY uk_company_doc_itemgroup (company_id, doc_entry, item_group_code),
   INDEX idx_cust_group (cust_group_code),
   INDEX idx_item_group (item_group_code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -367,6 +435,7 @@ CREATE TABLE IF NOT EXISTS customer_require_shelflife (
 -- they're free-text labels (e.g. "GT.TOILETRIES") and are display-only.
 CREATE TABLE IF NOT EXISTS promotion_discount (
   id INT AUTO_INCREMENT PRIMARY KEY,
+  company_id VARCHAR(50) NOT NULL,
   doc_entry INT NOT NULL,
   promotion_code VARCHAR(50),
   promotion_name VARCHAR(255),
@@ -392,6 +461,7 @@ CREATE TABLE IF NOT EXISTS promotion_discount (
   giving_item_name VARCHAR(255),
   giving_qty DECIMAL(18,2),
   last_synced TIMESTAMP NULL,
+  INDEX idx_company (company_id),
   INDEX idx_bp_code (bp_code),
   INDEX idx_selling_item_code (selling_item_code),
   INDEX idx_active_dates (begin_date, end_date)
@@ -405,6 +475,7 @@ CREATE TABLE IF NOT EXISTS promotion_discount (
 -- Promotions
 CREATE TABLE IF NOT EXISTS promotions (
   id INT AUTO_INCREMENT PRIMARY KEY,
+  company_id VARCHAR(50) NOT NULL,
   promo_code VARCHAR(50),
   title_vi VARCHAR(255),
   title_en VARCHAR(255),
@@ -419,13 +490,15 @@ CREATE TABLE IF NOT EXISTS promotions (
   valid_to DATE,
   is_active BOOLEAN DEFAULT TRUE,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_company (company_id),
   INDEX idx_active_dates (is_active, valid_from, valid_to)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Orders
 CREATE TABLE IF NOT EXISTS orders (
   id INT AUTO_INCREMENT PRIMARY KEY,
-  order_number VARCHAR(64) UNIQUE NOT NULL, -- SO-{BP code}-{yymmdd}-{3 digits}
+  company_id VARCHAR(50) NOT NULL,
+  order_number VARCHAR(64) NOT NULL, -- SO-{BP code}-{yymmdd}-{3 digits}
   user_id INT NOT NULL,
   customer_name VARCHAR(255),
   delivery_address TEXT,
@@ -446,17 +519,21 @@ CREATE TABLE IF NOT EXISTS orders (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   FOREIGN KEY (user_id) REFERENCES users(id),
+  UNIQUE KEY uk_company_order_number (company_id, order_number),
   INDEX idx_user (user_id),
-  INDEX idx_status (status),
-  INDEX idx_order_number (order_number)
+  INDEX idx_status (status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 -- Migration for an existing DB:
 -- ALTER TABLE orders MODIFY COLUMN status ENUM('draft','submitted','processing','sap_draft_created','approved','delivered','rejected','completed','cancelled') DEFAULT 'draft';
 -- ALTER TABLE orders ADD COLUMN sap_so_number VARCHAR(50) NULL AFTER sap_doc_num;
 
--- Order Lines
+-- Order Lines. company_id is denormalized from the parent order (set at
+-- order-creation time, never touched after) so a line can be filtered/
+-- joined by company directly, without forcing a join back to `orders`
+-- everywhere this table is queried.
 CREATE TABLE IF NOT EXISTS order_lines (
   id INT AUTO_INCREMENT PRIMARY KEY,
+  company_id VARCHAR(50) NOT NULL,
   order_id INT NOT NULL,
   sap_item_code VARCHAR(50) NOT NULL,
   item_name VARCHAR(255),
@@ -534,6 +611,7 @@ CREATE TABLE IF NOT EXISTS order_lines (
   giveaway_promotion_name VARCHAR(255) NULL,
   FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
   FOREIGN KEY (source_line_id) REFERENCES order_lines(id) ON DELETE SET NULL,
+  INDEX idx_company (company_id),
   INDEX idx_order (order_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 -- Migration for an existing DB:
@@ -560,10 +638,12 @@ CREATE TABLE IF NOT EXISTS order_lines (
 -- can show a timeline with the time of each step.
 CREATE TABLE IF NOT EXISTS order_status_history (
   id INT AUTO_INCREMENT PRIMARY KEY,
+  company_id VARCHAR(50) NOT NULL,
   order_id INT NOT NULL,
   status VARCHAR(30) NOT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
+  INDEX idx_company (company_id),
   INDEX idx_order (order_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -583,6 +663,7 @@ CREATE TABLE IF NOT EXISTS order_status_history (
 -- opposite direction, disambiguated by sender_type.
 CREATE TABLE IF NOT EXISTS order_messages (
   id INT AUTO_INCREMENT PRIMARY KEY,
+  company_id VARCHAR(50) NOT NULL,
   order_id INT NOT NULL,
   sender_type ENUM('admin', 'customer') NOT NULL,
   sender_name VARCHAR(255),
@@ -590,6 +671,7 @@ CREATE TABLE IF NOT EXISTS order_messages (
   read_at TIMESTAMP NULL DEFAULT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (order_id) REFERENCES orders(id) ON DELETE CASCADE,
+  INDEX idx_company (company_id),
   INDEX idx_order (order_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 -- Migration for an existing DB:
@@ -605,13 +687,14 @@ CREATE TABLE IF NOT EXISTS order_messages (
 -- table only ever holds subscriptions that still work.
 CREATE TABLE IF NOT EXISTS push_subscriptions (
   id INT AUTO_INCREMENT PRIMARY KEY,
+  company_id VARCHAR(50) NOT NULL,
   user_id INT NOT NULL,
   endpoint VARCHAR(512) NOT NULL,
   p256dh VARCHAR(255) NOT NULL,
   auth VARCHAR(255) NOT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-  UNIQUE KEY uk_endpoint (endpoint(255)),
+  UNIQUE KEY uk_company_endpoint (company_id, endpoint(255)),
   INDEX idx_user (user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -622,10 +705,12 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
 -- Admin Roles ("user group") — a fixed list of section keys the role may access
 CREATE TABLE IF NOT EXISTS admin_roles (
   id INT AUTO_INCREMENT PRIMARY KEY,
-  name VARCHAR(100) NOT NULL UNIQUE,
+  company_id VARCHAR(50) NOT NULL,
+  name VARCHAR(100) NOT NULL,
   description VARCHAR(255),
   permissions JSON NOT NULL,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_company_name (company_id, name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Admin Users. `is_root` marks the "root" account(s) — unrestricted,
@@ -640,7 +725,8 @@ CREATE TABLE IF NOT EXISTS admin_roles (
 -- checks (see /api/admin/users DELETE and the isActive PATCH guard).
 CREATE TABLE IF NOT EXISTS admin_users (
   id INT AUTO_INCREMENT PRIMARY KEY,
-  email VARCHAR(255) NOT NULL UNIQUE,
+  company_id VARCHAR(50) NOT NULL,
+  email VARCHAR(255) NOT NULL,
   password_hash VARCHAR(255) NOT NULL,
   full_name VARCHAR(255) NOT NULL,
   role_id INT NULL,
@@ -654,6 +740,7 @@ CREATE TABLE IF NOT EXISTS admin_users (
   department_code VARCHAR(20) NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (role_id) REFERENCES admin_roles(id),
+  UNIQUE KEY uk_company_email (company_id, email),
   CONSTRAINT chk_admin_users_role CHECK (
     (is_root = TRUE AND role_id IS NULL) OR (is_root = FALSE AND role_id IS NOT NULL)
   )
@@ -663,11 +750,13 @@ CREATE TABLE IF NOT EXISTS admin_users (
 
 -- Price Lists (synced from SAP B1 PriceLists) — admin marks base vs channel lists
 CREATE TABLE IF NOT EXISTS price_lists (
-  price_list_num INT PRIMARY KEY,
+  company_id VARCHAR(50) NOT NULL,
+  price_list_num INT NOT NULL,
   list_name VARCHAR(255),
   is_base BOOLEAN DEFAULT FALSE,
   is_channel BOOLEAN DEFAULT FALSE,
-  last_synced TIMESTAMP NULL
+  last_synced TIMESTAMP NULL,
+  PRIMARY KEY (company_id, price_list_num)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Customer Groups (synced from SAP BusinessPartners.U_CusGrp01/02/03).
@@ -679,12 +768,13 @@ CREATE TABLE IF NOT EXISTS price_lists (
 -- src/lib/customerGroups.ts. Re-imports never touch this column.
 CREATE TABLE IF NOT EXISTS customer_groups (
   id INT AUTO_INCREMENT PRIMARY KEY,
+  company_id VARCHAR(50) NOT NULL,
   level TINYINT NOT NULL,
   code VARCHAR(20) NOT NULL,
   parent_code VARCHAR(20) NULL,
   name VARCHAR(255) NULL,
   is_active BOOLEAN NOT NULL DEFAULT TRUE,
-  UNIQUE KEY uk_level_code (level, code)
+  UNIQUE KEY uk_company_level_code (company_id, level, code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 -- Migration for an existing DB:
 -- ALTER TABLE customer_groups ADD COLUMN is_active BOOLEAN NOT NULL DEFAULT TRUE;
@@ -693,11 +783,12 @@ CREATE TABLE IF NOT EXISTS customer_groups (
 -- levels 1-3) a customer group may browse/order
 CREATE TABLE IF NOT EXISTS catalog_visibility (
   id INT AUTO_INCREMENT PRIMARY KEY,
+  company_id VARCHAR(50) NOT NULL,
   customer_group_id INT NOT NULL,
   item_category_level TINYINT NOT NULL,
   item_category_code VARCHAR(20) NOT NULL,
   is_visible BOOLEAN NOT NULL DEFAULT TRUE,
-  UNIQUE KEY uk_group_itemcat (customer_group_id, item_category_level, item_category_code),
+  UNIQUE KEY uk_company_group_itemcat (company_id, customer_group_id, item_category_level, item_category_code),
   INDEX idx_customer_group_id (customer_group_id),
   FOREIGN KEY (customer_group_id) REFERENCES customer_groups(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -714,14 +805,19 @@ CREATE TABLE IF NOT EXISTS catalog_visibility (
 -- Included anywhere, the stock gate is off entirely regardless of mappings).
 CREATE TABLE IF NOT EXISTS customer_group_warehouses (
   id INT AUTO_INCREMENT PRIMARY KEY,
+  company_id VARCHAR(50) NOT NULL,
   customer_group_id INT NOT NULL,
   warehouse_code VARCHAR(20) NOT NULL,
-  UNIQUE KEY uk_group_warehouse (customer_group_id, warehouse_code),
+  UNIQUE KEY uk_company_group_warehouse (company_id, customer_group_id, warehouse_code),
   INDEX idx_customer_group_id (customer_group_id),
   INDEX idx_warehouse_code (warehouse_code),
-  FOREIGN KEY (customer_group_id) REFERENCES customer_groups(id) ON DELETE CASCADE,
-  FOREIGN KEY (warehouse_code) REFERENCES warehouses(sap_warehouse_code) ON DELETE CASCADE
+  FOREIGN KEY (customer_group_id) REFERENCES customer_groups(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- NOTE: the FK to warehouses(sap_warehouse_code) was dropped when
+-- warehouses' primary key became composite (company_id, sap_warehouse_code)
+-- — a single-column FK can no longer reference it. Application code must
+-- itself match company_id when joining to warehouses (see sync.ts /
+-- warehouseVisibility.ts).
 
 -- Per-admin data scoping, n:n — which Customer Groups / Item Groups a
 -- non-root admin user (admin_users, i.e. NOT the config.json bootstrap
@@ -734,9 +830,10 @@ CREATE TABLE IF NOT EXISTS customer_group_warehouses (
 -- every scoped admin route reads through.
 CREATE TABLE IF NOT EXISTS admin_user_customer_groups (
   id INT AUTO_INCREMENT PRIMARY KEY,
+  company_id VARCHAR(50) NOT NULL,
   admin_user_id INT NOT NULL,
   customer_group_id INT NOT NULL,
-  UNIQUE KEY uk_admin_cg (admin_user_id, customer_group_id),
+  UNIQUE KEY uk_company_admin_cg (company_id, admin_user_id, customer_group_id),
   INDEX idx_admin_user_id (admin_user_id),
   FOREIGN KEY (admin_user_id) REFERENCES admin_users(id) ON DELETE CASCADE,
   FOREIGN KEY (customer_group_id) REFERENCES customer_groups(id) ON DELETE CASCADE
@@ -744,9 +841,10 @@ CREATE TABLE IF NOT EXISTS admin_user_customer_groups (
 
 CREATE TABLE IF NOT EXISTS admin_user_item_groups (
   id INT AUTO_INCREMENT PRIMARY KEY,
+  company_id VARCHAR(50) NOT NULL,
   admin_user_id INT NOT NULL,
   item_group_id INT NOT NULL,
-  UNIQUE KEY uk_admin_ig (admin_user_id, item_group_id),
+  UNIQUE KEY uk_company_admin_ig (company_id, admin_user_id, item_group_id),
   INDEX idx_admin_user_id (admin_user_id),
   FOREIGN KEY (admin_user_id) REFERENCES admin_users(id) ON DELETE CASCADE,
   FOREIGN KEY (item_group_id) REFERENCES item_groups(id) ON DELETE CASCADE
@@ -760,7 +858,8 @@ CREATE TABLE IF NOT EXISTS admin_user_item_groups (
 -- email when a new customer signs up and admin approves the account.
 CREATE TABLE IF NOT EXISTS customers (
   id INT AUTO_INCREMENT PRIMARY KEY,
-  sap_card_code VARCHAR(50) UNIQUE NOT NULL,
+  company_id VARCHAR(50) NOT NULL,
+  sap_card_code VARCHAR(50) NOT NULL,
   card_name VARCHAR(255),
   mst_code VARCHAR(50),
   price_list_num INT NULL,
@@ -774,6 +873,7 @@ CREATE TABLE IF NOT EXISTS customers (
   is_enabled BOOLEAN NOT NULL DEFAULT TRUE,
   last_synced TIMESTAMP NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_company_card_code (company_id, sap_card_code),
   INDEX idx_mst_code (mst_code),
   INDEX idx_cus_grp01 (cus_grp01),
   INDEX idx_cus_grp02 (cus_grp02)
@@ -783,27 +883,29 @@ CREATE TABLE IF NOT EXISTS customers (
 -- ALTER TABLE customers ADD COLUMN account VARCHAR(255) NULL AFTER address;
 -- ALTER TABLE customers ADD COLUMN is_enabled BOOLEAN NOT NULL DEFAULT TRUE AFTER account;
 
--- Scheduled Sync setting — a single row (id is always 1), root-editable on
--- the Admin Settings page. Replaces scripts/daily-sync.mjs's role (an
--- external script registered in Windows Task Scheduler that logs in over
--- HTTP) with an in-process scheduler — see src/instrumentation.ts, which
--- runs once when the server boots and polls this row every minute to
--- decide whether it's time to run runScheduledSync() (src/lib/sap-b1/
--- scheduledSync.ts) again. ONE combined schedule for every sync type
--- (SAP Customers, Items, Price Lists, Period Discount, Contract Discount,
--- Promotion Discount), not a separate schedule per type — simpler to
--- configure, and matches the existing daily-sync.mjs's own all-together
--- behavior, just with Period Discount added (the one sync type that
--- script never covered at all).
+-- Scheduled Sync setting — ONE ROW PER COMPANY (company_id is the primary
+-- key itself, not a surrogate `id`), root-editable on the Admin Settings
+-- page. Replaces scripts/daily-sync.mjs's role (an external script
+-- registered in Windows Task Scheduler that logs in over HTTP) with an
+-- in-process scheduler — see src/instrumentation.ts, which runs once when
+-- the server boots and polls THIS company's row every minute to decide
+-- whether it's time to run runScheduledSync() (src/lib/sap-b1/
+-- scheduledSync.ts) again. ONE combined schedule for every sync type (SAP
+-- Customers, Items, Price Lists, Period Discount, Contract Discount,
+-- Promotion Discount) per company, not a separate schedule per type —
+-- simpler to configure, and matches the existing daily-sync.mjs's own
+-- all-together behavior, just with Period Discount added (the one sync
+-- type that script never covered at all). A row is lazily created for a
+-- company the first time its settings are read/written (see
+-- scheduledSync.ts) — there's no static bootstrap INSERT here, since a
+-- fresh install doesn't know any company_id yet.
 CREATE TABLE IF NOT EXISTS sync_schedule_settings (
-  id INT PRIMARY KEY DEFAULT 1,
+  company_id VARCHAR(50) PRIMARY KEY,
   is_enabled BOOLEAN NOT NULL DEFAULT FALSE,
   interval_hours INT NOT NULL DEFAULT 24,
   post_so_mode ENUM('draft','sales_order') NOT NULL DEFAULT 'draft',
   last_run_at TIMESTAMP NULL,
   last_run_status ENUM('success', 'partial', 'failed') NULL,
   last_run_summary TEXT NULL,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  CONSTRAINT chk_sync_schedule_singleton CHECK (id = 1)
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-INSERT IGNORE INTO sync_schedule_settings (id) VALUES (1);

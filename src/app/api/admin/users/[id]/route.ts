@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { query, queryOne } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 
 /**
@@ -20,7 +21,8 @@ export async function PATCH(
   const adminUserId = parseInt(id, 10);
   if (isNaN(adminUserId)) return NextResponse.json({ error: "Invalid admin user ID" }, { status: 400 });
 
-  const target = await queryOne<{ is_root: number }>(`SELECT is_root FROM admin_users WHERE id = ?`, [adminUserId]);
+  const companyId = getCompanyId();
+  const target = await queryOne<{ is_root: number }>(`SELECT is_root FROM admin_users WHERE company_id = ? AND id = ?`, [companyId, adminUserId]);
   if (!target) return NextResponse.json({ error: "Admin user not found" }, { status: 404 });
 
   const body = await request.json();
@@ -48,8 +50,8 @@ export async function PATCH(
   if (typeof body.isActive === "boolean") {
     if (target.is_root && !body.isActive) {
       const activeRoots = await queryOne<{ cnt: number }>(
-        `SELECT COUNT(*) AS cnt FROM admin_users WHERE is_root = TRUE AND is_active = TRUE AND id != ?`,
-        [adminUserId]
+        `SELECT COUNT(*) AS cnt FROM admin_users WHERE company_id = ? AND is_root = TRUE AND is_active = TRUE AND id != ?`,
+        [companyId, adminUserId]
       );
       if ((activeRoots?.cnt ?? 0) === 0) {
         return NextResponse.json({ error: "Cannot deactivate the last active root account" }, { status: 400 });
@@ -74,9 +76,9 @@ export async function PATCH(
     return NextResponse.json({ error: "No valid fields to update" }, { status: 400 });
   }
 
-  values.push(adminUserId);
+  values.push(companyId, adminUserId);
   try {
-    await query(`UPDATE admin_users SET ${updates.join(", ")} WHERE id = ?`, values);
+    await query(`UPDATE admin_users SET ${updates.join(", ")} WHERE company_id = ? AND id = ?`, values);
   } catch (error: unknown) {
     if ((error as { code?: string })?.code === "ER_DUP_ENTRY") {
       return NextResponse.json({ error: "Email already in use" }, { status: 409 });
@@ -102,11 +104,12 @@ export async function DELETE(
   const adminUserId = parseInt(id, 10);
   if (isNaN(adminUserId)) return NextResponse.json({ error: "Invalid admin user ID" }, { status: 400 });
 
-  const target = await queryOne<{ is_root: number }>(`SELECT is_root FROM admin_users WHERE id = ?`, [adminUserId]);
+  const companyId = getCompanyId();
+  const target = await queryOne<{ is_root: number }>(`SELECT is_root FROM admin_users WHERE company_id = ? AND id = ?`, [companyId, adminUserId]);
   if (target?.is_root) {
     return NextResponse.json({ error: "A root account cannot be deleted here" }, { status: 400 });
   }
 
-  await query(`DELETE FROM admin_users WHERE id = ?`, [adminUserId]);
+  await query(`DELETE FROM admin_users WHERE company_id = ? AND id = ?`, [companyId, adminUserId]);
   return NextResponse.json({ success: true });
 }

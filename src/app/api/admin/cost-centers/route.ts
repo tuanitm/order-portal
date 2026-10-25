@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 
 /**
@@ -15,8 +16,8 @@ export async function GET(request: NextRequest) {
   if (isNaN(dimension)) return NextResponse.json({ error: "dimension query param is required" }, { status: 400 });
 
   const costCenters = await query(
-    `SELECT ocr_code, ocr_name, is_active FROM cost_centers WHERE dimension = ? ORDER BY ocr_name, ocr_code`,
-    [dimension]
+    `SELECT ocr_code, ocr_name, is_active FROM cost_centers WHERE company_id = ? AND dimension = ? ORDER BY ocr_name, ocr_code`,
+    [getCompanyId(), dimension]
   );
   return NextResponse.json({ costCenters });
 }

@@ -6,6 +6,7 @@ import { useTranslations } from "next-intl";
 interface AppInfo {
   companyPrefix: string;
   showAvailable: boolean;
+  showDiscounts: boolean;
 }
 
 let appInfoPromise: Promise<AppInfo> | null = null;
@@ -14,12 +15,13 @@ let appInfoPromise: Promise<AppInfo> | null = null;
 function fetchAppInfo(): Promise<AppInfo> {
   if (!appInfoPromise) {
     appInfoPromise = fetch("/api/app-info")
-      .then((res) => (res.ok ? res.json() : { companyPrefix: "", showAvailable: true }))
+      .then((res) => (res.ok ? res.json() : { companyPrefix: "", showAvailable: true, showDiscounts: false }))
       .then((data) => ({
         companyPrefix: typeof data.companyPrefix === "string" ? data.companyPrefix : "",
         showAvailable: typeof data.showAvailable === "boolean" ? data.showAvailable : true,
+        showDiscounts: typeof data.showDiscounts === "boolean" ? data.showDiscounts : false,
       }))
-      .catch(() => ({ companyPrefix: "", showAvailable: true }));
+      .catch(() => ({ companyPrefix: "", showAvailable: true, showDiscounts: false }));
   }
   return appInfoPromise;
 }
@@ -61,6 +63,28 @@ export function useShowAvailable(): boolean {
   }, []);
 
   return showAvailable;
+}
+
+/**
+ * Whether the storefront shows a Discount 1/Discount 2 hover breakdown on
+ * product cards (`admin.showDiscounts` in config.json — opt-in, shown only
+ * when explicitly "Yes"). Defaults to `false` until loaded, so the tooltip
+ * doesn't briefly appear then disappear for the common (disabled) case.
+ */
+export function useShowDiscounts(): boolean {
+  const [showDiscounts, setShowDiscounts] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchAppInfo().then((info) => {
+      if (!cancelled) setShowDiscounts(info.showDiscounts);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return showDiscounts;
 }
 
 /**

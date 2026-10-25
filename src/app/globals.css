@@ -580,12 +580,38 @@ ul, ol {
 }
 
 .product-card__discount {
+  position: relative;
   font-size: var(--text-xs);
   font-weight: var(--font-bold);
   color: var(--color-secondary);
   background: rgba(255, 107, 53, 0.1);
   padding: 2px var(--space-2);
   border-radius: var(--radius-sm);
+}
+
+/* Discount 1/Discount 2 hover breakdown — only rendered at all when
+   config.json's admin.showDiscounts is "Yes" (see useShowDiscounts).
+   Labeled generically ("Discount 1"/"Discount 2"), never by the real
+   discount-type name (contract/promotion), per the business requirement.
+   Rendered via a portal straight to document.body (see ProductCard.tsx) —
+   `top`/`left` are set inline from the badge's own getBoundingClientRect(),
+   so this is positioned in VIEWPORT coordinates, not relative to any
+   ancestor — `.product-card`'s own `overflow: hidden` (needed to clip the
+   product image to its rounded corners) can't truncate it this way. */
+.product-card__discount-tooltip {
+  position: fixed;
+  transform: translate(-50%, calc(-100% - 8px));
+  max-width: min(90vw, 320px);
+  background: var(--color-gray-900, #111827);
+  color: #fff;
+  font-weight: var(--font-medium);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  z-index: var(--z-tooltip);
+  pointer-events: none;
 }
 
 /* Buy-X-Get-Y bonus-item promo — deliberately a different color (green,

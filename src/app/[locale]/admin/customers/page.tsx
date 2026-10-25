@@ -17,12 +17,20 @@ interface Customer {
   sap_cus_grp01: string | null;
   sap_cus_grp02: string | null;
   sap_cus_grp03: string | null;
+  registration_address: string | null;
+  registration_shipping_address: string | null;
+  registration_remark: string | null;
+  registration_contact_person: string | null;
+  declared_region_code: string | null;
   approval_status: ApprovalStatus;
   rejection_reason: string | null;
   approved_at: string | null;
   approved_by: string | null;
   created_at: string;
 }
+
+interface CustomerGroupOption { id: number; level: number; code: string; name: string | null }
+interface PriceListOption { price_list_num: number; list_name: string }
 
 export default function AdminCustomersPage() {
   const t = useTranslations();
@@ -38,13 +46,94 @@ export default function AdminCustomersPage() {
   // happens" with zero feedback.
   const [actionError, setActionError] = useState<string | null>(null);
 
-  // Approve confirm modal
+  // Approve confirm modal (only for customers who already have a SAP card code)
   const [confirmApproveId, setConfirmApproveId] = useState<number | null>(null);
 
   // Reject modal
   const [showRejectModal, setShowRejectModal] = useState(false);
   const [rejectCustomerId, setRejectCustomerId] = useState<number | null>(null);
   const [rejectReason, setRejectReason] = useState("");
+
+  // "Create in SAP & Approve" modal — for new-company registrations
+  // (sap_card_code IS NULL) instead of the simple confirm modal above.
+  const [createBpCustomerId, setCreateBpCustomerId] = useState<number | null>(null);
+  const [customerGroupOptions, setCustomerGroupOptions] = useState<CustomerGroupOption[]>([]);
+  const [priceListOptions, setPriceListOptions] = useState<PriceListOption[]>([]);
+  // BP Group Code / Payment Terms are auto-derived server-side from a
+  // sibling BP in the same Customer Group 3 (see create-bp/route.ts) —
+  // not admin-facing. Salesperson Code / Credit Limit are likewise hidden
+  // and just left at their defaults. Currency defaults to VND.
+  const [createBpForm, setCreateBpForm] = useState({
+    cusGrp03: "", priceListNum: "", currency: "VND",
+    cardName: "", contactPerson: "", mstCode: "", email: "", phone: "", billingAddress: "", shippingAddress: "",
+    remark: "",
+  });
+  const [createBpSaving, setCreateBpSaving] = useState(false);
+  const [createBpError, setCreateBpError] = useState("");
+
+  useEffect(() => {
+    fetch("/api/admin/customer-groups").then((r) => r.json()).then((d) => setCustomerGroupOptions(d.customerGroups || [])).catch(() => {});
+    fetch("/api/admin/price-lists").then((r) => r.json()).then((d) => setPriceListOptions(d.priceLists || [])).catch(() => {});
+  }, []);
+
+  const openCreateBpModal = (customerId: number) => {
+    const customer = customers.find((c) => c.id === customerId);
+    setCreateBpCustomerId(customerId);
+    setCreateBpError("");
+    setCreateBpForm({
+      cusGrp03: "", priceListNum: "", currency: "VND",
+      cardName: customer?.sap_card_name || customer?.full_name || "",
+      contactPerson: customer?.registration_contact_person || "",
+      mstCode: customer?.mst_code || "",
+      email: customer?.email || "",
+      phone: customer?.phone || "",
+      billingAddress: customer?.registration_address || "",
+      shippingAddress: customer?.registration_shipping_address || customer?.registration_address || "",
+      remark: customer?.registration_remark || "",
+    });
+  };
+
+  const handleCreateBp = async () => {
+    if (!createBpCustomerId) return;
+    const f = createBpForm;
+    if (!f.cusGrp03 || !f.priceListNum || !f.cardName.trim() || !f.mstCode.trim() || !f.billingAddress.trim()) {
+      setCreateBpError("Customer Group 3, Price List, Name, MST, and Billing Address are required");
+      return;
+    }
+    setCreateBpSaving(true);
+    setCreateBpError("");
+    try {
+      const res = await fetch(`/api/admin/customers/${createBpCustomerId}/create-bp`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          cusGrp03: f.cusGrp03,
+          priceListNum: Number(f.priceListNum),
+          currency: f.currency,
+          cardName: f.cardName.trim(),
+          contactPerson: f.contactPerson.trim() || undefined,
+          mstCode: f.mstCode.trim(),
+          email: f.email.trim() || undefined,
+          phone: f.phone.trim() || undefined,
+          billingAddress: f.billingAddress.trim(),
+          shippingAddress: f.shippingAddress.trim() || undefined,
+          remark: f.remark.trim() || undefined,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setCreateBpCustomerId(null);
+        await fetchCustomers(activeFilter);
+      } else {
+        setCreateBpError(data.error || "Failed to create Business Partner");
+      }
+    } catch (error) {
+      console.error("Create BP failed:", error);
+      setCreateBpError("Failed to create Business Partner — check your connection and try again.");
+    } finally {
+      setCreateBpSaving(false);
+    }
+  };
 
   const fetchCustomers = useCallback(async (status?: string) => {
     setIsLoading(true);
@@ -316,7 +405,8 @@ export default function AdminCustomersPage() {
                         {customer.sap_card_name || "—"}
                       </td>
                       <td style={{ padding: "0.75rem 1rem", color: "var(--text-secondary, #64748B)", fontFamily: "monospace", fontSize: "0.75rem", whiteSpace: "nowrap" }}>
-                        {[customer.sap_cus_grp01, customer.sap_cus_grp02, customer.sap_cus_grp03].filter(Boolean).join(" / ") || "—"}
+                        {[customer.sap_cus_grp01, customer.sap_cus_grp02, customer.sap_cus_grp03].filter(Boolean).join(" / ")
+                          || (customer.declared_region_code ? `~${customer.declared_region_code} (declared)` : "—")}
                       </td>
                       <td style={{ padding: "0.75rem 1rem", color: "var(--text-tertiary, #94A3B8)", whiteSpace: "nowrap", fontSize: "0.75rem" }}>
                         {formatDate(customer.created_at)}
@@ -336,7 +426,7 @@ export default function AdminCustomersPage() {
                         {customer.approval_status === "pending" && (
                           <div style={{ display: "flex", gap: "0.375rem" }}>
                             <button
-                              onClick={() => setConfirmApproveId(customer.id)}
+                              onClick={() => customer.sap_card_code ? setConfirmApproveId(customer.id) : openCreateBpModal(customer.id)}
                               disabled={actionLoading === customer.id}
                               style={{
                                 padding: "0.375rem 0.75rem",
@@ -351,7 +441,7 @@ export default function AdminCustomersPage() {
                                 transition: "opacity 0.2s",
                               }}
                             >
-                              ✓ {t("admin.approve")}
+                              {customer.sap_card_code ? `✓ ${t("admin.approve")}` : "✓ Create in SAP & Approve"}
                             </button>
                             <button
                               onClick={() => openRejectModal(customer.id)}
@@ -537,6 +627,174 @@ export default function AdminCustomersPage() {
           </div>
         </div>
       )}
+
+      {/* Create BP & Approve Modal — new-company registrations (sap_card_code IS NULL) */}
+      {createBpCustomerId !== null && (() => {
+        const customer = customers.find((c) => c.id === createBpCustomerId);
+        const level3Groups = customerGroupOptions.filter((g) => g.level === 3);
+        return (
+          <div style={{
+            position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            zIndex: 1000, padding: "1rem",
+          }} onClick={() => setCreateBpCustomerId(null)}>
+            <div style={{
+              background: "var(--bg-primary, #fff)",
+              borderRadius: "var(--radius-xl, 12px)",
+              padding: "2rem",
+              maxWidth: "520px",
+              width: "100%",
+              maxHeight: "90vh",
+              overflowY: "auto",
+              boxShadow: "0 20px 60px rgba(0,0,0,0.2)",
+            }} onClick={(e) => e.stopPropagation()}>
+              <h3 style={{ fontSize: "1.125rem", fontWeight: 700, marginBottom: "0.5rem", color: "var(--text-primary, #0F172A)" }}>
+                Create Business Partner &amp; Approve
+              </h3>
+
+              <p style={{ color: "var(--text-tertiary, #94A3B8)", fontSize: "0.8125rem", marginBottom: "1rem" }}>
+                Review and correct what {customer?.full_name || "the customer"} entered at signup before creating the Business Partner in SAP.
+              </p>
+
+              {customer?.declared_region_code && (
+                <div style={{
+                  background: "var(--bg-secondary, #F8FAFC)", borderRadius: "var(--radius-lg, 8px)",
+                  padding: "0.75rem 1rem", marginBottom: "1.25rem", fontSize: "0.8125rem",
+                  color: "var(--text-secondary, #64748B)", lineHeight: 1.6,
+                }}>
+                  Self-declared region (unverified): <strong>{customer.declared_region_code}</strong> — pick the matching Customer Group 3 below.
+                </div>
+              )}
+
+              {createBpError && (
+                <div style={{
+                  padding: "0.75rem 1rem", background: "var(--color-error-light, #FEF2F2)",
+                  color: "#991B1B", borderRadius: "var(--radius-lg, 8px)",
+                  fontSize: "0.8125rem", fontWeight: 500, marginBottom: "1rem",
+                }}>
+                  {createBpError}
+                </div>
+              )}
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
+                <div className="input-group" style={{ gridColumn: "1 / -1" }}>
+                  <label className="input-label" htmlFor="cbCardName">Name *</label>
+                  <input type="text" className="input" id="cbCardName" value={createBpForm.cardName}
+                    onChange={(e) => setCreateBpForm((f) => ({ ...f, cardName: e.target.value }))} />
+                </div>
+
+                <div className="input-group" style={{ gridColumn: "1 / -1" }}>
+                  <label className="input-label" htmlFor="cbContactPerson">Contact Person</label>
+                  <input type="text" className="input" id="cbContactPerson" value={createBpForm.contactPerson}
+                    onChange={(e) => setCreateBpForm((f) => ({ ...f, contactPerson: e.target.value }))} />
+                </div>
+
+                <div className="input-group">
+                  <label className="input-label" htmlFor="cbMst">MST *</label>
+                  <input type="text" className="input" id="cbMst" value={createBpForm.mstCode}
+                    onChange={(e) => setCreateBpForm((f) => ({ ...f, mstCode: e.target.value }))} />
+                </div>
+
+                <div className="input-group">
+                  <label className="input-label" htmlFor="cbEmail">Email</label>
+                  <input type="email" className="input" id="cbEmail" value={createBpForm.email}
+                    onChange={(e) => setCreateBpForm((f) => ({ ...f, email: e.target.value }))} />
+                </div>
+
+                <div className="input-group" style={{ gridColumn: "1 / -1" }}>
+                  <label className="input-label" htmlFor="cbPhone">Phone</label>
+                  <input type="tel" className="input" id="cbPhone" value={createBpForm.phone}
+                    onChange={(e) => setCreateBpForm((f) => ({ ...f, phone: e.target.value }))} />
+                </div>
+
+                <div className="input-group" style={{ gridColumn: "1 / -1" }}>
+                  <label className="input-label" htmlFor="cbBillingAddress">Billing Address *</label>
+                  <input type="text" className="input" id="cbBillingAddress" value={createBpForm.billingAddress}
+                    onChange={(e) => setCreateBpForm((f) => ({ ...f, billingAddress: e.target.value }))} />
+                </div>
+
+                <div className="input-group" style={{ gridColumn: "1 / -1" }}>
+                  <label className="input-label" htmlFor="cbShippingAddress">Shipping Address</label>
+                  <input type="text" className="input" id="cbShippingAddress" value={createBpForm.shippingAddress}
+                    onChange={(e) => setCreateBpForm((f) => ({ ...f, shippingAddress: e.target.value }))}
+                    placeholder="Same as billing address if left blank" />
+                </div>
+
+                <div className="input-group" style={{ gridColumn: "1 / -1" }}>
+                  <label className="input-label" htmlFor="cbCusGrp03">Customer Group 3 *</label>
+                  <select className="input" id="cbCusGrp03" value={createBpForm.cusGrp03}
+                    onChange={(e) => setCreateBpForm((f) => ({ ...f, cusGrp03: e.target.value }))}>
+                    <option value="">—</option>
+                    {level3Groups.map((g) => (
+                      <option key={g.id} value={g.code}>{g.code}{g.name ? ` — ${g.name}` : ""}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="input-group">
+                  <label className="input-label" htmlFor="cbPriceList">Price List *</label>
+                  <select className="input" id="cbPriceList" value={createBpForm.priceListNum}
+                    onChange={(e) => setCreateBpForm((f) => ({ ...f, priceListNum: e.target.value }))}>
+                    <option value="">—</option>
+                    {priceListOptions.map((p) => (
+                      <option key={p.price_list_num} value={p.price_list_num}>{p.price_list_num} — {p.list_name}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="input-group">
+                  <label className="input-label" htmlFor="cbCurrency">Currency</label>
+                  <input type="text" className="input" id="cbCurrency" value={createBpForm.currency}
+                    onChange={(e) => setCreateBpForm((f) => ({ ...f, currency: e.target.value }))} />
+                </div>
+
+                <div className="input-group" style={{ gridColumn: "1 / -1" }}>
+                  <label className="input-label" htmlFor="cbRemark">Remark</label>
+                  <textarea className="input" id="cbRemark" value={createBpForm.remark} rows={2}
+                    style={{ resize: "vertical", minHeight: "60px" }}
+                    onChange={(e) => setCreateBpForm((f) => ({ ...f, remark: e.target.value }))} />
+                </div>
+              </div>
+
+              <div style={{ display: "flex", gap: "0.75rem", justifyContent: "flex-end", marginTop: "1.5rem" }}>
+                <button
+                  onClick={() => setCreateBpCustomerId(null)}
+                  disabled={createBpSaving}
+                  style={{
+                    padding: "0.5rem 1.25rem",
+                    borderRadius: "var(--radius-lg, 8px)",
+                    border: "1px solid var(--color-gray-200, #E2E8F0)",
+                    background: "var(--bg-primary, #fff)",
+                    color: "var(--text-secondary, #64748B)",
+                    fontSize: "0.875rem",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                  }}
+                >
+                  {t("common.cancel")}
+                </button>
+                <button
+                  onClick={handleCreateBp}
+                  disabled={createBpSaving}
+                  style={{
+                    padding: "0.5rem 1.25rem",
+                    borderRadius: "var(--radius-lg, 8px)",
+                    border: "none",
+                    background: "linear-gradient(135deg, #10B981, #059669)",
+                    color: "#fff",
+                    fontSize: "0.875rem",
+                    fontWeight: 600,
+                    cursor: createBpSaving ? "not-allowed" : "pointer",
+                    opacity: createBpSaving ? 0.6 : 1,
+                  }}
+                >
+                  {createBpSaving ? t("common.loading") : "Create & Approve"}
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { queryOne } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { getVisibleWarehousesForCustomerGroup } from "@/lib/warehouseVisibility";
 import { isOrderInAdminScope } from "@/lib/adminScope";
@@ -28,8 +29,8 @@ export async function GET(
   }
 
   const order = await queryOne<{ sap_cus_grp02: string | null }>(
-    `SELECT u.sap_cus_grp02 FROM orders o LEFT JOIN users u ON u.id = o.user_id WHERE o.id = ?`,
-    [orderId]
+    `SELECT u.sap_cus_grp02 FROM orders o LEFT JOIN users u ON u.company_id = o.company_id AND u.id = o.user_id WHERE o.company_id = ? AND o.id = ?`,
+    [getCompanyId(), orderId]
   );
   if (!order) return NextResponse.json({ error: "Order not found" }, { status: 404 });
 

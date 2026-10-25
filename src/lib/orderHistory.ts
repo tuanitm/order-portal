@@ -1,4 +1,5 @@
 import { query, queryOne } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import { sendPushToUser } from "@/lib/webPush";
 import { getOrderStatusLabel } from "@/lib/orderStatusLabels";
 
@@ -8,7 +9,10 @@ import { getOrderStatusLabel } from "@/lib/orderStatusLabels";
  * no-op changes where the status is already the current one.
  */
 export async function recordOrderStatus(orderId: number, status: string): Promise<void> {
-  await query(`INSERT INTO order_status_history (order_id, status) VALUES (?, ?)`, [orderId, status]);
+  await query(
+    `INSERT INTO order_status_history (company_id, order_id, status) VALUES (?, ?, ?)`,
+    [getCompanyId(), orderId, status]
+  );
 }
 
 interface OrderCustomerForNotify {
@@ -28,8 +32,8 @@ interface OrderCustomerForNotify {
 export async function notifyCustomerOfStatusChange(orderId: number, status: string): Promise<void> {
   try {
     const order = await queryOne<OrderCustomerForNotify>(
-      `SELECT o.order_number, o.user_id, u.language FROM orders o LEFT JOIN users u ON u.id = o.user_id WHERE o.id = ?`,
-      [orderId]
+      `SELECT o.order_number, o.user_id, u.language FROM orders o LEFT JOIN users u ON u.id = o.user_id WHERE o.company_id = ? AND o.id = ?`,
+      [getCompanyId(), orderId]
     );
     if (!order || !order.user_id) return;
 

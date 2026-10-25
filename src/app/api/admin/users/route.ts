@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { query } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 
 export async function GET(request: NextRequest) {
@@ -12,7 +13,9 @@ export async function GET(request: NextRequest) {
             ar.id AS role_id, ar.name AS role_name
      FROM admin_users au
      LEFT JOIN admin_roles ar ON ar.id = au.role_id
-     ORDER BY au.is_root DESC, au.created_at DESC`
+     WHERE au.company_id = ?
+     ORDER BY au.is_root DESC, au.created_at DESC`,
+    [getCompanyId()]
   );
   return NextResponse.json({ adminUsers: users });
 }
@@ -43,8 +46,8 @@ export async function POST(request: NextRequest) {
   const passwordHash = await bcrypt.hash(password, 12);
   try {
     const result = await query<{ insertId: number }>(
-      `INSERT INTO admin_users (email, password_hash, full_name, role_id) VALUES (?, ?, ?, ?)`,
-      [email.trim().toLowerCase(), passwordHash, fullName.trim(), roleId]
+      `INSERT INTO admin_users (company_id, email, password_hash, full_name, role_id) VALUES (?, ?, ?, ?, ?)`,
+      [getCompanyId(), email.trim().toLowerCase(), passwordHash, fullName.trim(), roleId]
     );
     return NextResponse.json({
       success: true,

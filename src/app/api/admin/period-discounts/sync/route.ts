@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { queryOne } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { syncPeriodDiscounts } from "@/lib/sap-b1/sync";
 
@@ -15,7 +16,8 @@ export async function POST(request: NextRequest) {
   if (guard.response) return guard.response;
 
   const list = await queryOne<{ price_list_num: number }>(
-    `SELECT price_list_num FROM price_lists WHERE list_name = 'S02. GT Price List' LIMIT 1`
+    `SELECT price_list_num FROM price_lists WHERE company_id = ? AND list_name = 'S02. GT Price List' LIMIT 1`,
+    [getCompanyId()]
   );
   if (!list) {
     return NextResponse.json(

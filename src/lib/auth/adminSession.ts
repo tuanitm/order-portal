@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import jwt from "jsonwebtoken";
 import { queryOne } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 
 const JWT_SECRET = process.env.JWT_SECRET || "order-portal-secret-key-change-in-production";
 
@@ -90,8 +91,8 @@ export async function getAdminSession(request: NextRequest): Promise<AdminSessio
     `SELECT au.id, au.email, au.full_name, au.is_root, au.is_active, ar.permissions
      FROM admin_users au
      LEFT JOIN admin_roles ar ON ar.id = au.role_id
-     WHERE au.id = ?`,
-    [decoded.adminId]
+     WHERE au.company_id = ? AND au.id = ?`,
+    [getCompanyId(), decoded.adminId]
   );
   if (!row || !row.is_active) return null;
 

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { queryOne } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 
 interface CustomerMatchRow {
   sap_card_code: string;
@@ -62,8 +63,8 @@ export async function POST(request: NextRequest) {
 
     const match = await queryOne<CustomerMatchRow>(
       `SELECT sap_card_code, card_name, mst_code, phone, email, price_list_num, cus_grp01, cus_grp02, cus_grp03
-       FROM customers WHERE ${conditions.join(" OR ")} LIMIT 1`,
-      params
+       FROM customers WHERE company_id = ? AND (${conditions.join(" OR ")}) LIMIT 1`,
+      [getCompanyId(), ...params]
     );
 
     if (!match) {

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query, queryOne } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import { sendApprovalEmail } from "@/lib/email/sender";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { isCustomerInApprovalScope } from "@/lib/adminScope";
@@ -25,6 +26,8 @@ export async function POST(
       );
     }
 
+    const companyId = getCompanyId();
+
     // Check customer exists and is pending
     const customer = await queryOne<{
       id: number;
@@ -43,9 +46,9 @@ export async function POST(
               COALESCE(u.sap_cus_grp03, c.cus_grp03) AS sap_cus_grp03,
               u.approval_status, u.language
        FROM users u
-       LEFT JOIN customers c ON c.sap_card_code = u.sap_card_code
-       WHERE u.id = ?`,
-      [customerId]
+       LEFT JOIN customers c ON c.company_id = u.company_id AND c.sap_card_code = u.sap_card_code
+       WHERE u.company_id = ? AND u.id = ?`,
+      [companyId, customerId]
     );
 
     if (!customer) {
@@ -67,18 +70,25 @@ export async function POST(
       );
     }
 
+    if (!customer.sap_card_code) {
+      return NextResponse.json(
+        { error: "This is a new-company registration with no SAP Business Partner yet — use the Create in SAP action instead" },
+        { status: 400 }
+      );
+    }
+
     // Approve
     await query(
       `UPDATE users SET approval_status = 'approved', approved_at = NOW(), approved_by = ?
-       WHERE id = ?`,
-      [session.email, customerId]
+       WHERE company_id = ? AND id = ?`,
+      [session.email, companyId, customerId]
     );
 
     // Fill the account column in customers table (link SAP customer to portal account)
     if (customer.email && customer.sap_card_code) {
       await query(
-        `UPDATE customers SET account = ? WHERE sap_card_code = ?`,
-        [customer.email, customer.sap_card_code]
+        `UPDATE customers SET account = ? WHERE company_id = ? AND sap_card_code = ?`,
+        [customer.email, companyId, customer.sap_card_code]
       );
     }
 

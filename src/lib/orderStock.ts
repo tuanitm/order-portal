@@ -1,4 +1,5 @@
 import { query, queryOne } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import { getSapClient } from "@/lib/sap-b1/client";
 import { computeBatchShelfLifePct } from "@/lib/sap-b1/sync";
 
@@ -55,21 +56,22 @@ export async function getLiveAvailabilityForOrder(
   orderId: number,
   warehouseCode: string
 ): Promise<LiveItemAvailability[]> {
+  const companyId = getCompanyId();
   const customer = await queryOne<OrderCustomer>(
     `SELECT COALESCE(u.sap_cus_grp01, c.cus_grp01) AS sap_cus_grp01,
             COALESCE(u.sap_cus_grp02, c.cus_grp02) AS sap_cus_grp02,
             COALESCE(u.sap_cus_grp03, c.cus_grp03) AS sap_cus_grp03
      FROM orders o
-     LEFT JOIN users u ON u.id = o.user_id
-     LEFT JOIN customers c ON c.sap_card_code = u.sap_card_code
-     WHERE o.id = ?`,
-    [orderId]
+     LEFT JOIN users u ON u.company_id = o.company_id AND u.id = o.user_id
+     LEFT JOIN customers c ON c.company_id = o.company_id AND c.sap_card_code = u.sap_card_code
+     WHERE o.company_id = ? AND o.id = ?`,
+    [companyId, orderId]
   );
   if (!customer) return [];
 
   const lineItemCodes = await query<{ sap_item_code: string }[]>(
-    `SELECT DISTINCT sap_item_code FROM order_lines WHERE order_id = ?`,
-    [orderId]
+    `SELECT DISTINCT sap_item_code FROM order_lines WHERE company_id = ? AND order_id = ?`,
+    [companyId, orderId]
   );
   const itemCodes = lineItemCodes.map((r) => r.sap_item_code);
   if (itemCodes.length === 0) return [];
@@ -80,16 +82,17 @@ export async function getLiveAvailabilityForOrder(
     sap.getLiveBatchStock(warehouseCode, itemCodes, orderId),
     query<ItemCategoryRow[]>(
       `SELECT sap_item_code, item_cat01, item_cat02, item_cat03, item_cat04, item_cat05, item_cat06
-       FROM items WHERE sap_item_code IN (${itemCodes.map(() => "?").join(",")})`,
-      itemCodes
+       FROM items WHERE company_id = ? AND sap_item_code IN (${itemCodes.map(() => "?").join(",")})`,
+      [companyId, ...itemCodes]
     ),
     query<ShelfLifeRule[]>(
       `SELECT cust_group_code, item_group_code, shelf_life_from, shelf_life_to
        FROM customer_require_shelflife
-       WHERE cust_group_code IN (?, ?, ?)
+       WHERE company_id = ?
+         AND cust_group_code IN (?, ?, ?)
          AND (valid_from IS NULL OR valid_from <= CURDATE())
          AND (valid_to IS NULL OR valid_to >= CURDATE())`,
-      [customer.sap_cus_grp01, customer.sap_cus_grp02, customer.sap_cus_grp03]
+      [companyId, customer.sap_cus_grp01, customer.sap_cus_grp02, customer.sap_cus_grp03]
     ),
   ]);
 

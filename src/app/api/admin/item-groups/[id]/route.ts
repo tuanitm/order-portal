@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query, queryOne } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { cascadeDeactivateDescendants } from "@/lib/itemCategories";
 import { getAllowedItemGroupCodes } from "@/lib/adminScope";
@@ -54,8 +55,8 @@ export async function PATCH(
     return NextResponse.json({ error: "No valid fields to update" }, { status: 400 });
   }
 
-  values.push(categoryId);
-  await query(`UPDATE item_groups SET ${updates.join(", ")} WHERE id = ?`, values);
+  values.push(getCompanyId(), categoryId);
+  await query(`UPDATE item_groups SET ${updates.join(", ")} WHERE company_id = ? AND id = ?`, values);
 
   if (body.isActive === false) {
     await cascadeDeactivateDescendants(categoryId);

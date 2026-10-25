@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { bulkSetItemGroupActive } from "@/lib/itemCategories";
 import { getAllowedItemGroupCodes } from "@/lib/adminScope";
@@ -37,8 +38,8 @@ export async function POST(request: NextRequest) {
   const allowed = await getAllowedItemGroupCodes(guard.session);
   if (allowed !== null) {
     const rows = await query<{ id: number; code: string }[]>(
-      `SELECT id, code FROM item_groups WHERE id IN (${changes.map(() => "?").join(",")})`,
-      changes.map((c) => c.id)
+      `SELECT id, code FROM item_groups WHERE company_id = ? AND id IN (${changes.map(() => "?").join(",")})`,
+      [getCompanyId(), ...changes.map((c) => c.id)]
     );
     const allowedIds = new Set(rows.filter((r) => allowed.has(r.code)).map((r) => r.id));
     changes = changes.filter((c) => allowedIds.has(c.id));

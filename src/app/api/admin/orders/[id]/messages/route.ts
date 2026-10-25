@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { queryOne } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { listOrderMessages, postOrderMessage, markOrderMessagesReadByAdmin } from "@/lib/orderMessages";
 import { sendOrderMessageEmail } from "@/lib/email/sender";
@@ -63,10 +64,11 @@ export async function POST(
   const message = typeof body.message === "string" ? body.message.trim() : "";
   if (!message) return NextResponse.json({ error: "message is required" }, { status: 400 });
 
+  const companyId = getCompanyId();
   const customer = await queryOne<OrderCustomerContact>(
     `SELECT o.order_number, o.user_id, u.email, u.full_name, u.language
-     FROM orders o LEFT JOIN users u ON u.id = o.user_id WHERE o.id = ?`,
-    [orderId]
+     FROM orders o LEFT JOIN users u ON u.company_id = o.company_id AND u.id = o.user_id WHERE o.company_id = ? AND o.id = ?`,
+    [companyId, orderId]
   );
   if (!customer) return NextResponse.json({ error: "Order not found" }, { status: 404 });
 
@@ -75,8 +77,8 @@ export async function POST(
   // If full_name is somehow unset, leave sender_name null rather than
   // falling back to the email; the UI's own generic label covers that.
   const admin = await queryOne<{ full_name: string | null }>(
-    `SELECT full_name FROM admin_users WHERE id = ?`,
-    [guard.session.adminId]
+    `SELECT full_name FROM admin_users WHERE company_id = ? AND id = ?`,
+    [companyId, guard.session.adminId]
   );
   await postOrderMessage(orderId, "admin", admin?.full_name || null, message);
 

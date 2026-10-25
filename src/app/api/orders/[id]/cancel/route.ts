@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query, queryOne } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import { getSessionUser } from "@/lib/auth/session";
 import { recordOrderStatus } from "@/lib/orderHistory";
 import { postOrderMessage } from "@/lib/orderMessages";
@@ -24,9 +25,10 @@ export async function POST(
   const orderId = parseInt(id, 10);
   if (isNaN(orderId)) return NextResponse.json({ error: "Invalid order ID" }, { status: 400 });
 
+  const companyId = getCompanyId();
   const order = await queryOne<{ status: string; sap_doc_entry: number | null }>(
-    `SELECT status, sap_doc_entry FROM orders WHERE id = ? AND user_id = ?`,
-    [orderId, user.id]
+    `SELECT status, sap_doc_entry FROM orders WHERE company_id = ? AND id = ? AND user_id = ?`,
+    [companyId, orderId, user.id]
   );
   if (!order) return NextResponse.json({ error: "Order not found" }, { status: 404 });
   if (order.sap_doc_entry) {
@@ -36,7 +38,7 @@ export async function POST(
     return NextResponse.json({ error: `Order is already ${order.status}` }, { status: 409 });
   }
 
-  await query(`UPDATE orders SET status = 'cancelled' WHERE id = ?`, [orderId]);
+  await query(`UPDATE orders SET status = 'cancelled' WHERE company_id = ? AND id = ?`, [companyId, orderId]);
   await recordOrderStatus(orderId, "cancelled");
   await postOrderMessage(orderId, "customer", user.fullName, "Cancelled this order.");
 

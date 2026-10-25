@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { query } from "@/lib/db/connection";
 import { queryHana, getHanaSchema } from "@/lib/hana/client";
-import { loadConfig } from "@/lib/config";
+import { loadConfig, getCompanyId } from "@/lib/config";
 import { getAllowedCustomerGroupCodes } from "@/lib/adminScope";
 import type { AdminSession } from "@/lib/auth/adminSession";
 
@@ -144,12 +144,15 @@ async function getAdminVisibleWarehouses(
   session: AdminSession,
   configWarehouses: string
 ): Promise<{ code: string; name: string | null }[]> {
+  const companyId = getCompanyId();
+
   // Superadmin sees all included warehouses that are inside masterdata.wareHouse
   if (session.isSuperAdmin) {
     const rows = await query<{ sap_warehouse_code: string; warehouse_name: string | null }[]>(
       `SELECT sap_warehouse_code, warehouse_name FROM warehouses
-       WHERE sap_warehouse_code IN (${configWarehouses}) AND is_included = TRUE
-       ORDER BY sap_warehouse_code`
+       WHERE company_id = ? AND sap_warehouse_code IN (${configWarehouses}) AND is_included = TRUE
+       ORDER BY sap_warehouse_code`,
+      [companyId]
     );
     return rows.map((r) => ({ code: r.sap_warehouse_code, name: r.warehouse_name }));
   }
@@ -158,14 +161,15 @@ async function getAdminVisibleWarehouses(
   if (!session.adminId) return [];
 
   const assigned = await query<{ customer_group_id: number }[]>(
-    `SELECT customer_group_id FROM admin_user_customer_groups WHERE admin_user_id = ?`,
-    [session.adminId]
+    `SELECT customer_group_id FROM admin_user_customer_groups WHERE company_id = ? AND admin_user_id = ?`,
+    [companyId, session.adminId]
   );
   if (assigned.length === 0) return [];
 
   // Load customer group hierarchy to resolve Level 2 codes
   const allGroups = await query<{ id: number; level: number; code: string; parent_code: string | null }[]>(
-    `SELECT id, level, code, parent_code FROM customer_groups`
+    `SELECT id, level, code, parent_code FROM customer_groups WHERE company_id = ?`,
+    [companyId]
   );
 
   const assignedIds = new Set(assigned.map((a) => a.customer_group_id));
@@ -203,13 +207,14 @@ async function getAdminVisibleWarehouses(
   const mapped = await query<{ warehouse_code: string; warehouse_name: string | null }[]>(
     `SELECT DISTINCT cgw.warehouse_code, w.warehouse_name
      FROM customer_group_warehouses cgw
-     JOIN customer_groups cg ON cg.id = cgw.customer_group_id
-     LEFT JOIN warehouses w ON w.sap_warehouse_code = cgw.warehouse_code
-     WHERE cg.level = 2
+     JOIN customer_groups cg ON cg.company_id = cgw.company_id AND cg.id = cgw.customer_group_id
+     LEFT JOIN warehouses w ON w.company_id = cgw.company_id AND w.sap_warehouse_code = cgw.warehouse_code
+     WHERE cgw.company_id = ?
+       AND cg.level = 2
        AND cg.code IN (${placeholders})
        AND cgw.warehouse_code IN (${configWarehouses})
      ORDER BY cgw.warehouse_code`,
-    [...level2GroupCodes]
+    [companyId, ...level2GroupCodes]
   );
 
   return mapped.map((m) => ({ code: m.warehouse_code, name: m.warehouse_name }));

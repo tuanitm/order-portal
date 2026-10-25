@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isHttpsRequest } from "@/lib/auth/cookies";
 import { queryOne } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 
@@ -46,9 +47,10 @@ export async function POST(request: NextRequest) {
     // one the identifier is by its shape — see POST /api/auth/identify's
     // own comment for why that broke real tax-code logins (a tax code and
     // a phone number are both plain digit strings of similar length).
+    const companyId = getCompanyId();
     const user = await queryOne<UserRow>(
-      "SELECT * FROM users WHERE email = ? OR phone = ? OR mst_code = ? LIMIT 1",
-      [normalizedEmail, normalizedPhone, value]
+      "SELECT * FROM users WHERE company_id = ? AND (email = ? OR phone = ? OR mst_code = ?) LIMIT 1",
+      [companyId, normalizedEmail, normalizedPhone, value]
     );
 
     if (!user) {
@@ -100,8 +102,8 @@ export async function POST(request: NextRequest) {
     // Check the linked SAP customer's Enable toggle (admin > SAP Customers)
     if (user.sap_card_code) {
       const customer = await queryOne<{ is_enabled: number }>(
-        "SELECT is_enabled FROM customers WHERE sap_card_code = ? LIMIT 1",
-        [user.sap_card_code]
+        "SELECT is_enabled FROM customers WHERE company_id = ? AND sap_card_code = ? LIMIT 1",
+        [companyId, user.sap_card_code]
       );
       if (customer && !customer.is_enabled) {
         return NextResponse.json(

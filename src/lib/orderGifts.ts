@@ -1,4 +1,5 @@
 import { query, queryOne } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 
 interface BuyLineRow {
   promo_buy_qty: number | null;
@@ -40,15 +41,16 @@ export async function recalculateLinkedGiftQty(
   buyLineId: number,
   newBuyConfirmQty: number
 ): Promise<GiftQtyAdjustment | null> {
+  const companyId = getCompanyId();
   const buyLine = await queryOne<BuyLineRow>(
-    `SELECT promo_buy_qty, promo_give_qty FROM order_lines WHERE id = ?`,
-    [buyLineId]
+    `SELECT promo_buy_qty, promo_give_qty FROM order_lines WHERE company_id = ? AND id = ?`,
+    [companyId, buyLineId]
   );
   if (!buyLine || !buyLine.promo_buy_qty || !buyLine.promo_give_qty) return null;
 
   const giftLine = await queryOne<GiftLineRow>(
-    `SELECT id, sap_item_code, quantity, confirm_qty FROM order_lines WHERE source_line_id = ?`,
-    [buyLineId]
+    `SELECT id, sap_item_code, quantity, confirm_qty FROM order_lines WHERE company_id = ? AND source_line_id = ?`,
+    [companyId, buyLineId]
   );
   if (!giftLine) return null;
 
@@ -56,8 +58,8 @@ export async function recalculateLinkedGiftQty(
   if (newGiftConfirmQty === giftLine.confirm_qty) return null;
 
   await query(
-    `UPDATE order_lines SET confirm_qty = ?, customer_confirm_status = ? WHERE id = ?`,
-    [newGiftConfirmQty, newGiftConfirmQty === giftLine.quantity ? "accepted" : "pending", giftLine.id]
+    `UPDATE order_lines SET confirm_qty = ?, customer_confirm_status = ? WHERE company_id = ? AND id = ?`,
+    [newGiftConfirmQty, newGiftConfirmQty === giftLine.quantity ? "accepted" : "pending", companyId, giftLine.id]
   );
 
   return { sapItemCode: giftLine.sap_item_code, from: giftLine.confirm_qty, to: newGiftConfirmQty };

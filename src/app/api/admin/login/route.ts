@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { isHttpsRequest } from "@/lib/auth/cookies";
 import bcrypt from "bcryptjs";
 import { queryOne } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import { signAdminToken } from "@/lib/auth/adminSession";
 
 interface AdminUserRow {
@@ -34,8 +35,8 @@ export async function POST(request: NextRequest) {
     }
 
     const adminUser = await queryOne<AdminUserRow>(
-      "SELECT id, email, password_hash, is_root, is_active FROM admin_users WHERE email = ? LIMIT 1",
-      [email.trim().toLowerCase()]
+      "SELECT id, email, password_hash, is_root, is_active FROM admin_users WHERE company_id = ? AND email = ? LIMIT 1",
+      [getCompanyId(), email.trim().toLowerCase()]
     );
     if (!adminUser || !adminUser.is_active) {
       return NextResponse.json({ error: "Invalid admin credentials" }, { status: 401 });

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { queryOne } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { syncCustomerGroupsForCard } from "@/lib/sap-b1/sync";
 import { isCustomerInApprovalScope } from "@/lib/adminScope";
@@ -31,9 +32,9 @@ export async function POST(
             COALESCE(u.sap_cus_grp02, c.cus_grp02) AS sap_cus_grp02,
             COALESCE(u.sap_cus_grp03, c.cus_grp03) AS sap_cus_grp03
      FROM users u
-     LEFT JOIN customers c ON c.sap_card_code = u.sap_card_code
-     WHERE u.id = ?`,
-    [customerId]
+     LEFT JOIN customers c ON c.company_id = u.company_id AND c.sap_card_code = u.sap_card_code
+     WHERE u.company_id = ? AND u.id = ?`,
+    [getCompanyId(), customerId]
   );
   if (!customer) return NextResponse.json({ error: "Customer not found" }, { status: 404 });
 

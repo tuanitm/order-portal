@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import { getSessionUser } from "@/lib/auth/session";
 import { getBasePriceListNum } from "@/lib/sap-b1/sync";
 import { getVisibleWarehousesForCustomerGroup } from "@/lib/warehouseVisibility";
@@ -7,6 +8,7 @@ import {
   resolveHiddenItemCategories,
   buildHiddenCategoryClauses,
   buildStockGateClause,
+  buildPriceGateClause,
   queryPricedProducts,
   type PricingContext,
 } from "@/lib/pricing/productPricing";
@@ -37,6 +39,7 @@ import type { ProductWithPricing } from "@/types/product";
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url);
+    const companyId = getCompanyId();
     const search = searchParams.get("search")?.trim() || "";
     const category = searchParams.get("category")?.trim() || "";
     const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10) || 1);
@@ -78,13 +81,17 @@ export async function GET(request: NextRequest) {
     // own copy of just the WHERE clause, including the SAME stock-gate
     // fragment (buildStockGateClause) so "how many" and "which ones" never
     // disagree on what's visible.
-    const countWhereClauses = ["i.is_active = TRUE", "i.is_manually_hidden = FALSE", ...hiddenClauses];
-    const countParams: (string | number | null)[] = [...hiddenParams];
-    const stockGate = buildStockGateClause(stockWarehouseCodes, ctx.cusGrp01, ctx.cusGrp02, ctx.cusGrp03);
+    const countWhereClauses = ["i.company_id = ?", "i.is_active = TRUE", "i.is_manually_hidden = FALSE", ...hiddenClauses];
+    const countParams: (string | number | null)[] = [companyId, ...hiddenParams];
+    const stockGate = buildStockGateClause(stockWarehouseCodes, companyId, ctx.cusGrp01, ctx.cusGrp02, ctx.cusGrp03);
     if (stockGate.clause) {
       countWhereClauses.push(stockGate.clause);
       countParams.push(...stockGate.params);
     }
+    // Never count a 0-priced or unpriced item — see buildPriceGateClause.
+    const priceGate = buildPriceGateClause(companyId, priceListNum ?? ctx.basePriceListNum);
+    countWhereClauses.push(priceGate.clause);
+    countParams.push(...priceGate.params);
 
     const extraWhereSql: string[] = [];
     const extraWhereParams: (string | number | null)[] = [];
@@ -115,12 +122,23 @@ export async function GET(request: NextRequest) {
       total = totalRows[0]?.cnt ?? 0;
     }
 
+    // Ordered by brand code (items.brand_code — SAP's U_ProdBrand, e.g. "D1"
+    // = PIGEON), not alphabetically by name, so the storefront's brand chips
+    // read "All, Promotion, Pigeon (D1), Etsuko (N1), ..." in the business's
+    // own brand-code order rather than whatever order the names happen to
+    // sort in. A category with no brand_code at all (shouldn't normally
+    // happen) sorts after every coded one rather than before.
+    const categoryPriceGate = buildPriceGateClause(companyId, priceListNum ?? ctx.basePriceListNum, "items");
     const categoryWhereClauses = [
-      "is_active = TRUE", "is_manually_hidden = FALSE", "category IS NOT NULL", "category != ''", ...hiddenClauses,
+      "company_id = ?", "is_active = TRUE", "is_manually_hidden = FALSE", "category IS NOT NULL", "category != ''", ...hiddenClauses,
+      categoryPriceGate.clause,
     ];
-    const categoryRows = await query<{ category: string }[]>(
-      `SELECT DISTINCT category FROM items WHERE ${categoryWhereClauses.join(" AND ")} ORDER BY category ASC`,
-      hiddenParams
+    const categoryRows = await query<{ category: string; brand_code: string | null }[]>(
+      `SELECT category, MIN(brand_code) AS brand_code FROM items
+       WHERE ${categoryWhereClauses.join(" AND ")}
+       GROUP BY category
+       ORDER BY (MIN(brand_code) IS NULL) ASC, MIN(brand_code) ASC, category ASC`,
+      [companyId, ...hiddenParams, ...categoryPriceGate.params]
     );
     const categories = categoryRows.map((c) => c.category);
 

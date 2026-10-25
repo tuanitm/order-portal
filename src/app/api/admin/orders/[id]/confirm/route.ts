@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "crypto";
 import { query, queryOne } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { getSapClient } from "@/lib/sap-b1/client";
 import { recordOrderStatus, notifyCustomerOfStatusChange } from "@/lib/orderHistory";
@@ -174,11 +175,13 @@ export async function POST(
     return NextResponse.json({ error: "warehouseCode query param is required — select a warehouse on this page first" }, { status: 400 });
   }
 
+  const companyId = getCompanyId();
   const order = await queryOne<OrderRow>(
     `SELECT o.id, o.order_number, o.remark, o.sap_doc_entry, u.sap_card_code, u.sap_price_list_num,
             u.sap_cus_grp01, u.sap_cus_grp02, u.sap_cus_grp03
-     FROM orders o LEFT JOIN users u ON u.id = o.user_id WHERE o.id = ?`,
-    [orderId]
+     FROM orders o LEFT JOIN users u ON u.company_id = o.company_id AND u.id = o.user_id
+     WHERE o.company_id = ? AND o.id = ?`,
+    [companyId, orderId]
   );
   if (!order) {
     return NextResponse.json({ error: "Order not found" }, { status: 404 });
@@ -208,9 +211,9 @@ export async function POST(
             ol.is_gift_line, ol.source_line_id, ol.promo_buy_qty, ol.promo_give_qty, i.brand_code, i.vat_group, i.item_tax_class,
             i.item_cat01, i.item_cat02, i.item_cat03, i.item_cat04, i.item_cat05, i.item_cat06
      FROM order_lines ol
-     LEFT JOIN items i ON i.sap_item_code = ol.sap_item_code
-     WHERE ol.order_id = ?`,
-    [orderId]
+     LEFT JOIN items i ON i.company_id = ol.company_id AND i.sap_item_code = ol.sap_item_code
+     WHERE ol.company_id = ? AND ol.order_id = ?`,
+    [companyId, orderId]
   );
   if (allLines.length === 0) {
     return NextResponse.json({ error: "Order has no lines" }, { status: 400 });
@@ -242,12 +245,13 @@ export async function POST(
   }[]>(
     `SELECT sap_item_code, base_price, discount_percent, special_price, date_from
      FROM period_discount
-     WHERE price_list_num = ?
+     WHERE company_id = ?
+       AND price_list_num = ?
        AND sap_item_code IN (${allLines.map(() => "?").join(",")})
        AND (date_from IS NULL OR date_from <= CURDATE())
        AND (date_to IS NULL OR date_to >= CURDATE())
      ORDER BY date_from DESC`,
-    [priceListNum, ...allLines.map((l) => l.sap_item_code)]
+    [companyId, priceListNum, ...allLines.map((l) => l.sap_item_code)]
   );
   // First row per item wins (rows already ordered by date_from DESC above),
   // same "most recent currently-valid tier" pick as the storefront's own
@@ -278,8 +282,8 @@ export async function POST(
   // line as CostingCode2/COGSCostingCode2. Omitted cleanly (not blocked)
   // if the confirming admin hasn't had one set yet on the Admin Users page.
   const admin = await queryOne<{ department_code: string | null }>(
-    `SELECT department_code FROM admin_users WHERE id = ?`,
-    [guard.session.adminId]
+    `SELECT department_code FROM admin_users WHERE company_id = ? AND id = ?`,
+    [companyId, guard.session.adminId]
   );
   const departmentCode = admin?.department_code || undefined;
 
@@ -290,8 +294,8 @@ export async function POST(
   // customer omits the field cleanly instead of SAP rejecting the whole
   // push over an invalid distribution code.
   const customerCostCenter = await queryOne<{ ocr_code: string }>(
-    `SELECT ocr_code FROM cost_centers WHERE dimension = 3 AND ocr_code = ?`,
-    [order.sap_card_code]
+    `SELECT ocr_code FROM cost_centers WHERE company_id = ? AND dimension = 3 AND ocr_code = ?`,
+    [companyId, order.sap_card_code]
   );
   const customerCostCenterCode = customerCostCenter?.ocr_code || undefined;
 
@@ -322,17 +326,19 @@ export async function POST(
   const contractDiscountCandidates = itemCodeList.length === 0 ? [] : await query<ContractDiscountRow[]>(
     `SELECT u_code_cust, u_code_item, u_base_disc_pct
      FROM contract_discount
-     WHERE (canceled IS NULL OR canceled != 'Y')
+     WHERE company_id = ?
+       AND (canceled IS NULL OR canceled != 'Y')
        AND u_code_cust IN (?, ?, ?, ?)
        AND u_code_item IN (${itemCodeList.map(() => "?").join(",")})
        AND (u_valid_from IS NULL OR u_valid_from <= CURDATE())
        AND (u_valid_to IS NULL OR u_valid_to >= CURDATE())`,
-    [custCode, grp01, grp02, grp03, ...itemCodeList]
+    [companyId, custCode, grp01, grp02, grp03, ...itemCodeList]
   );
   const promotionDiscountCandidates = itemCodeList.length === 0 ? [] : await query<PromotionDiscountRow[]>(
     `SELECT bp_type, bp_code, it_type, selling_item_code, promotion_code, disc_pct, selling_qty, promotion_name
      FROM promotion_discount
-     WHERE disc_pct IS NOT NULL
+     WHERE company_id = ?
+       AND disc_pct IS NOT NULL
        AND giving_item_code IS NULL
        AND selling_item_code IN (${itemCodeList.map(() => "?").join(",")})
        AND (begin_date IS NULL OR begin_date <= CURDATE())
@@ -342,7 +348,7 @@ export async function POST(
          OR (bp_type = 'CG2' AND bp_code = ?) OR (bp_type = 'CG3' AND bp_code = ?)
          OR (bp_type IS NULL AND bp_code IS NULL)
        )`,
-    [...itemCodeList, custCode, grp01, grp02, grp03]
+    [companyId, ...itemCodeList, custCode, grp01, grp02, grp03]
   );
 
   // Buy-give (free item) promotion rows for this order's items — used only
@@ -353,7 +359,8 @@ export async function POST(
   const giveawayPromotionCandidates = itemCodeList.length === 0 ? [] : await query<GiveawayPromotionRow[]>(
     `SELECT bp_type, bp_code, it_type, selling_item_code, giving_item_code, promotion_name
      FROM promotion_discount
-     WHERE giving_item_code IS NOT NULL
+     WHERE company_id = ?
+       AND giving_item_code IS NOT NULL
        AND selling_item_code IN (${itemCodeList.map(() => "?").join(",")})
        AND (begin_date IS NULL OR begin_date <= CURDATE())
        AND (end_date IS NULL OR end_date >= CURDATE())
@@ -362,7 +369,7 @@ export async function POST(
          OR (bp_type = 'CG2' AND bp_code = ?) OR (bp_type = 'CG3' AND bp_code = ?)
          OR (bp_type IS NULL AND bp_code IS NULL)
        )`,
-    [...itemCodeList, custCode, grp01, grp02, grp03]
+    [companyId, ...itemCodeList, custCode, grp01, grp02, grp03]
   );
 
   /** Best-matching contract discount % for one line, or null if none applies —
@@ -478,8 +485,8 @@ export async function POST(
       .filter((l, i) => l.confirm_qty !== allLines[i].confirm_qty)
       .map((l) =>
         query(
-          `UPDATE order_lines SET confirm_qty = ?, customer_confirm_status = ? WHERE id = ?`,
-          [l.confirm_qty, l.confirm_qty === l.quantity ? "accepted" : "pending", l.id]
+          `UPDATE order_lines SET confirm_qty = ?, customer_confirm_status = ? WHERE company_id = ? AND id = ?`,
+          [l.confirm_qty, l.confirm_qty === l.quantity ? "accepted" : "pending", companyId, l.id]
         )
       )
   );
@@ -503,8 +510,8 @@ export async function POST(
       giftLine.confirm_qty = finalGiftQty;
       giftLine.customer_confirm_status = finalGiftQty === giftLine.quantity ? "accepted" : "pending";
       await query(
-        `UPDATE order_lines SET confirm_qty = ?, customer_confirm_status = ? WHERE id = ?`,
-        [finalGiftQty, giftLine.customer_confirm_status, giftLine.id]
+        `UPDATE order_lines SET confirm_qty = ?, customer_confirm_status = ? WHERE company_id = ? AND id = ?`,
+        [finalGiftQty, giftLine.customer_confirm_status, companyId, giftLine.id]
       );
     }
   }
@@ -809,7 +816,8 @@ export async function POST(
   // Read the Post SO Mode setting — determines whether to push as SAP Draft or
   // a confirmed SAP Sales Order. Defaults to 'draft' if the row is missing.
   const settingsRow = await queryOne<{ post_so_mode: string }>(
-    `SELECT post_so_mode FROM sync_schedule_settings WHERE id = 1`
+    `SELECT post_so_mode FROM sync_schedule_settings WHERE company_id = ?`,
+    [companyId]
   );
   const postSoMode: "draft" | "sales_order" =
     settingsRow?.post_so_mode === "sales_order" ? "sales_order" : "draft";
@@ -858,8 +866,8 @@ export async function POST(
   const newPortalStatus = postSoMode === "sales_order" ? "approved" : "sap_draft_created";
 
   await query(
-    `UPDATE orders SET status = ?, sap_doc_entry = ?, sap_doc_num = ?, warehouse_code = ? WHERE id = ?`,
-    [newPortalStatus, sapResult.DocEntry, sapResult.DocNum, warehouseCode, orderId]
+    `UPDATE orders SET status = ?, sap_doc_entry = ?, sap_doc_num = ?, warehouse_code = ? WHERE company_id = ? AND id = ?`,
+    [newPortalStatus, sapResult.DocEntry, sapResult.DocNum, warehouseCode, companyId, orderId]
   );
   await recordOrderStatus(orderId, newPortalStatus);
   await notifyCustomerOfStatusChange(orderId, newPortalStatus);
@@ -867,8 +875,8 @@ export async function POST(
   // Persist live availability snapshot on order lines at confirm
   for (const [sapItemCode, availQty] of availabilityByItem.entries()) {
     await query(
-      `UPDATE order_lines SET avail_qty = ? WHERE order_id = ? AND sap_item_code = ?`,
-      [availQty, orderId, sapItemCode]
+      `UPDATE order_lines SET avail_qty = ? WHERE company_id = ? AND order_id = ? AND sap_item_code = ?`,
+      [availQty, companyId, orderId, sapItemCode]
     );
   }
 
@@ -884,8 +892,8 @@ export async function POST(
       sapSoNumber = soStatus?.U_DocNo || null;
       if (sapSoNumber) {
         await query(
-          `UPDATE orders SET sap_so_number = ? WHERE id = ?`,
-          [sapSoNumber, orderId]
+          `UPDATE orders SET sap_so_number = ? WHERE company_id = ? AND id = ?`,
+          [sapSoNumber, companyId, orderId]
         );
         console.log(`[Admin] SO created — U_DocNo=${sapSoNumber} written to sap_so_number for order ${orderId}`);
       }

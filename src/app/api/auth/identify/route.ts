@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { queryOne } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 
 interface MatchRow {
   email: string | null;
@@ -38,8 +39,8 @@ export async function POST(request: NextRequest) {
     const normalizedEmail = value.toLowerCase();
 
     const match = await queryOne<MatchRow>(
-      "SELECT email, phone, mst_code FROM users WHERE email = ? OR phone = ? OR mst_code = ? LIMIT 1",
-      [normalizedEmail, normalizedPhone, value]
+      "SELECT email, phone, mst_code FROM users WHERE company_id = ? AND (email = ? OR phone = ? OR mst_code = ?) LIMIT 1",
+      [getCompanyId(), normalizedEmail, normalizedPhone, value]
     );
 
     // Classify AFTER the lookup, from whichever column the match actually

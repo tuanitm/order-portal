@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import { query, queryOne } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import { getSessionUser } from "@/lib/auth/session";
 
 /**
@@ -23,9 +24,10 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "New password must be at least 6 characters" }, { status: 400 });
   }
 
+  const companyId = getCompanyId();
   const row = await queryOne<{ password_hash: string }>(
-    `SELECT password_hash FROM users WHERE id = ?`,
-    [user.id]
+    `SELECT password_hash FROM users WHERE company_id = ? AND id = ?`,
+    [companyId, user.id]
   );
   if (!row) {
     return NextResponse.json({ error: "Account not found" }, { status: 404 });
@@ -37,7 +39,7 @@ export async function POST(request: NextRequest) {
   }
 
   const newHash = await bcrypt.hash(newPassword, 12);
-  await query(`UPDATE users SET password_hash = ? WHERE id = ?`, [newHash, user.id]);
+  await query(`UPDATE users SET password_hash = ? WHERE company_id = ? AND id = ?`, [newHash, companyId, user.id]);
 
   return NextResponse.json({ success: true });
 }

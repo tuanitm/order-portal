@@ -1,6 +1,7 @@
 import { readFileSync, existsSync } from "fs";
 import { join } from "path";
 import { getPool } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 
 export interface ImportWarning {
   index: number;
@@ -59,6 +60,7 @@ export async function importHierarchyFromFile(options: HierarchyImportOptions): 
 
   const warnings: ImportWarning[] = [];
   let levelsImported = 0;
+  const companyId = getCompanyId();
 
   const pool = getPool();
   const conn = await pool.getConnection();
@@ -96,9 +98,9 @@ export async function importHierarchyFromFile(options: HierarchyImportOptions): 
         }
 
         await conn.execute(
-          `INSERT INTO ${tableName} (level, code, parent_code, name) VALUES (?, ?, ?, ?)
+          `INSERT INTO ${tableName} (company_id, level, code, parent_code, name) VALUES (?, ?, ?, ?, ?)
            ON DUPLICATE KEY UPDATE parent_code = VALUES(parent_code), name = VALUES(name)`,
-          [level, lvl.code, parent, lvl.name || null]
+          [companyId, level, lvl.code, parent, lvl.name || null]
         );
         levelsImported++;
         parent = lvl.code;

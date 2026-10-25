@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPool, query } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 
 /**
@@ -19,9 +20,9 @@ export async function GET(
 
   const rows = await query<{ code: string }[]>(
     `SELECT cg.code FROM admin_user_customer_groups aucg
-     JOIN customer_groups cg ON cg.id = aucg.customer_group_id
-     WHERE aucg.admin_user_id = ?`,
-    [adminUserId]
+     JOIN customer_groups cg ON cg.company_id = aucg.company_id AND cg.id = aucg.customer_group_id
+     WHERE aucg.company_id = ? AND aucg.admin_user_id = ?`,
+    [getCompanyId(), adminUserId]
   );
   return NextResponse.json({ codes: rows.map((r) => r.code) });
 }
@@ -50,11 +51,12 @@ export async function PUT(
   }
   const codes = [...new Set(body.codes.map((c: string) => c.trim()).filter(Boolean))] as string[];
 
+  const companyId = getCompanyId();
   let groupIds: number[] = [];
   if (codes.length > 0) {
     const rows = await query<{ id: number; code: string }[]>(
-      `SELECT id, code FROM customer_groups WHERE code IN (${codes.map(() => "?").join(",")})`,
-      codes
+      `SELECT id, code FROM customer_groups WHERE company_id = ? AND code IN (${codes.map(() => "?").join(",")})`,
+      [companyId, ...codes]
     );
     const foundCodes = new Set(rows.map((r) => r.code));
     const unknown = codes.filter((c) => !foundCodes.has(c));
@@ -71,11 +73,11 @@ export async function PUT(
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
-    await conn.execute(`DELETE FROM admin_user_customer_groups WHERE admin_user_id = ?`, [adminUserId]);
+    await conn.execute(`DELETE FROM admin_user_customer_groups WHERE company_id = ? AND admin_user_id = ?`, [companyId, adminUserId]);
     for (const groupId of groupIds) {
       await conn.execute(
-        `INSERT INTO admin_user_customer_groups (admin_user_id, customer_group_id) VALUES (?, ?)`,
-        [adminUserId, groupId]
+        `INSERT INTO admin_user_customer_groups (company_id, admin_user_id, customer_group_id) VALUES (?, ?, ?)`,
+        [companyId, adminUserId, groupId]
       );
     }
     await conn.commit();

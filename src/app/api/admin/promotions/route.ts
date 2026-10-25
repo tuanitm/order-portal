@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { getPromotionAllowedGroups, buildPromotionScopeFilter } from "@/lib/adminScope";
 
@@ -35,8 +36,8 @@ export async function GET(request: NextRequest) {
   const limit = Math.min(200, Math.max(1, parseInt(searchParams.get("limit") || "100", 10) || 100));
   const offset = (page - 1) * limit;
 
-  const whereClauses: string[] = [];
-  const params: (string | number)[] = [];
+  const whereClauses: string[] = ["company_id = ?"];
+  const params: (string | number)[] = [getCompanyId()];
 
   if (scopeFilter.sql !== "1=1") {
     whereClauses.push(scopeFilter.sql);

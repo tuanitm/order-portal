@@ -20,12 +20,16 @@ function FreeGiftLine({ item }: { item: CartItem }) {
   if (freeQty <= 0) return null;
 
   const isSameItem = item.promoGiveItemCode === item.sapItemCode;
+  // The free quantity itself (wrapped in <b> inside the translation
+  // string) is rendered bold + red so it stands out from the surrounding
+  // "free gift" sentence.
+  const boldRed = { b: (chunks: React.ReactNode) => <strong style={{ color: "var(--color-error, #DC2626)" }}>{chunks}</strong> };
   return (
     <div className="cart-item__free-gift">
       🎁{" "}
       {isSameItem
-        ? t("cart.freeGiftSame", { qty: freeQty })
-        : t("cart.freeGift", { qty: freeQty, item: item.promoGiveItemName || item.promoGiveItemCode || "" })}
+        ? t.rich("cart.freeGiftSame", { qty: freeQty, ...boldRed })
+        : t.rich("cart.freeGift", { qty: freeQty, item: item.promoGiveItemName || item.promoGiveItemCode || "", ...boldRed })}
     </div>
   );
 }

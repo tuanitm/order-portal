@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query, queryOne } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { getAllowedItemGroupCodes } from "@/lib/adminScope";
 
@@ -28,6 +29,7 @@ export async function PATCH(
   }
 
   const { code } = await params;
+  const companyId = getCompanyId();
 
   const allowed = await getAllowedItemGroupCodes(guard.session);
   if (allowed !== null) {
@@ -35,8 +37,8 @@ export async function PATCH(
       item_cat01: string | null; item_cat02: string | null; item_cat03: string | null;
       item_cat04: string | null; item_cat05: string | null; item_cat06: string | null;
     }>(
-      `SELECT item_cat01, item_cat02, item_cat03, item_cat04, item_cat05, item_cat06 FROM items WHERE sap_item_code = ?`,
-      [code]
+      `SELECT item_cat01, item_cat02, item_cat03, item_cat04, item_cat05, item_cat06 FROM items WHERE company_id = ? AND sap_item_code = ?`,
+      [companyId, code]
     );
     const cats = target ? [target.item_cat01, target.item_cat02, target.item_cat03, target.item_cat04, target.item_cat05, target.item_cat06] : [];
     if (!cats.some((c) => c && allowed.has(c))) {
@@ -51,11 +53,11 @@ export async function PATCH(
   }
 
   if (typeof body.isActive === "boolean") {
-    await query(`UPDATE items SET is_manually_hidden = ? WHERE sap_item_code = ?`, [!body.isActive, code]);
+    await query(`UPDATE items SET is_manually_hidden = ? WHERE company_id = ? AND sap_item_code = ?`, [!body.isActive, companyId, code]);
   }
   if ("salesUom" in body) {
     const salesUom = typeof body.salesUom === "string" ? body.salesUom.trim() : null;
-    await query(`UPDATE items SET sales_uom = ? WHERE sap_item_code = ?`, [salesUom || null, code]);
+    await query(`UPDATE items SET sales_uom = ? WHERE company_id = ? AND sap_item_code = ?`, [salesUom || null, companyId, code]);
   }
 
   return NextResponse.json({ success: true });

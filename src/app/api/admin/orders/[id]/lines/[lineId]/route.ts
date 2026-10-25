@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query, queryOne } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { recalculateLinkedGiftQty } from "@/lib/orderGifts";
 import { isOrderInAdminScope } from "@/lib/adminScope";
@@ -24,6 +25,12 @@ import { isOrderInAdminScope } from "@/lib/adminScope";
  * line's own confirm_qty is recalculated from the new ratio right here —
  * see recalculateLinkedGiftQty — and reported back in `giftAdjustment` so
  * the admin UI can show it alongside this line's own change.
+ *
+ * A gift line itself (is_gift_line) can never be PATCHed directly — its
+ * quantity must always stay the buy line's own confirm_qty times the
+ * promo's buy/give ratio, never an independently admin-typed number (the
+ * UI already hides the input for these lines; this is the server-side
+ * enforcement of that same rule).
  */
 export async function PATCH(
   request: NextRequest,
@@ -49,16 +56,23 @@ export async function PATCH(
     return NextResponse.json({ error: "confirmQty must be a non-negative integer" }, { status: 400 });
   }
 
-  const line = await queryOne<{ id: number; quantity: number }>(
-    `SELECT id, quantity FROM order_lines WHERE id = ? AND order_id = ?`,
-    [orderLineId, orderId]
+  const companyId = getCompanyId();
+  const line = await queryOne<{ id: number; quantity: number; is_gift_line: number }>(
+    `SELECT id, quantity, is_gift_line FROM order_lines WHERE company_id = ? AND id = ? AND order_id = ?`,
+    [companyId, orderLineId, orderId]
   );
   if (!line) return NextResponse.json({ error: "Order line not found" }, { status: 404 });
+  if (line.is_gift_line) {
+    return NextResponse.json(
+      { error: "Free item quantity follows its buy line's promotion ratio automatically — edit the buy line's quantity instead" },
+      { status: 400 }
+    );
+  }
 
   const customerConfirmStatus = confirmQty === line.quantity ? "accepted" : "pending";
   await query(
-    `UPDATE order_lines SET confirm_qty = ?, customer_confirm_status = ? WHERE id = ?`,
-    [confirmQty, customerConfirmStatus, orderLineId]
+    `UPDATE order_lines SET confirm_qty = ?, customer_confirm_status = ? WHERE company_id = ? AND id = ?`,
+    [confirmQty, customerConfirmStatus, companyId, orderLineId]
   );
 
   const giftAdjustment = await recalculateLinkedGiftQty(orderLineId, confirmQty);

@@ -32,10 +32,119 @@ interface InvalidRow {
   rowNumber: number;
   reason: "missingCode" | "invalidQuantity";
 }
-interface MatchedRow {
+
+type PromoOption = NonNullable<ProductWithPricing["promotionOptions"]>[number];
+type GiveawayOption = NonNullable<ProductWithPricing["giveawayOptions"]>[number];
+
+/**
+ * One editable row in the preview table. The common case is one line per
+ * matched item (unchanged from before this feature); an item that
+ * currently qualifies for more than one promotion program instead gets one
+ * line PER PROGRAM, stacked together under the same item, so the customer
+ * sees every option side by side and can freely move quantity between them
+ * instead of being locked into the server's own best-match default — see
+ * buildLinesForProduct. A single item is only ever split along ONE axis at
+ * a time (either its percent-discount choices or its buy-give choices,
+ * never the cross-product of both) — the same one-axis-at-a-time rule the
+ * storefront's own ProductCard already follows (a <select> for percent
+ * promos, separate cards for buy-give pairings).
+ */
+interface ImportLine {
+  key: string;
   product: ProductWithPricing;
   quantity: number;
   remark: string;
+  /** Set only on a line generated from product.promotionOptions (more than
+   *  one program) — overrides product.promoDiscPct/promotionCode/
+   *  promotionTitle for THIS line only. */
+  promoOverride?: PromoOption;
+  /** Set only on a line generated from product.giveawayOptions (more than
+   *  one program) — overrides product.promoBuyQty/promoGiveQty/
+   *  promoGiveItemCode/promoGiveItemName/giveawayCode for THIS line only. */
+  giveawayOverride?: GiveawayOption;
+}
+
+/**
+ * Splits one matched product into one or more editable lines. The system's
+ * own best-match default (index 0 of whichever list is being split on, per
+ * promotionOptions/giveawayOptions' own ordering) starts with the full
+ * imported quantity; every other program starts at 0 — the customer
+ * redistributes manually from there. An item with 0 or 1 program on both
+ * axes is never split: one plain line, same as always.
+ */
+function buildLinesForProduct(product: ProductWithPricing, quantity: number, remark: string): ImportLine[] {
+  const promoOptions = product.promotionOptions ?? [];
+  const giveawayOptions = product.giveawayOptions ?? [];
+
+  if (promoOptions.length > 1) {
+    return promoOptions.map((opt, idx) => ({
+      key: `${product.sapItemCode}::promo::${opt.code ?? opt.name ?? idx}`,
+      product,
+      quantity: idx === 0 ? quantity : 0,
+      remark,
+      promoOverride: opt,
+    }));
+  }
+  if (giveawayOptions.length > 1) {
+    return giveawayOptions.map((g, idx) => ({
+      key: `${product.sapItemCode}::give::${g.code ?? g.giveItemCode ?? idx}`,
+      product,
+      quantity: idx === 0 ? quantity : 0,
+      remark,
+      giveawayOverride: g,
+    }));
+  }
+  return [{ key: product.sapItemCode, product, quantity, remark }];
+}
+
+/** This line's own percent-discount %, after any promoOverride. */
+function effectivePromoPct(line: ImportLine): number {
+  return line.promoOverride ? Number(line.promoOverride.pct) : line.product.promoDiscPct;
+}
+
+/** This line's own promotion program identity (code/name), after any promoOverride. */
+function effectivePromo(line: ImportLine): { code?: string; name?: string } {
+  if (line.promoOverride) return { code: line.promoOverride.code ?? undefined, name: line.promoOverride.name ?? undefined };
+  return { code: line.product.promotionCode, name: line.product.promotionTitle };
+}
+
+/** This line's own buy-give program, after any giveawayOverride — used to
+ *  both price the line and recompute its free quantity live as the
+ *  customer edits the ordered quantity. */
+function effectiveGiveaway(line: ImportLine): {
+  code?: string; name?: string | null; buyQty?: number; giveQty?: number; giveItemCode?: string | null; giveItemName?: string | null;
+} {
+  if (line.giveawayOverride) {
+    const g = line.giveawayOverride;
+    return { code: g.code ?? undefined, name: g.name, buyQty: Number(g.buyQty), giveQty: Number(g.giveQty), giveItemCode: g.giveItemCode, giveItemName: g.giveItemName };
+  }
+  const { product } = line;
+  return {
+    code: product.giveawayCode, name: product.giveawayOptions?.[0]?.name,
+    buyQty: product.promoBuyQty, giveQty: product.promoGiveQty,
+    giveItemCode: product.promoGiveItemCode, giveItemName: product.promoGiveItemName,
+  };
+}
+
+/** product.basePrice is already net of Period Discount — Contract and a
+ *  specific Promotion Discount % are each independently a % of THIS price,
+ *  so their percentages simply add. Same formula as ProductCard's own live
+ *  recompute, duplicated here for a line's own chosen promotion %. */
+function priceForPromoPct(product: ProductWithPricing, promoPct: number): { displayPrice: number; discountPercent: number } {
+  const combinedDiscPct = product.contractDiscPct + promoPct;
+  const displayPrice = Math.max(0, product.basePrice * (1 - combinedDiscPct / 100));
+  const discountPercent = displayPrice < product.basePrice ? Math.round(combinedDiscPct) : 0;
+  return { displayPrice, discountPercent };
+}
+
+/** Free quantity THIS line currently earns at its own (editable) quantity —
+ *  e.g. buy 2 get 1 at quantity 20 gives floor(20/2)*1 = 10, and updates
+ *  live as the customer edits the quantity field. Same idea as useCart's
+ *  calculateFreeQty, computed ahead of time here (before the line is even
+ *  a cart item) for the preview table. */
+function freeQtyFor(line: ImportLine, giveaway: ReturnType<typeof effectiveGiveaway>): number {
+  if (!giveaway.buyQty || !giveaway.giveQty) return 0;
+  return Math.floor(line.quantity / giveaway.buyQty) * giveaway.giveQty;
 }
 
 type Step = "upload" | "preview";
@@ -43,12 +152,16 @@ type Step = "upload" | "preview";
 export default function ImportExcelModal({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
   const t = useTranslations();
   const locale = useLocale();
+  // The free quantity itself (wrapped in <b> inside the translation
+  // string) is rendered bold + red so it stands out from the surrounding
+  // "free gift" sentence.
+  const boldRed = { b: (chunks: React.ReactNode) => <strong style={{ color: "var(--color-error, #DC2626)" }}>{chunks}</strong> };
   const { items: cartItems, addItem, clearCart, openCart } = useCart();
 
   const [step, setStep] = useState<Step>("upload");
   const [isBusy, setIsBusy] = useState(false);
   const [parseError, setParseError] = useState("");
-  const [matched, setMatched] = useState<MatchedRow[]>([]);
+  const [lines, setLines] = useState<ImportLine[]>([]);
   const [unavailable, setUnavailable] = useState<string[]>([]);
   const [notVisible, setNotVisible] = useState<string[]>([]);
   const [invalidRows, setInvalidRows] = useState<InvalidRow[]>([]);
@@ -60,7 +173,7 @@ export default function ImportExcelModal({ isOpen, onClose }: { isOpen: boolean;
   const reset = () => {
     setStep("upload");
     setParseError("");
-    setMatched([]);
+    setLines([]);
     setUnavailable([]);
     setNotVisible([]);
     setInvalidRows([]);
@@ -121,7 +234,13 @@ export default function ImportExcelModal({ isOpen, onClose }: { isOpen: boolean;
         const remarkCell = remarkIdx !== -1 ? row[remarkIdx] : undefined;
         const remark = remarkCell != null ? String(remarkCell).trim() : "";
 
-        const existing = byCode.get(code);
+        // Keyed by the UPPERCASED code so the same item typed in a
+        // different case across rows (e.g. "d11123501" and "D11123501")
+        // still sums into one entry instead of silently splitting into two
+        // — the stored `code` keeps whichever casing was typed first,
+        // which is only used to query the batch lookup below.
+        const key = code.toUpperCase();
+        const existing = byCode.get(key);
         if (existing) {
           existing.quantity += quantity;
           if (remark && existing.remark && existing.remark !== remark) {
@@ -130,14 +249,14 @@ export default function ImportExcelModal({ isOpen, onClose }: { isOpen: boolean;
             existing.remark = remark;
           }
         } else {
-          byCode.set(code, { code, quantity, remark });
+          byCode.set(key, { code, quantity, remark });
         }
       }
       setInvalidRows(invalid);
 
-      const codes = [...byCode.keys()];
+      const codes = [...byCode.values()].map((r) => r.code);
       if (codes.length === 0) {
-        setMatched([]);
+        setLines([]);
         setUnavailable([]);
         setStep("preview");
         setIsBusy(false);
@@ -157,14 +276,13 @@ export default function ImportExcelModal({ isOpen, onClose }: { isOpen: boolean;
       if (!res.ok) throw new Error("lookup failed");
       const data: { items: ProductWithPricing[]; notFound: string[]; notVisible: string[] } = await res.json();
 
-      const matchedRows: MatchedRow[] = data.items.map((product) => {
-        const parsed = byCode.get(product.sapItemCode) ?? [...byCode.values()].find(
-          (r) => r.code.toUpperCase() === product.sapItemCode.toUpperCase()
-        );
-        return { product, quantity: parsed?.quantity ?? 1, remark: parsed?.remark || "" };
-      });
+      const allLines: ImportLine[] = [];
+      for (const product of data.items) {
+        const parsed = byCode.get(product.sapItemCode.toUpperCase());
+        allLines.push(...buildLinesForProduct(product, parsed?.quantity ?? 1, parsed?.remark || ""));
+      }
 
-      setMatched(matchedRows);
+      setLines(allLines);
       setUnavailable(data.notFound ?? []);
       setNotVisible(data.notVisible ?? []);
       setStep("preview");
@@ -180,48 +298,66 @@ export default function ImportExcelModal({ isOpen, onClose }: { isOpen: boolean;
     if (file) handleFile(file);
   };
 
+  const updateLineQuantity = (key: string, value: number) => {
+    const qty = Math.max(0, Math.floor(value) || 0);
+    setLines((prev) => prev.map((l) => (l.key === key ? { ...l, quantity: qty } : l)));
+  };
+
+  const buildCartItem = (line: ImportLine): CartItem => {
+    const { product } = line;
+    const name = (locale === "vi" ? product.itemNameVi : product.itemNameEn) || product.itemNameVi || product.itemNameEn || product.sapItemCode;
+    const promoPct = effectivePromoPct(line);
+    const promo = effectivePromo(line);
+    const giveaway = effectiveGiveaway(line);
+    const { displayPrice, discountPercent } = priceForPromoPct(product, promoPct);
+    return {
+      sapItemCode: product.sapItemCode,
+      itemName: name,
+      unitPrice: displayPrice,
+      originalPrice: product.basePrice,
+      quantity: line.quantity,
+      uom: product.uom || "PCS",
+      imageUrl: product.imageUrl,
+      discountPercent,
+      promoBuyQty: giveaway.buyQty,
+      promoGiveQty: giveaway.giveQty,
+      promoGiveItemCode: giveaway.giveItemCode ?? undefined,
+      promoGiveItemName: giveaway.giveItemName ?? undefined,
+      remark: line.remark || undefined,
+      periodDiscPct: product.periodDiscPct,
+      contractDiscPct: product.contractDiscPct,
+      promoDiscPct: promoPct,
+      promotionCode: promo.code,
+      promotionName: promo.name,
+      giveawayCode: giveaway.code,
+      giveawayName: giveaway.name ?? undefined,
+      brandCode: product.brandCode,
+      brandName: product.brandName,
+    };
+  };
+
   const doImport = () => {
     if (cartItems.length > 0) clearCart();
-    for (const row of matched) {
-      const product = row.product;
-      const name = (locale === "vi" ? product.itemNameVi : product.itemNameEn) || product.itemNameVi || product.itemNameEn || product.sapItemCode;
-      const cartItem: CartItem = {
-        sapItemCode: product.sapItemCode,
-        itemName: name,
-        unitPrice: product.displayPrice,
-        originalPrice: product.basePrice,
-        quantity: row.quantity,
-        uom: product.uom || "PCS",
-        imageUrl: product.imageUrl,
-        discountPercent: product.discountPercent ?? 0,
-        promoBuyQty: product.promoBuyQty,
-        promoGiveQty: product.promoGiveQty,
-        promoGiveItemCode: product.promoGiveItemCode,
-        promoGiveItemName: product.promoGiveItemName,
-        remark: row.remark || undefined,
-        periodDiscPct: product.periodDiscPct,
-        contractDiscPct: product.contractDiscPct,
-        promoDiscPct: product.promoDiscPct,
-        promotionCode: product.promotionCode,
-        promotionName: product.promotionTitle,
-        giveawayCode: product.giveawayCode,
-        giveawayName: product.giveawayOptions?.[0]?.name ?? undefined,
-        brandCode: product.brandCode,
-        brandName: product.brandName,
-      };
-      addItem(cartItem);
+    for (const line of lines) {
+      if (line.quantity <= 0) continue; // an alternative-program line left at 0 contributes nothing
+      addItem(buildCartItem(line));
     }
     openCart();
     handleClose();
   };
 
+  const hasAnyQuantity = lines.some((l) => l.quantity > 0);
+
   const handleConfirmClick = () => {
+    if (!hasAnyQuantity) return;
     if (cartItems.length > 0 && !confirmingReplace) {
       setConfirmingReplace(true);
       return;
     }
     doImport();
   };
+
+  const matchedItemCount = new Set(lines.map((l) => l.product.sapItemCode)).size;
 
   return (
     <div
@@ -279,10 +415,10 @@ export default function ImportExcelModal({ isOpen, onClose }: { isOpen: boolean;
         {step === "preview" && (
           <div>
             <p style={{ fontWeight: 600, marginBottom: "0.75rem" }}>
-              {t("import.matchedCount", { count: matched.length })}
+              {t("import.matchedCount", { count: matchedItemCount })}
             </p>
 
-            {matched.length > 0 && (
+            {lines.length > 0 && (
               <div style={{ overflowX: "auto", marginBottom: "1rem" }}>
                 <table style={{ width: "100%", fontSize: "0.8125rem", borderCollapse: "collapse" }}>
                   <thead>
@@ -295,34 +431,58 @@ export default function ImportExcelModal({ isOpen, onClose }: { isOpen: boolean;
                     </tr>
                   </thead>
                   <tbody>
-                    {matched.map((row) => {
-                      const product = row.product;
+                    {lines.map((line, idx) => {
+                      const { product } = line;
+                      const isFirstOfGroup = idx === 0 || lines[idx - 1].product.sapItemCode !== product.sapItemCode;
                       const name = (locale === "vi" ? product.itemNameVi : product.itemNameEn) || product.itemNameVi || product.itemNameEn;
+                      const promoPct = effectivePromoPct(line);
+                      const giveaway = effectiveGiveaway(line);
+                      const { displayPrice, discountPercent } = priceForPromoPct(product, promoPct);
+                      const freeQty = freeQtyFor(line, giveaway);
+                      // Only shown for a line generated by a promo/giveaway
+                      // CHOICE (more than one program available) — labels
+                      // which specific program this particular line is
+                      // priced on, so the customer can tell the rows apart.
+                      const programLabel = line.promoOverride
+                        ? `${line.promoOverride.name || line.promoOverride.code || t("product.promotion")} (-${line.promoOverride.pct}%)`
+                        : line.giveawayOverride
+                        ? `🎁 ${line.giveawayOverride.name || line.giveawayOverride.code || t("product.promotion")}`
+                        : null;
                       return (
-                        <tr key={product.sapItemCode} style={{ borderBottom: "1px solid var(--color-gray-100, #F1F5F9)" }}>
-                          <td style={{ padding: "0.5rem", fontFamily: "monospace", fontSize: "0.75rem" }}>{product.sapItemCode}</td>
+                        <tr key={line.key} style={{ borderBottom: "1px solid var(--color-gray-100, #F1F5F9)" }}>
+                          <td style={{ padding: "0.5rem", fontFamily: "monospace", fontSize: "0.75rem", color: isFirstOfGroup ? undefined : "var(--text-tertiary)" }}>
+                            {isFirstOfGroup ? product.sapItemCode : "↳"}
+                          </td>
                           <td style={{ padding: "0.5rem" }}>
-                            {name}
-                            {row.remark && (
-                              <div style={{ fontSize: "0.7rem", color: "var(--text-tertiary)" }}>📝 {row.remark}</div>
+                            {isFirstOfGroup && name}
+                            {programLabel && (
+                              <div style={{ fontSize: "0.7rem", color: "var(--color-primary, #2563EB)", fontWeight: 600 }}>{programLabel}</div>
                             )}
-                            {product.hasBuyGivePromo && (
+                            {isFirstOfGroup && line.remark && (
+                              <div style={{ fontSize: "0.7rem", color: "var(--text-tertiary)" }}>📝 {line.remark}</div>
+                            )}
+                            {freeQty > 0 && (
                               <div style={{ fontSize: "0.7rem", color: "var(--color-success, #059669)" }}>
                                 🎁{" "}
-                                {product.promoGiveItemCode === product.sapItemCode
-                                  ? t("product.buyGetSamePromo", { buyQty: product.promoBuyQty ?? 1, giveQty: product.promoGiveQty ?? 1 })
-                                  : t("product.buyGetPromo", {
-                                      buyQty: product.promoBuyQty ?? 1,
-                                      giveQty: product.promoGiveQty ?? 1,
-                                      giveItem: product.promoGiveItemName || product.promoGiveItemCode || "",
-                                    })}
+                                {giveaway.giveItemCode === product.sapItemCode
+                                  ? t.rich("cart.freeGiftSame", { qty: freeQty, ...boldRed })
+                                  : t.rich("cart.freeGift", { qty: freeQty, item: giveaway.giveItemName || giveaway.giveItemCode || "", ...boldRed })}
                               </div>
                             )}
                           </td>
-                          <td style={{ padding: "0.5rem", textAlign: "right" }}>{row.quantity}</td>
-                          <td style={{ padding: "0.5rem", textAlign: "right" }}>{formatPrice(product.displayPrice)}</td>
                           <td style={{ padding: "0.5rem", textAlign: "right" }}>
-                            {product.discountPercent ? `-${product.discountPercent}%` : "—"}
+                            <input
+                              type="number"
+                              min={0}
+                              className="input"
+                              style={{ width: "76px", padding: "0.25rem 0.375rem", fontSize: "0.8125rem", textAlign: "right" }}
+                              value={line.quantity}
+                              onChange={(e) => updateLineQuantity(line.key, parseInt(e.target.value, 10))}
+                            />
+                          </td>
+                          <td style={{ padding: "0.5rem", textAlign: "right" }}>{formatPrice(displayPrice)}</td>
+                          <td style={{ padding: "0.5rem", textAlign: "right" }}>
+                            {discountPercent ? `-${discountPercent}%` : "—"}
                           </td>
                         </tr>
                       );
@@ -381,8 +541,8 @@ export default function ImportExcelModal({ isOpen, onClose }: { isOpen: boolean;
               <button className="btn btn-secondary" onClick={() => { setConfirmingReplace(false); reset(); }}>
                 {t("import.cancel")}
               </button>
-              {matched.length > 0 && (
-                <button className="btn btn-primary" onClick={handleConfirmClick}>
+              {lines.length > 0 && (
+                <button className="btn btn-primary" onClick={handleConfirmClick} disabled={!hasAnyQuantity}>
                   {confirmingReplace ? t("import.replaceCartConfirm") : t("import.confirmImport")}
                 </button>
               )}

@@ -1,4 +1,5 @@
 import { query } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 
 export interface VisibleWarehouse {
   code: string;
@@ -21,8 +22,10 @@ export interface VisibleWarehouse {
 export async function getVisibleWarehousesForCustomerGroup(
   cusGrp02: string | null
 ): Promise<VisibleWarehouse[]> {
+  const companyId = getCompanyId();
   const included = await query<{ sap_warehouse_code: string; warehouse_name: string | null }[]>(
-    `SELECT sap_warehouse_code, warehouse_name FROM warehouses WHERE is_included = TRUE`
+    `SELECT sap_warehouse_code, warehouse_name FROM warehouses WHERE company_id = ? AND is_included = TRUE`,
+    [companyId]
   );
   if (included.length === 0) return [];
 
@@ -31,9 +34,9 @@ export async function getVisibleWarehousesForCustomerGroup(
       `SELECT cgw.warehouse_code, w.warehouse_name
        FROM customer_group_warehouses cgw
        JOIN customer_groups cg ON cg.id = cgw.customer_group_id
-       LEFT JOIN warehouses w ON w.sap_warehouse_code = cgw.warehouse_code
-       WHERE cg.level = 2 AND cg.code = ?`,
-      [cusGrp02]
+       LEFT JOIN warehouses w ON w.company_id = ? AND w.sap_warehouse_code = cgw.warehouse_code
+       WHERE cgw.company_id = ? AND cg.company_id = ? AND cg.level = 2 AND cg.code = ?`,
+      [companyId, companyId, companyId, cusGrp02]
     );
     if (mapped.length > 0) {
       return mapped.map((m) => ({ code: m.warehouse_code, name: m.warehouse_name }));

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query, queryOne } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission, ALL_ADMIN_PERMISSIONS } from "@/lib/auth/adminSession";
 
 /** PATCH /api/admin/roles/[id] — Body: { name?, description?, permissions?: string[] } */
@@ -38,8 +39,8 @@ export async function PATCH(
     return NextResponse.json({ error: "No valid fields to update" }, { status: 400 });
   }
 
-  values.push(String(roleId));
-  await query(`UPDATE admin_roles SET ${updates.join(", ")} WHERE id = ?`, values);
+  values.push(getCompanyId(), String(roleId));
+  await query(`UPDATE admin_roles SET ${updates.join(", ")} WHERE company_id = ? AND id = ?`, values);
   return NextResponse.json({ success: true });
 }
 
@@ -55,9 +56,10 @@ export async function DELETE(
   const roleId = parseInt(id, 10);
   if (isNaN(roleId)) return NextResponse.json({ error: "Invalid role ID" }, { status: 400 });
 
+  const companyId = getCompanyId();
   const inUse = await queryOne<{ cnt: number }>(
-    `SELECT COUNT(*) as cnt FROM admin_users WHERE role_id = ?`,
-    [roleId]
+    `SELECT COUNT(*) as cnt FROM admin_users WHERE company_id = ? AND role_id = ?`,
+    [companyId, roleId]
   );
   if (inUse && inUse.cnt > 0) {
     return NextResponse.json(
@@ -66,6 +68,6 @@ export async function DELETE(
     );
   }
 
-  await query(`DELETE FROM admin_roles WHERE id = ?`, [roleId]);
+  await query(`DELETE FROM admin_roles WHERE company_id = ? AND id = ?`, [companyId, roleId]);
   return NextResponse.json({ success: true });
 }

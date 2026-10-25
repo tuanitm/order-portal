@@ -1,6 +1,7 @@
 import { readFileSync } from "fs";
 import { join } from "path";
 import { getPool } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import { queryHana, getHanaSchema } from "@/lib/hana/client";
 
 /** One row as returned by promotion_program.sql's final SELECT. */
@@ -93,6 +94,7 @@ export async function syncPromotionDiscountsFromHana(): Promise<{ rowsSynced: nu
     }
 
     values.push([
+      getCompanyId(),
       r.doc_entry,
       r.promotion_code,
       r.promotion_name,
@@ -125,13 +127,13 @@ export async function syncPromotionDiscountsFromHana(): Promise<{ rowsSynced: nu
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
-    await conn.execute(`DELETE FROM promotion_discount`);
+    await conn.execute(`DELETE FROM promotion_discount WHERE company_id = ?`, [getCompanyId()]);
 
     for (let i = 0; i < values.length; i += CHUNK_SIZE) {
       const chunk = values.slice(i, i + CHUNK_SIZE);
       await conn.query(
         `INSERT INTO promotion_discount (
-           doc_entry, promotion_code, promotion_name, create_date, update_date, begin_date, end_date,
+           company_id, doc_entry, promotion_code, promotion_name, create_date, update_date, begin_date, end_date,
            after_cus_disc, after_price_disc,
            bp_grp_code, bp_grp_name, bp_type, bp_code, bp_name,
            selling_grp_code, selling_grp_name, it_type, selling_item_code, selling_item_name,

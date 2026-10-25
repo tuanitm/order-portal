@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 
 /**
@@ -19,10 +20,10 @@ export async function GET(request: NextRequest) {
     `SELECT sp.sap_item_code, i.item_name_vi, sp.special_price, sp.discount_percent,
             sp.valid_from, sp.valid_to, sp.last_synced
      FROM special_prices sp
-     LEFT JOIN items i ON i.sap_item_code = sp.sap_item_code
-     WHERE sp.sap_card_code = ?
+     LEFT JOIN items i ON i.company_id = sp.company_id AND i.sap_item_code = sp.sap_item_code
+     WHERE sp.company_id = ? AND sp.sap_card_code = ?
      ORDER BY sp.last_synced DESC`,
-    [cardCode]
+    [getCompanyId(), cardCode]
   );
 
   return NextResponse.json({ discounts });

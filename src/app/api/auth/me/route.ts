@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/auth/session";
 import { queryOne } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 
 /**
  * GET /api/auth/me — Check current session and return user info
@@ -25,8 +26,8 @@ export async function GET(request: NextRequest) {
     let bpPhone: string | null = null;
     if (user.sapCardCode) {
       const customer = await queryOne<{ address: string | null; phone: string | null }>(
-        "SELECT address, phone FROM customers WHERE sap_card_code = ? LIMIT 1",
-        [user.sapCardCode]
+        "SELECT address, phone FROM customers WHERE company_id = ? AND sap_card_code = ? LIMIT 1",
+        [getCompanyId(), user.sapCardCode]
       );
       address = customer?.address ?? null;
       bpPhone = customer?.phone?.trim() || null;

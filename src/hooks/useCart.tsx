@@ -68,11 +68,23 @@ export function calculateFreeQty(item: CartItem): number {
  * lines rather than merging into one (which could only ever remember one
  * choice). Including giveawayCode in the key too (not just promoGiveItemCode)
  * keeps two DIFFERENT programs that happen to give the same free item apart.
+ *
+ * Same idea for a plain percent-discount promotionCode with no giveaway: a
+ * customer splitting one item's quantity across two different promotion
+ * programs (see ImportExcelModal's manual split) needs each program's
+ * portion to stay its own line with its own price — merging them would
+ * silently keep only the first line's price/program for the combined qty.
  */
-export function getCartLineKey(item: Pick<CartItem, "sapItemCode" | "giveawayCode" | "promoGiveItemCode">): string {
-  return item.promoGiveItemCode
-    ? `${item.sapItemCode}::${item.giveawayCode ?? ""}::${item.promoGiveItemCode}`
-    : item.sapItemCode;
+export function getCartLineKey(
+  item: Pick<CartItem, "sapItemCode" | "giveawayCode" | "promoGiveItemCode" | "promotionCode">
+): string {
+  if (item.promoGiveItemCode) {
+    return `${item.sapItemCode}::${item.giveawayCode ?? ""}::${item.promoGiveItemCode}`;
+  }
+  if (item.promotionCode) {
+    return `${item.sapItemCode}::promo::${item.promotionCode}`;
+  }
+  return item.sapItemCode;
 }
 
 // ── Cart State ──

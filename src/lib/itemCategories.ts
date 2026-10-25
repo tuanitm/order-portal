@@ -1,7 +1,7 @@
 import { readFileSync, existsSync } from "fs";
 import { join } from "path";
 import { getPool } from "@/lib/db/connection";
-import { loadConfig } from "@/lib/config";
+import { loadConfig, getCompanyId } from "@/lib/config";
 import { queryHana, getHanaSchema } from "@/lib/hana/client";
 
 export interface ImportWarning {
@@ -119,9 +119,9 @@ export async function syncItemGroupsFromHana(): Promise<{ rowsRead: number; leve
       for (let i = 0; i < levels.length; i++) {
         const lvl = levels[i];
         await conn.execute(
-          `INSERT INTO item_groups (level, code, parent_code, name) VALUES (?, ?, ?, ?)
+          `INSERT INTO item_groups (company_id, level, code, parent_code, name) VALUES (?, ?, ?, ?, ?)
            ON DUPLICATE KEY UPDATE parent_code = VALUES(parent_code), name = VALUES(name)`,
-          [i + 1, lvl.code.trim(), parent, lvl.name ? lvl.name.trim() : null]
+          [getCompanyId(), i + 1, lvl.code.trim(), parent, lvl.name ? lvl.name.trim() : null]
         );
         levelsImported++;
         parent = lvl.code.trim();
@@ -192,9 +192,9 @@ async function importFromXlsx(filePath: string): Promise<ImportResult> {
         }
 
         await conn.execute(
-          `INSERT INTO item_groups (level, code, parent_code, name) VALUES (?, ?, ?, ?)
+          `INSERT INTO item_groups (company_id, level, code, parent_code, name) VALUES (?, ?, ?, ?, ?)
            ON DUPLICATE KEY UPDATE parent_code = VALUES(parent_code), name = VALUES(name)`,
-          [level, String(lvl.code).trim(), parent, lvl.name ? String(lvl.name).trim() : null]
+          [getCompanyId(), level, String(lvl.code).trim(), parent, lvl.name ? String(lvl.name).trim() : null]
         );
         levelsImported++;
         parent = String(lvl.code).trim();
@@ -228,7 +228,7 @@ interface ItemGroupRow {
 
 async function loadAllItemGroups(): Promise<ItemGroupRow[]> {
   const { query } = await import("@/lib/db/connection");
-  return query<ItemGroupRow[]>(`SELECT id, level, code, parent_code, name, is_active FROM item_groups`);
+  return query<ItemGroupRow[]>(`SELECT id, level, code, parent_code, name, is_active FROM item_groups WHERE company_id = ?`, [getCompanyId()]);
 }
 
 /**
@@ -315,8 +315,8 @@ export async function cascadeDeactivateDescendants(rootId: number): Promise<void
   if (descendantIds.length === 0) return;
   const { query } = await import("@/lib/db/connection");
   await query(
-    `UPDATE item_groups SET is_active = FALSE WHERE id IN (${descendantIds.map(() => "?").join(",")})`,
-    descendantIds
+    `UPDATE item_groups SET is_active = FALSE WHERE company_id = ? AND id IN (${descendantIds.map(() => "?").join(",")})`,
+    [getCompanyId(), ...descendantIds]
   );
 }
 
@@ -346,8 +346,8 @@ export async function scanAndFixItemGroupActiveStatus(): Promise<ItemGroupScanRe
   if (toFix.length > 0) {
     const { query } = await import("@/lib/db/connection");
     await query(
-      `UPDATE item_groups SET is_active = FALSE WHERE id IN (${toFix.map(() => "?").join(",")})`,
-      toFix.map((r) => r.id)
+      `UPDATE item_groups SET is_active = FALSE WHERE company_id = ? AND id IN (${toFix.map(() => "?").join(",")})`,
+      [getCompanyId(), ...toFix.map((r) => r.id)]
     );
   }
 
@@ -371,12 +371,16 @@ export async function bulkSetItemGroupActive(
 ): Promise<{ applied: number; fixed: number }> {
   if (changes.length === 0) return { applied: 0, fixed: 0 };
 
+  const companyId = getCompanyId();
   const pool = getPool();
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
     for (const c of changes) {
-      await conn.execute(`UPDATE item_groups SET is_active = ? WHERE id = ?`, [c.isActive, c.id]);
+      // company_id in the WHERE isn't just consistency here — `id`s come
+      // straight from the admin client's request body, so without it a
+      // crafted id belonging to another company's row would be writable.
+      await conn.execute(`UPDATE item_groups SET is_active = ? WHERE company_id = ? AND id = ?`, [c.isActive, companyId, c.id]);
     }
     await conn.commit();
   } catch (error) {

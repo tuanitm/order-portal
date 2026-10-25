@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 
 /**
@@ -14,8 +15,8 @@ export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const custGroupCode = searchParams.get("custGroupCode")?.trim() || "";
 
-  const whereClauses: string[] = [];
-  const params: string[] = [];
+  const whereClauses: string[] = ["company_id = ?"];
+  const params: string[] = [getCompanyId()];
   if (custGroupCode) {
     whereClauses.push("cust_group_code = ?");
     params.push(custGroupCode);

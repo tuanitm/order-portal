@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams } from "next/navigation";
 import { styles, btn, Badge, BackLink, SyncButton, ORDER_STATUS_LABELS } from "../../adminUi";
 
@@ -174,21 +174,37 @@ function MessagesThread({ orderId }: { orderId: number }) {
 /**
  * Typeable Confirm Qty box — defaults to the line's ordered Qty, editable
  * by the admin down to 0 (never above Qty — see the PATCH route) when live
- * stock or the shelf-life gate shows less than what was ordered. Commits
- * on blur/Enter, same pattern as the storefront cart's quantity box.
+ * stock or the shelf-life gate shows less than what was ordered. Commits on
+ * blur/Enter same as before, AND auto-commits (debounced) on every change —
+ * including a mouse click on the native number input's up/down spinner
+ * arrows, which fires onChange without blurring the field — so a linked
+ * free-item line's quantity (see saveConfirmQty's giftAdjustment patch)
+ * updates right away instead of waiting for the admin to click elsewhere.
  */
 function ConfirmQtyInput({ line, onSave }: { line: OrderLine; onSave: (lineId: number, qty: number) => Promise<void> }) {
   const [draft, setDraft] = useState(String(line.confirm_qty));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearPendingCommit = () => {
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current);
+      debounceRef.current = null;
+    }
+  };
 
   useEffect(() => {
     setDraft(String(line.confirm_qty));
+    clearPendingCommit();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [line.confirm_qty]);
 
-  const commit = async () => {
+  useEffect(() => () => clearPendingCommit(), []);
+
+  const commit = async (value: string) => {
     setError("");
-    const parsed = parseInt(draft, 10);
+    const parsed = parseInt(value, 10);
     if (!Number.isFinite(parsed) || parsed < 0) {
       setDraft(String(line.confirm_qty));
       return;
@@ -209,6 +225,21 @@ function ConfirmQtyInput({ line, onSave }: { line: OrderLine; onSave: (lineId: n
     }
   };
 
+  const commitNow = () => {
+    clearPendingCommit();
+    commit(draft);
+  };
+
+  const handleChange = (value: string) => {
+    setDraft(value);
+    // Debounced so typing several digits from scratch doesn't fire one
+    // PATCH per keystroke; a spinner click or arrow key almost always
+    // pauses right after, so it still commits within a fraction of a
+    // second — blur/Enter below commit immediately on top of this.
+    clearPendingCommit();
+    debounceRef.current = setTimeout(() => commit(value), 350);
+  };
+
   return (
     <div>
       <input
@@ -216,12 +247,12 @@ function ConfirmQtyInput({ line, onSave }: { line: OrderLine; onSave: (lineId: n
         min={0}
         disabled={saving}
         value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={commit}
+        onChange={(e) => handleChange(e.target.value)}
+        onBlur={commitNow}
         onKeyDown={(e) => {
           if (e.key === "Enter") {
             e.preventDefault();
-            commit();
+            commitNow();
             e.currentTarget.blur();
           }
         }}
@@ -334,15 +365,26 @@ export default function AdminOrderDetailPage() {
       body: JSON.stringify({ confirmQty }),
     });
     const text = await res.text();
-    const data = text ? JSON.parse(text) : {};
+    const data: { error?: string; giftAdjustment?: { sapItemCode: string; from: number; to: number } | null } = text ? JSON.parse(text) : {};
     if (!res.ok) throw new Error(data.error || `Failed to save Confirm Qty (${res.status})`);
-    // Reload rather than patch local state in place: if this line is the
-    // "buy" side of a buy-X-get-Y promo, the server also just recalculated
-    // its linked gift line's own Confirm Qty — a different row, which a
-    // local patch of just this one line wouldn't reflect. The reload picks
-    // up that new quantity in the table directly, so no separate message
-    // is shown for it.
-    await load();
+    // Patch local state directly from THIS response instead of reloading
+    // the whole order — the server already computed both this line's own
+    // new confirm_qty AND, if this is the "buy" side of a buy-X-get-Y
+    // promo, its linked gift line's recalculated confirm_qty
+    // (giftAdjustment.to, from recalculateLinkedGiftQty) — so the free
+    // item row updates in the same render, with no extra round trip.
+    setLines((prev) =>
+      prev.map((l) => {
+        if (l.id === lineId) {
+          return { ...l, confirm_qty: confirmQty, customer_confirm_status: confirmQty === l.quantity ? "accepted" : "pending" };
+        }
+        if (data.giftAdjustment && l.source_line_id === lineId) {
+          const to = data.giftAdjustment.to;
+          return { ...l, confirm_qty: to, customer_confirm_status: to === l.quantity ? "accepted" : "pending" };
+        }
+        return l;
+      })
+    );
   };
 
   const updateStatus = async (status: string) => {
@@ -638,7 +680,18 @@ export default function AdminOrderDetailPage() {
                     </td>
                     <td style={styles.td}>{formatQty(l.quantity)}</td>
                     <td style={styles.td}>
-                      <ConfirmQtyInput line={l} onSave={saveConfirmQty} />
+                      {l.is_gift_line ? (
+                        // Free item quantity is derived from its buy line's
+                        // confirm_qty x the promo's buy/give ratio (see
+                        // recalculateLinkedGiftQty) — never admin-editable
+                        // directly, or it could drift from that ratio. The
+                        // PATCH route also rejects a direct edit server-side.
+                        <div style={{ fontWeight: 600 }} title="Follows its buy line's quantity automatically">
+                          {formatQty(l.confirm_qty)}
+                        </div>
+                      ) : (
+                        <ConfirmQtyInput line={l} onSave={saveConfirmQty} />
+                      )}
                       {l.confirm_qty !== l.quantity && (
                         <div style={{
                           fontSize: "0.7rem", marginTop: "0.25rem", fontWeight: 600,

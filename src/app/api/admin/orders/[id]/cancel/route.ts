@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query, queryOne } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { getSapClient } from "@/lib/sap-b1/client";
 import { recordOrderStatus, notifyCustomerOfStatusChange } from "@/lib/orderHistory";
@@ -43,9 +44,10 @@ export async function POST(
     return NextResponse.json({ error: "Order not found" }, { status: 404 });
   }
 
+  const companyId = getCompanyId();
   const order = await queryOne<OrderRow>(
-    `SELECT status, sap_doc_entry FROM orders WHERE id = ?`,
-    [orderId]
+    `SELECT status, sap_doc_entry FROM orders WHERE company_id = ? AND id = ?`,
+    [companyId, orderId]
   );
   if (!order) return NextResponse.json({ error: "Order not found" }, { status: 404 });
   if (TERMINAL_STATUSES.includes(order.status)) {
@@ -71,13 +73,13 @@ export async function POST(
     }
   }
 
-  await query(`UPDATE orders SET status = 'cancelled' WHERE id = ?`, [orderId]);
+  await query(`UPDATE orders SET status = 'cancelled' WHERE company_id = ? AND id = ?`, [companyId, orderId]);
   await recordOrderStatus(orderId, "cancelled");
   await notifyCustomerOfStatusChange(orderId, "cancelled");
 
   const admin = await queryOne<{ full_name: string | null }>(
-    `SELECT full_name FROM admin_users WHERE id = ?`,
-    [guard.session.adminId]
+    `SELECT full_name FROM admin_users WHERE company_id = ? AND id = ?`,
+    [companyId, guard.session.adminId]
   );
   await postOrderMessage(orderId, "admin", admin?.full_name || null, "Cancelled this order.");
 

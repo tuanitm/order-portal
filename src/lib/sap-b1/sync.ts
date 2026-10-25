@@ -2,7 +2,7 @@ import { getSapClient } from "@/lib/sap-b1/client";
 import { getPool, query, queryOne } from "@/lib/db/connection";
 import { getItemCategoryPairsFromDB, getInactiveItemGroupCodesByLevel } from "@/lib/itemCategories";
 import { getCustomerGroupPairsFromDB } from "@/lib/customerGroups";
-import { loadConfig } from "@/lib/config";
+import { loadConfig, getCompanyId } from "@/lib/config";
 import type { PoolConnection } from "mysql2/promise";
 
 /** Parse a ready-made SQL IN-list literal from config.json (e.g. "'1000','1001'") into plain codes. */
@@ -31,7 +31,8 @@ function toMySQLDate(isoDate: string | null | undefined): string | null {
 /** The price list marked as the "original" base price (price_lists.is_base). */
 export async function getBasePriceListNum(): Promise<number> {
   const row = await queryOne<{ price_list_num: number }>(
-    `SELECT price_list_num FROM price_lists WHERE is_base = TRUE LIMIT 1`
+    `SELECT price_list_num FROM price_lists WHERE company_id = ? AND is_base = TRUE LIMIT 1`,
+    [getCompanyId()]
   );
   return row?.price_list_num ?? 11;
 }
@@ -39,7 +40,8 @@ export async function getBasePriceListNum(): Promise<number> {
 /** Every price list we cache per-item pricing for (base + all channel lists). */
 export async function getTrackedPriceListNums(): Promise<number[]> {
   const rows = await query<{ price_list_num: number }[]>(
-    `SELECT price_list_num FROM price_lists WHERE is_base = TRUE OR is_channel = TRUE`
+    `SELECT price_list_num FROM price_lists WHERE company_id = ? AND (is_base = TRUE OR is_channel = TRUE)`,
+    [getCompanyId()]
   );
   return rows.map((r) => r.price_list_num);
 }
@@ -55,6 +57,7 @@ export async function syncPriceLists(): Promise<{ listsSynced: number }> {
   const sap = getSapClient();
   const pool = getPool();
   const cfg = loadConfig();
+  const companyId = getCompanyId();
   const allowedNames = cfg.masterdata?.priceList
     ? parseSqlInList(cfg.masterdata.priceList)
     : null;
@@ -71,18 +74,18 @@ export async function syncPriceLists(): Promise<{ listsSynced: number }> {
     if (allowedNames && allowedNames.size > 0) {
       const allowedNums = lists.map((l) => l.PriceListNo);
       if (allowedNums.length > 0) {
-        await conn.query(`DELETE FROM price_lists WHERE price_list_num NOT IN (?)`, [allowedNums]);
+        await conn.query(`DELETE FROM price_lists WHERE company_id = ? AND price_list_num NOT IN (?)`, [companyId, allowedNums]);
       } else {
-        await conn.query(`DELETE FROM price_lists`);
+        await conn.query(`DELETE FROM price_lists WHERE company_id = ?`, [companyId]);
       }
     }
 
     for (const l of lists) {
       await conn.execute(
-        `INSERT INTO price_lists (price_list_num, list_name, last_synced)
-         VALUES (?, ?, NOW())
+        `INSERT INTO price_lists (company_id, price_list_num, list_name, last_synced)
+         VALUES (?, ?, ?, NOW())
          ON DUPLICATE KEY UPDATE list_name = VALUES(list_name), last_synced = NOW()`,
-        [l.PriceListNo, l.PriceListName]
+        [companyId, l.PriceListNo, l.PriceListName]
       );
     }
     await conn.commit();
@@ -111,6 +114,7 @@ export async function syncPriceLists(): Promise<{ listsSynced: number }> {
 export async function syncWarehouses(): Promise<{ warehousesSynced: number }> {
   const sap = getSapClient();
   const pool = getPool();
+  const companyId = getCompanyId();
   const includedCodes = parseSqlInList(loadConfig().masterdata.wareHouse);
   const warehouses = (await sap.getWarehouses()).filter((w) => includedCodes.has(w.WarehouseCode));
 
@@ -120,16 +124,18 @@ export async function syncWarehouses(): Promise<{ warehousesSynced: number }> {
 
     const codes = warehouses.map((w) => w.WarehouseCode);
     await conn.query(
-      codes.length > 0 ? `DELETE FROM warehouses WHERE sap_warehouse_code NOT IN (?)` : `DELETE FROM warehouses`,
-      codes.length > 0 ? [codes] : undefined
+      codes.length > 0
+        ? `DELETE FROM warehouses WHERE company_id = ? AND sap_warehouse_code NOT IN (?)`
+        : `DELETE FROM warehouses WHERE company_id = ?`,
+      codes.length > 0 ? [companyId, codes] : [companyId]
     );
 
     for (const w of warehouses) {
       await conn.execute(
-        `INSERT INTO warehouses (sap_warehouse_code, warehouse_name, is_inactive_in_sap, is_included, last_synced)
-         VALUES (?, ?, ?, ?, NOW())
+        `INSERT INTO warehouses (company_id, sap_warehouse_code, warehouse_name, is_inactive_in_sap, is_included, last_synced)
+         VALUES (?, ?, ?, ?, ?, NOW())
          ON DUPLICATE KEY UPDATE warehouse_name = VALUES(warehouse_name), is_inactive_in_sap = VALUES(is_inactive_in_sap), last_synced = NOW()`,
-        [w.WarehouseCode, w.WarehouseName, w.Inactive === "tYES", w.Inactive !== "tYES"]
+        [companyId, w.WarehouseCode, w.WarehouseName, w.Inactive === "tYES", w.Inactive !== "tYES"]
       );
     }
     await conn.commit();
@@ -159,6 +165,7 @@ export async function syncWarehouses(): Promise<{ warehousesSynced: number }> {
 export async function syncCostCenters(): Promise<{ costCentersSynced: number }> {
   const sap = getSapClient();
   const pool = getPool();
+  const companyId = getCompanyId();
   const [brands, departments, customers] = await Promise.all([
     sap.getProfitCenters(1),
     sap.getProfitCenters(2),
@@ -173,12 +180,12 @@ export async function syncCostCenters(): Promise<{ costCentersSynced: number }> 
     // same "deactivate then reactivate what's current" shape as other
     // master-list syncs, but via delete+reinsert since there's no
     // is_active-only toggle semantics to preserve here.
-    await conn.query(`DELETE FROM cost_centers WHERE dimension IN (1, 2, 3)`);
+    await conn.query(`DELETE FROM cost_centers WHERE company_id = ? AND dimension IN (1, 2, 3)`, [companyId]);
     for (const r of rows) {
       await conn.execute(
-        `INSERT INTO cost_centers (ocr_code, dimension, ocr_name, is_active, last_synced)
-         VALUES (?, ?, ?, ?, NOW())`,
-        [r.CenterCode, r.InWhichDimension, r.CenterName, r.Active === "tYES"]
+        `INSERT INTO cost_centers (company_id, ocr_code, dimension, ocr_name, is_active, last_synced)
+         VALUES (?, ?, ?, ?, ?, NOW())`,
+        [companyId, r.CenterCode, r.InWhichDimension, r.CenterName, r.Active === "tYES"]
       );
     }
     await conn.commit();
@@ -233,6 +240,7 @@ export function computeBatchShelfLifePct(mnfDate: string | null, expDate: string
 export async function syncInventoryStock(): Promise<{ rowsSynced: number }> {
   const sap = getSapClient();
   const pool = getPool();
+  const companyId = getCompanyId();
   const masterdata = loadConfig().masterdata;
   const [rows, batchRows] = await Promise.all([
     sap.getInventoryStock(masterdata.itemGroup, masterdata.wareHouse),
@@ -253,17 +261,17 @@ export async function syncInventoryStock(): Promise<{ rowsSynced: number }> {
     await conn.beginTransaction();
     // Not TRUNCATE: that's DDL and implicitly commits in MySQL, which would
     // break rollback-on-error for the rest of this transaction.
-    await conn.execute(`DELETE FROM item_warehouse_stock`);
+    await conn.execute(`DELETE FROM item_warehouse_stock WHERE company_id = ?`, [companyId]);
 
     const CHUNK = 500;
     for (let i = 0; i < rows.length; i += CHUNK) {
       const chunk = rows.slice(i, i + CHUNK);
       const values = chunk.map((r) => [
-        r.item_code, r.warehouse_code, r.in_stock, r.committed, r.ordered,
+        companyId, r.item_code, r.warehouse_code, r.in_stock, r.committed, r.ordered,
         shelfLifeByKey.get(`${r.item_code}|${r.warehouse_code}`) ?? null,
       ]);
       await conn.query(
-        `INSERT INTO item_warehouse_stock (sap_item_code, warehouse_code, in_stock, committed, ordered, shelf_life_pct, last_synced)
+        `INSERT INTO item_warehouse_stock (company_id, sap_item_code, warehouse_code, in_stock, committed, ordered, shelf_life_pct, last_synced)
          VALUES ?`,
         [values.map((v) => [...v, new Date()])]
       );
@@ -293,6 +301,7 @@ export async function syncInventoryStock(): Promise<{ rowsSynced: number }> {
 export async function syncItems(): Promise<{ itemsSynced: number }> {
   const sap = getSapClient();
   const pool = getPool();
+  const companyId = getCompanyId();
 
   const [basePriceListNum, trackedPriceLists] = await Promise.all([
     getBasePriceListNum(),
@@ -309,7 +318,8 @@ export async function syncItems(): Promise<{ itemsSynced: number }> {
   }
 
   const cat01Rows = await query<{ code: string; name: string | null }[]>(
-    `SELECT code, name FROM item_groups WHERE level = 1`
+    `SELECT code, name FROM item_groups WHERE company_id = ? AND level = 1`,
+    [companyId]
   );
   const cat01NameByCode = new Map(cat01Rows.map((r) => [r.code, r.name]));
 
@@ -334,7 +344,7 @@ export async function syncItems(): Promise<{ itemsSynced: number }> {
   // pairs, so anything no longer covered (including legacy rows with no
   // item_cat01/02 at all) ends up inactive. Items an admin manually hid
   // are unaffected either way (is_manually_hidden is a separate column).
-  await query(`UPDATE items SET is_active = FALSE`);
+  await query(`UPDATE items SET is_active = FALSE WHERE company_id = ?`, [companyId]);
 
   let skip = 0;
   let itemsSynced = 0;
@@ -361,10 +371,10 @@ export async function syncItems(): Promise<{ itemsSynced: number }> {
 
         await conn.execute(
           `INSERT INTO items (
-             sap_item_code, item_name_vi, uom, category, items_group_code,
+             company_id, sap_item_code, item_name_vi, uom, category, items_group_code,
              item_cat01, item_cat02, item_cat03, item_cat04, item_cat05, item_cat06,
              base_price, image_url, brand_code, vat_group, item_tax_class, is_active, last_synced)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE, NOW())
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE, NOW())
            ON DUPLICATE KEY UPDATE
              item_name_vi = VALUES(item_name_vi),
              uom = VALUES(uom),
@@ -381,6 +391,7 @@ export async function syncItems(): Promise<{ itemsSynced: number }> {
              is_active = TRUE,
              last_synced = NOW()`,
           [
+            companyId,
             item.ItemCode,
             item.ItemName,
             item.SalesUnit || null,
@@ -400,7 +411,7 @@ export async function syncItems(): Promise<{ itemsSynced: number }> {
           ]
         );
 
-        await syncItemChannelPrices(conn, item.ItemCode, item.ItemPrices, trackedPriceLists);
+        await syncItemChannelPrices(conn, companyId, item.ItemCode, item.ItemPrices, trackedPriceLists);
         itemsSynced++;
       }
 
@@ -423,6 +434,7 @@ export async function syncItems(): Promise<{ itemsSynced: number }> {
 
 async function syncItemChannelPrices(
   conn: PoolConnection,
+  companyId: string,
   sapItemCode: string,
   itemPrices: { PriceList: number; Price: number; BasePriceList?: number; Factor?: number }[],
   trackedPriceLists: number[]
@@ -433,14 +445,14 @@ async function syncItemChannelPrices(
     const basePriceListNum = entry?.BasePriceList ?? null;
     const factor = entry?.Factor ?? null;
     await conn.execute(
-      `INSERT INTO item_channel_prices (sap_item_code, price_list_num, base_price_list_num, factor, price, last_synced)
-       VALUES (?, ?, ?, ?, ?, NOW())
+      `INSERT INTO item_channel_prices (company_id, sap_item_code, price_list_num, base_price_list_num, factor, price, last_synced)
+       VALUES (?, ?, ?, ?, ?, ?, NOW())
        ON DUPLICATE KEY UPDATE
          base_price_list_num = VALUES(base_price_list_num),
          factor = VALUES(factor),
          price = VALUES(price),
          last_synced = NOW()`,
-      [sapItemCode, listNum, basePriceListNum, factor, price]
+      [companyId, sapItemCode, listNum, basePriceListNum, factor, price]
     );
   }
 }
@@ -454,6 +466,7 @@ async function syncItemChannelPrices(
 export async function syncSpecialPricesForCard(cardCode: string): Promise<{ pricesSynced: number }> {
   const sap = getSapClient();
   const pool = getPool();
+  const companyId = getCompanyId();
 
   const specialPrices = await sap.getSpecialPrices(cardCode);
 
@@ -463,14 +476,14 @@ export async function syncSpecialPricesForCard(cardCode: string): Promise<{ pric
 
     // Clear stale rows for this card so removed/expired SAP special prices
     // don't linger in the cache.
-    await conn.execute(`DELETE FROM special_prices WHERE sap_card_code = ?`, [cardCode]);
+    await conn.execute(`DELETE FROM special_prices WHERE company_id = ? AND sap_card_code = ?`, [companyId, cardCode]);
 
     for (const sp of specialPrices) {
       if (sp.Valid !== "tYES") continue;
       await conn.execute(
-        `INSERT INTO special_prices (sap_card_code, sap_item_code, special_price, discount_percent, valid_from, valid_to, last_synced)
-         VALUES (?, ?, ?, ?, ?, ?, NOW())`,
-        [cardCode, sp.ItemCode, sp.Price, sp.DiscountPercent ?? null, toMySQLDate(sp.ValidFrom), toMySQLDate(sp.ValidTo)]
+        `INSERT INTO special_prices (company_id, sap_card_code, sap_item_code, special_price, discount_percent, valid_from, valid_to, last_synced)
+         VALUES (?, ?, ?, ?, ?, ?, ?, NOW())`,
+        [companyId, cardCode, sp.ItemCode, sp.Price, sp.DiscountPercent ?? null, toMySQLDate(sp.ValidFrom), toMySQLDate(sp.ValidTo)]
       );
     }
 
@@ -530,22 +543,23 @@ function expandSpecialPriceTiers(sp: {
 export async function syncPeriodDiscounts(priceListNum: number): Promise<{ rowsSynced: number }> {
   const sap = getSapClient();
   const pool = getPool();
+  const companyId = getCompanyId();
 
   const rows = await sap.getPriceListSpecialPrices(priceListNum);
 
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
-    await conn.execute(`DELETE FROM period_discount WHERE price_list_num = ?`, [priceListNum]);
+    await conn.execute(`DELETE FROM period_discount WHERE company_id = ? AND price_list_num = ?`, [companyId, priceListNum]);
 
     let rowsSynced = 0;
     for (const sp of rows) {
       if (sp.Valid !== "tYES") continue;
       for (const tier of expandSpecialPriceTiers(sp)) {
         await conn.execute(
-          `INSERT INTO period_discount (price_list_num, sap_item_code, base_price, discount_percent, special_price, date_from, date_to, last_synced)
-           VALUES (?, ?, ?, ?, ?, ?, ?, NOW())`,
-          [priceListNum, tier.itemCode, tier.basePrice, tier.discountPercent, tier.specialPrice, tier.from, tier.to]
+          `INSERT INTO period_discount (company_id, price_list_num, sap_item_code, base_price, discount_percent, special_price, date_from, date_to, last_synced)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
+          [companyId, priceListNum, tier.itemCode, tier.basePrice, tier.discountPercent, tier.specialPrice, tier.from, tier.to]
         );
         rowsSynced++;
       }
@@ -576,10 +590,11 @@ export async function syncSpecialDiscountsForChannel(
 ): Promise<{ customersProcessed: number; rowsSynced: number }> {
   const sap = getSapClient();
   const pool = getPool();
+  const companyId = getCompanyId();
 
   const customers = await query<{ sap_card_code: string }[]>(
-    `SELECT DISTINCT sap_card_code FROM customers WHERE price_list_num = ? AND sap_card_code IS NOT NULL AND sap_card_code != ''`,
-    [priceListNum]
+    `SELECT DISTINCT sap_card_code FROM customers WHERE company_id = ? AND price_list_num = ? AND sap_card_code IS NOT NULL AND sap_card_code != ''`,
+    [companyId, priceListNum]
   );
   const cardCodes = customers.map((c) => c.sap_card_code);
 
@@ -587,7 +602,7 @@ export async function syncSpecialDiscountsForChannel(
   try {
     await conn.beginTransaction();
     if (cardCodes.length > 0) {
-      await conn.query(`DELETE FROM special_discount WHERE sap_card_code IN (?)`, [cardCodes]);
+      await conn.query(`DELETE FROM special_discount WHERE company_id = ? AND sap_card_code IN (?)`, [companyId, cardCodes]);
     }
 
     let rowsSynced = 0;
@@ -597,9 +612,9 @@ export async function syncSpecialDiscountsForChannel(
         if (sp.Valid !== "tYES") continue;
         for (const tier of expandSpecialPriceTiers(sp)) {
           await conn.execute(
-            `INSERT INTO special_discount (sap_card_code, sap_item_code, special_price, discount_percent, valid_from, valid_to, last_synced)
-             VALUES (?, ?, ?, ?, ?, ?, NOW())`,
-            [cardCode, tier.itemCode, tier.specialPrice, tier.discountPercent, tier.from, tier.to]
+            `INSERT INTO special_discount (company_id, sap_card_code, sap_item_code, special_price, discount_percent, valid_from, valid_to, last_synced)
+             VALUES (?, ?, ?, ?, ?, ?, ?, NOW())`,
+            [companyId, cardCode, tier.itemCode, tier.specialPrice, tier.discountPercent, tier.from, tier.to]
           );
           rowsSynced++;
         }
@@ -634,8 +649,8 @@ export async function syncCustomerGroupsForCard(
 
   await query(
     `UPDATE users SET sap_price_list_num = ?, sap_cus_grp01 = ?, sap_cus_grp02 = ?, sap_cus_grp03 = ?
-     WHERE sap_card_code = ?`,
-    [bp?.PriceListNum ?? null, cusGrp01, cusGrp02, cusGrp03, cardCode]
+     WHERE company_id = ? AND sap_card_code = ?`,
+    [bp?.PriceListNum ?? null, cusGrp01, cusGrp02, cusGrp03, getCompanyId(), cardCode]
   );
 
   return { cusGrp01, cusGrp02, cusGrp03 };
@@ -649,13 +664,16 @@ export async function syncCustomerGroupsForCard(
 export async function syncContractDiscounts(): Promise<{ headersSynced: number; linesSynced: number; headersSkipped: number }> {
   const sap = getSapClient();
   const pool = getPool();
+  const companyId = getCompanyId();
 
   // Build customer-side code list from DB
   const cgRows = await query<{ code: string }[]>(
-    `SELECT DISTINCT code FROM customer_groups`
+    `SELECT DISTINCT code FROM customer_groups WHERE company_id = ?`,
+    [companyId]
   );
   const custRows = await query<{ sap_card_code: string }[]>(
-    `SELECT DISTINCT sap_card_code FROM customers`
+    `SELECT DISTINCT sap_card_code FROM customers WHERE company_id = ?`,
+    [companyId]
   );
   const customerCodes = new Set(
     [
@@ -668,10 +686,12 @@ export async function syncContractDiscounts(): Promise<{ headersSynced: number; 
 
   // Build item-side code list from DB
   const igRows = await query<{ code: string }[]>(
-    `SELECT DISTINCT code FROM item_groups`
+    `SELECT DISTINCT code FROM item_groups WHERE company_id = ?`,
+    [companyId]
   );
   const itemRows = await query<{ sap_item_code: string }[]>(
-    `SELECT DISTINCT sap_item_code FROM items`
+    `SELECT DISTINCT sap_item_code FROM items WHERE company_id = ?`,
+    [companyId]
   );
   const itemCodes = new Set(
     [
@@ -724,10 +744,10 @@ export async function syncContractDiscounts(): Promise<{ headersSynced: number; 
           syncedAnyLines = true;
           await conn.execute(
             `INSERT INTO contract_discount (
-               doc_entry, doc_num, line_id, period, status, create_date, update_date, canceled,
+               company_id, doc_entry, doc_num, line_id, period, status, create_date, update_date, canceled,
                u_type_cust, u_type_name_cust, u_code_cust, u_name_cust, u_valid_from, u_valid_to,
                u_type_item, u_type_name_item, u_code_item, u_name_item, u_base_disc_pct, last_synced)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
              ON DUPLICATE KEY UPDATE
                doc_num = VALUES(doc_num), period = VALUES(period), status = VALUES(status),
                create_date = VALUES(create_date), update_date = VALUES(update_date), canceled = VALUES(canceled),
@@ -738,7 +758,7 @@ export async function syncContractDiscounts(): Promise<{ headersSynced: number; 
                u_code_item = VALUES(u_code_item), u_name_item = VALUES(u_name_item),
                u_base_disc_pct = VALUES(u_base_disc_pct), last_synced = NOW()`,
             [
-              h.DocEntry, h.DocNum, l.LineId, h.Period, h.Status, toMySQLDate(h.CreateDate), toMySQLDate(h.UpdateDate), h.Canceled,
+              companyId, h.DocEntry, h.DocNum, l.LineId, h.Period, h.Status, toMySQLDate(h.CreateDate), toMySQLDate(h.UpdateDate), h.Canceled,
               h.U_Type, h.U_TypeName, headerCode, h.U_Name, toMySQLDate(h.U_ValidFrom), toMySQLDate(h.U_ValidTo),
               l.U_Type, l.U_TypeName, lineCode, l.U_Name, l.U_BaseDiscPct,
             ]
@@ -791,10 +811,11 @@ export async function syncContractDiscounts(): Promise<{ headersSynced: number; 
 export async function syncCustomerRequiredShelfLife(): Promise<{ rowsSynced: number; rowsSkipped: number }> {
   const sap = getSapClient();
   const pool = getPool();
+  const companyId = getCompanyId();
 
-  const cgRows = await query<{ code: string }[]>(`SELECT DISTINCT code FROM customer_groups`);
+  const cgRows = await query<{ code: string }[]>(`SELECT DISTINCT code FROM customer_groups WHERE company_id = ?`, [companyId]);
   const customerGroupCodes = new Set(cgRows.map((r) => r.code.trim()));
-  const igRows = await query<{ code: string }[]>(`SELECT DISTINCT code FROM item_groups`);
+  const igRows = await query<{ code: string }[]>(`SELECT DISTINCT code FROM item_groups WHERE company_id = ?`, [companyId]);
   const itemGroupCodes = new Set(igRows.map((r) => r.code.trim()));
 
   if (customerGroupCodes.size === 0 || itemGroupCodes.size === 0) {
@@ -842,18 +863,18 @@ export async function syncCustomerRequiredShelfLife(): Promise<{ rowsSynced: num
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
-    await conn.execute(`DELETE FROM customer_require_shelflife`);
+    await conn.execute(`DELETE FROM customer_require_shelflife WHERE company_id = ?`, [companyId]);
 
     const CHUNK = 500;
     for (let i = 0; i < rows.length; i += CHUNK) {
       const chunk = rows.slice(i, i + CHUNK).map((r) => [
-        r.docEntry, r.custGroupCode, r.custGroupName, r.validFrom, r.validTo,
+        companyId, r.docEntry, r.custGroupCode, r.custGroupName, r.validFrom, r.validTo,
         r.itemGroupCode, r.itemGroupName, r.shelfLifeFrom, r.shelfLifeTo, new Date(),
       ]);
       if (chunk.length === 0) continue;
       await conn.query(
         `INSERT INTO customer_require_shelflife
-           (doc_entry, cust_group_code, cust_group_name, valid_from, valid_to,
+           (company_id, doc_entry, cust_group_code, cust_group_name, valid_from, valid_to,
             item_group_code, item_group_name, shelf_life_from, shelf_life_to, last_synced)
          VALUES ?`,
         [chunk]
@@ -882,6 +903,7 @@ export async function syncCustomerRequiredShelfLife(): Promise<{ rowsSynced: num
 export async function syncSapCustomers(): Promise<{ customersSynced: number }> {
   const sap = getSapClient();
   const pool = getPool();
+  const companyId = getCompanyId();
 
   const pairs = await getCustomerGroupPairsFromDB();
   if (pairs.length === 0) {
@@ -905,9 +927,9 @@ export async function syncSapCustomers(): Promise<{ customersSynced: number }> {
       for (const c of customers) {
         await conn.execute(
           `INSERT INTO customers (
-             sap_card_code, card_name, mst_code, price_list_num,
+             company_id, sap_card_code, card_name, mst_code, price_list_num,
              cus_grp01, cus_grp02, cus_grp03, phone, email, address, last_synced)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
            ON DUPLICATE KEY UPDATE
              card_name = VALUES(card_name), mst_code = VALUES(mst_code),
              price_list_num = VALUES(price_list_num),
@@ -915,7 +937,7 @@ export async function syncSapCustomers(): Promise<{ customersSynced: number }> {
              phone = VALUES(phone), email = VALUES(email), address = VALUES(address),
              last_synced = NOW()`,
           [
-            c.CardCode, c.CardName || null, c.FederalTaxID || null, c.PriceListNum ?? null,
+            companyId, c.CardCode, c.CardName || null, c.FederalTaxID || null, c.PriceListNum ?? null,
             c.U_CusGrp01 || null, c.U_CusGrp02 || null, c.U_CusGrp03 || null,
             c.Phone1 || null, c.EmailAddress || null, c.Address || null,
           ]

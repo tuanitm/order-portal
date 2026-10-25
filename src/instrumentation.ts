@@ -24,11 +24,12 @@ export async function register() {
     running = true;
     try {
       const { queryOne } = await import("@/lib/db/connection");
+      const { getCompanyId } = await import("@/lib/config");
       const row = await queryOne<{
         is_enabled: number;
         interval_hours: number;
         last_run_at: string | null;
-      }>("SELECT is_enabled, interval_hours, last_run_at FROM sync_schedule_settings WHERE id = 1");
+      }>("SELECT is_enabled, interval_hours, last_run_at FROM sync_schedule_settings WHERE company_id = ?", [getCompanyId()]);
 
       if (!row || !row.is_enabled) return;
 

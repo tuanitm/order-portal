@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { queryOne } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import { getSessionUser } from "@/lib/auth/session";
 import { listOrderMessages, postOrderMessage, markOrderMessagesRead } from "@/lib/orderMessages";
 
@@ -16,7 +17,7 @@ async function loadOwnedOrderId(request: NextRequest, id: string): Promise<{ ord
   const orderId = parseInt(id, 10);
   if (isNaN(orderId)) return NextResponse.json({ error: "Invalid order ID" }, { status: 400 });
 
-  const order = await queryOne<{ id: number }>(`SELECT id FROM orders WHERE id = ? AND user_id = ?`, [orderId, user.id]);
+  const order = await queryOne<{ id: number }>(`SELECT id FROM orders WHERE company_id = ? AND id = ? AND user_id = ?`, [getCompanyId(), orderId, user.id]);
   if (!order) return NextResponse.json({ error: "Order not found" }, { status: 404 });
 
   return { orderId, userFullName: user.fullName };

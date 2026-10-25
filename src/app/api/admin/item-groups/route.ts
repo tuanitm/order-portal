@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { getItemCategoryPairsFromDB, getItemGroupsWithEffectiveActive } from "@/lib/itemCategories";
 import { getAllowedItemGroupCodes } from "@/lib/adminScope";
@@ -50,9 +51,9 @@ export async function POST(request: NextRequest) {
   }
 
   await query(
-    `INSERT INTO item_groups (level, code, parent_code, name) VALUES (?, ?, ?, ?)
+    `INSERT INTO item_groups (company_id, level, code, parent_code, name) VALUES (?, ?, ?, ?, ?)
      ON DUPLICATE KEY UPDATE parent_code = VALUES(parent_code), name = VALUES(name)`,
-    [level, code, parentCode, name]
+    [getCompanyId(), level, code, parentCode, name]
   );
 
   return NextResponse.json({ success: true });

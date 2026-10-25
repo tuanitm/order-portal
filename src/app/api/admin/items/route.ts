@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { getAllowedItemGroupCodes, groupScopeClause } from "@/lib/adminScope";
 
@@ -35,8 +36,9 @@ export async function GET(request: NextRequest) {
   const sortDir = searchParams.get("order")?.toUpperCase() === "DESC" ? "DESC" : "ASC";
   const sortCol = SORT_COLUMNS[sortKey] || "i.sap_item_code";
 
-  const whereClauses: string[] = [];
-  const params: string[] = [];
+  const companyId = getCompanyId();
+  const whereClauses: string[] = ["i.company_id = ?"];
+  const params: string[] = [companyId];
   if (search) {
     whereClauses.push("(i.item_name_vi LIKE ? OR i.sap_item_code LIKE ?)");
     params.push(`%${search}%`, `%${search}%`);
@@ -66,7 +68,7 @@ export async function GET(request: NextRequest) {
             i.item_cat01, i.item_cat02, i.item_cat03, i.item_cat04, i.item_cat05, i.item_cat06,
             i.base_price, i.image_url, i.is_active, i.is_manually_hidden, i.last_synced
      FROM items i
-     LEFT JOIN item_groups ig2 ON ig2.level = 2 AND ig2.code = i.item_cat02
+     LEFT JOIN item_groups ig2 ON ig2.company_id = i.company_id AND ig2.level = 2 AND ig2.code = i.item_cat02
      ${whereSql}
      ORDER BY ${sortCol} ${sortDir}
      LIMIT ? OFFSET ?`,

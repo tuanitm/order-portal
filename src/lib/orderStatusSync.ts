@@ -1,4 +1,5 @@
 import { query, queryOne } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import { getSapClient } from "@/lib/sap-b1/client";
 import { recordOrderStatus, notifyCustomerOfStatusChange } from "@/lib/orderHistory";
 
@@ -45,6 +46,7 @@ export async function syncOneOrderStatusFromSap(orderId: number): Promise<{
   portalStatus: string;
   changed: boolean;
 }> {
+  const companyId = getCompanyId();
   const order = await queryOne<{
     id: number;
     order_number: string;
@@ -52,8 +54,8 @@ export async function syncOneOrderStatusFromSap(orderId: number): Promise<{
     status: string;
     sap_so_number: string | null;
   }>(
-    `SELECT id, order_number, sap_doc_entry, status, sap_so_number FROM orders WHERE id = ?`,
-    [orderId]
+    `SELECT id, order_number, sap_doc_entry, status, sap_so_number FROM orders WHERE company_id = ? AND id = ?`,
+    [companyId, orderId]
   );
   if (!order) throw new Error(`Order ${orderId} not found`);
   if (!order.sap_doc_entry) {
@@ -76,8 +78,8 @@ export async function syncOneOrderStatusFromSap(orderId: number): Promise<{
 
   if (changed) {
     await query(
-      `UPDATE orders SET sap_so_number = ?, status = ? WHERE id = ?`,
-      [newSoNumber, newPortalStatus, orderId]
+      `UPDATE orders SET sap_so_number = ?, status = ? WHERE company_id = ? AND id = ?`,
+      [newSoNumber, newPortalStatus, companyId, orderId]
     );
     if (newPortalStatus !== order.status) {
       await recordOrderStatus(orderId, newPortalStatus);

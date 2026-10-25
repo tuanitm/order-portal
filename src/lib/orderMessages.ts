@@ -1,4 +1,5 @@
 import { query } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 
 export interface OrderMessage {
   id: number;
@@ -24,8 +25,8 @@ export interface UnreadCustomerMessageSummary extends UnreadOrderSummary {
 export async function listOrderMessages(orderId: number): Promise<OrderMessage[]> {
   return query<OrderMessage[]>(
     `SELECT id, sender_type, sender_name, message, created_at
-     FROM order_messages WHERE order_id = ? ORDER BY created_at ASC, id ASC`,
-    [orderId]
+     FROM order_messages WHERE company_id = ? AND order_id = ? ORDER BY created_at ASC, id ASC`,
+    [getCompanyId(), orderId]
   );
 }
 
@@ -37,8 +38,8 @@ export async function postOrderMessage(
   message: string
 ): Promise<void> {
   await query(
-    `INSERT INTO order_messages (order_id, sender_type, sender_name, message) VALUES (?, ?, ?, ?)`,
-    [orderId, senderType, senderName, message]
+    `INSERT INTO order_messages (company_id, order_id, sender_type, sender_name, message) VALUES (?, ?, ?, ?, ?)`,
+    [getCompanyId(), orderId, senderType, senderName, message]
   );
 }
 
@@ -50,8 +51,8 @@ export async function postOrderMessage(
  */
 export async function markOrderMessagesRead(orderId: number): Promise<void> {
   await query(
-    `UPDATE order_messages SET read_at = NOW() WHERE order_id = ? AND sender_type = 'admin' AND read_at IS NULL`,
-    [orderId]
+    `UPDATE order_messages SET read_at = NOW() WHERE company_id = ? AND order_id = ? AND sender_type = 'admin' AND read_at IS NULL`,
+    [getCompanyId(), orderId]
   );
 }
 
@@ -63,13 +64,14 @@ export async function markOrderMessagesRead(orderId: number): Promise<void> {
 export async function getUnreadMessageSummaryForUser(
   userId: number
 ): Promise<{ totalUnread: number; orders: UnreadOrderSummary[] }> {
+  const companyId = getCompanyId();
   const orders = await query<UnreadOrderSummary[]>(
     `WITH unread AS (
        SELECT om.order_id, om.message, om.created_at, o.order_number,
               ROW_NUMBER() OVER (PARTITION BY om.order_id ORDER BY om.created_at DESC) AS rn
        FROM order_messages om
-       JOIN orders o ON o.id = om.order_id
-       WHERE o.user_id = ? AND om.sender_type = 'admin' AND om.read_at IS NULL
+       JOIN orders o ON o.company_id = om.company_id AND o.id = om.order_id
+       WHERE om.company_id = ? AND o.user_id = ? AND om.sender_type = 'admin' AND om.read_at IS NULL
      )
      SELECT order_id, order_number, COUNT(*) AS unread_count,
             MAX(CASE WHEN rn = 1 THEN message END) AS latest_message,
@@ -77,7 +79,7 @@ export async function getUnreadMessageSummaryForUser(
      FROM unread
      GROUP BY order_id, order_number
      ORDER BY latest_created_at DESC`,
-    [userId]
+    [companyId, userId]
   );
   const totalUnread = orders.reduce((sum, o) => sum + Number(o.unread_count), 0);
   return { totalUnread, orders };
@@ -93,8 +95,8 @@ export async function getUnreadMessageSummaryForUser(
  */
 export async function markOrderMessagesReadByAdmin(orderId: number): Promise<void> {
   await query(
-    `UPDATE order_messages SET read_at = NOW() WHERE order_id = ? AND sender_type = 'customer' AND read_at IS NULL`,
-    [orderId]
+    `UPDATE order_messages SET read_at = NOW() WHERE company_id = ? AND order_id = ? AND sender_type = 'customer' AND read_at IS NULL`,
+    [getCompanyId(), orderId]
   );
 }
 
@@ -110,8 +112,9 @@ export async function getUnreadCustomerMessageSummaryForAdmins(
   totalUnread: number;
   orders: UnreadCustomerMessageSummary[];
 }> {
+  const companyId = getCompanyId();
   let scopeWhere = "";
-  const params: string[] = [];
+  const params: string[] = [companyId];
 
   if (allowedGroupCodes) {
     if (allowedGroupCodes.size === 0) {
@@ -132,10 +135,10 @@ export async function getUnreadCustomerMessageSummaryForAdmins(
        SELECT om.order_id, om.message, om.created_at, o.order_number, o.customer_name,
               ROW_NUMBER() OVER (PARTITION BY om.order_id ORDER BY om.created_at DESC) AS rn
        FROM order_messages om
-       JOIN orders o ON o.id = om.order_id
-       LEFT JOIN users u ON u.id = o.user_id
-       LEFT JOIN customers c ON c.sap_card_code = u.sap_card_code
-       WHERE om.sender_type = 'customer' AND om.read_at IS NULL
+       JOIN orders o ON o.company_id = om.company_id AND o.id = om.order_id
+       LEFT JOIN users u ON u.company_id = om.company_id AND u.id = o.user_id
+       LEFT JOIN customers c ON c.company_id = om.company_id AND c.sap_card_code = u.sap_card_code
+       WHERE om.company_id = ? AND om.sender_type = 'customer' AND om.read_at IS NULL
          ${scopeWhere}
      )
      SELECT order_id, order_number, customer_name, COUNT(*) AS unread_count,

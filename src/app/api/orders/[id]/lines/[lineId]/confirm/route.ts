@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query, queryOne } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import { getSessionUser } from "@/lib/auth/session";
 import { postOrderMessage } from "@/lib/orderMessages";
 
@@ -31,9 +32,10 @@ export async function POST(
     return NextResponse.json({ error: "accept must be a boolean" }, { status: 400 });
   }
 
+  const companyId = getCompanyId();
   const order = await queryOne<{ sap_doc_entry: number | null }>(
-    `SELECT sap_doc_entry FROM orders WHERE id = ? AND user_id = ?`,
-    [orderId, user.id]
+    `SELECT sap_doc_entry FROM orders WHERE company_id = ? AND id = ? AND user_id = ?`,
+    [companyId, orderId, user.id]
   );
   if (!order) return NextResponse.json({ error: "Order not found" }, { status: 404 });
   if (order.sap_doc_entry) {
@@ -41,8 +43,8 @@ export async function POST(
   }
 
   const line = await queryOne<{ id: number; sap_item_code: string; item_name: string; confirm_qty: number; customer_confirm_status: string }>(
-    `SELECT id, sap_item_code, item_name, confirm_qty, customer_confirm_status FROM order_lines WHERE id = ? AND order_id = ?`,
-    [orderLineId, orderId]
+    `SELECT id, sap_item_code, item_name, confirm_qty, customer_confirm_status FROM order_lines WHERE company_id = ? AND id = ? AND order_id = ?`,
+    [companyId, orderLineId, orderId]
   );
   if (!line) return NextResponse.json({ error: "Order line not found" }, { status: 404 });
   if (line.customer_confirm_status !== "pending") {
@@ -50,8 +52,8 @@ export async function POST(
   }
 
   await query(
-    `UPDATE order_lines SET customer_confirm_status = ? WHERE id = ?`,
-    [body.accept ? "accepted" : "rejected", orderLineId]
+    `UPDATE order_lines SET customer_confirm_status = ? WHERE company_id = ? AND id = ?`,
+    [body.accept ? "accepted" : "rejected", companyId, orderLineId]
   );
 
   await postOrderMessage(

@@ -1,4 +1,5 @@
 import { query } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import type { ProductWithPricing } from "@/types/product";
 
 /**
@@ -28,6 +29,7 @@ export async function resolveHiddenItemCategories(
   cusGrp02: string | null,
   cusGrp03: string | null
 ): Promise<HiddenCategory[]> {
+  const companyId = getCompanyId();
   const visibility = new Map<string, HiddenCategory & { visible: boolean; explicit: boolean }>();
   const key = (level: number, code: string) => `${level}:${code}`;
 
@@ -43,8 +45,8 @@ export async function resolveHiddenItemCategories(
       `SELECT cv.item_category_level, cv.item_category_code, cv.is_visible
        FROM catalog_visibility cv
        JOIN customer_groups cg ON cg.id = cv.customer_group_id
-       WHERE cg.level = ? AND cg.code = ?`,
-      [level, code]
+       WHERE cv.company_id = ? AND cg.company_id = ? AND cg.level = ? AND cg.code = ?`,
+      [companyId, companyId, level, code]
     );
     for (const r of rules) {
       visibility.set(key(r.item_category_level, r.item_category_code), {
@@ -59,7 +61,8 @@ export async function resolveHiddenItemCategories(
   // ── Item group inheritance: propagate parent visibility to children ──
   // If D1 (level 1) is hidden, also hide D11/D12 (level 2), D111/D112 (level 3), etc.
   const allItemGroups = await query<{ level: number; code: string; parent_code: string | null }[]>(
-    `SELECT level, code, parent_code FROM item_groups WHERE level IN (1, 2, 3) ORDER BY level ASC`
+    `SELECT level, code, parent_code FROM item_groups WHERE company_id = ? AND level IN (1, 2, 3) ORDER BY level ASC`,
+    [companyId]
   );
   // Process level by level (1→2→3) so parent state is resolved first
   for (let lvl = 2; lvl <= 3; lvl++) {
@@ -243,11 +246,9 @@ export function promotionMatchSql(alias: string): { bpSql: string; itSql: string
 export function mapRowToProductWithPricing(row: ProductRow): ProductWithPricing {
   const sapBasePrice = Number(row.base_price); // items.base_price (S01) — only used as the fallback when there's no channel price row at all
   const channelPrice = row.channel_price !== null ? Number(row.channel_price) : null;
-  // The actual reference price the discount waterfall is taken from — and,
-  // per the customer's request, also what's shown as "Base Price"/the
-  // strikethrough and what discountPercent is computed against, so the
-  // displayed "% off" always matches the price that was really cut.
-  const priceBeforeDiscounts = channelPrice && channelPrice > 0 ? channelPrice : sapBasePrice;
+  // The Step 1 Channel Price — never shown directly to the customer; it's
+  // only the input to Step 2 (Period Discount) below.
+  const channelBasePrice = channelPrice && channelPrice > 0 ? channelPrice : sapBasePrice;
 
   const periodDiscPct = row.period_disc_pct !== null ? Number(row.period_disc_pct) : 0;
   const contractDiscPct = row.contract_disc_pct !== null ? Number(row.contract_disc_pct) : 0;
@@ -275,20 +276,23 @@ export function mapRowToProductWithPricing(row: ProductRow): ProductWithPricing 
 
   const promoDiscPct = promoOptionsSorted[0] ? Number(promoOptionsSorted[0].pct) : 0;
 
-  // Sequential flow: Channel Price -> Period Discount Price -> Contract
-  // Discount Price -> Promotion Discount Price. Each step is taken off
-  // the PREVIOUS step's already-discounted price, not off the original
-  // Channel Price.
-  const periodPrice = priceBeforeDiscounts * (1 - periodDiscPct / 100);
-  const contractPrice = periodPrice * (1 - contractDiscPct / 100);
-  const promotionPrice = contractPrice * (1 - promoDiscPct / 100);
-
-  const displayPrice = Math.max(0, promotionPrice);
+  // Step 1: Channel Price -> Step 2: Period Discount Price. This Step 2
+  // result is the "base price" shown to the customer (strikethrough/
+  // "Base Price") — Contract and Promotion Discount are NOT chained after
+  // Period Discount in sequence; confirmed empirically against a real
+  // posted SAP order (see admin orders confirm route's
+  // effectiveDiscountBasePrice: a Period Discount of 117273 -> 93818, then
+  // a 10% Contract Discount costing 9382 = 93818 x 10%, NOT 117273 x 10%).
+  // Contract and Promotion are also NOT chained to EACH OTHER — SAP computes
+  // each independently as its own % of this same Period-discounted price
+  // and sums both amounts, equivalent to one combined (contract + promo)%
+  // taken off basePrice in a single step.
+  const basePrice = channelBasePrice * (1 - periodDiscPct / 100);
+  const combinedDiscPct = contractDiscPct + promoDiscPct;
+  const displayPrice = Math.max(0, basePrice * (1 - combinedDiscPct / 100));
 
   const discountPercent =
-    displayPrice < priceBeforeDiscounts && priceBeforeDiscounts > 0
-      ? Math.round(((priceBeforeDiscounts - displayPrice) / priceBeforeDiscounts) * 100)
-      : null;
+    displayPrice < basePrice && basePrice > 0 ? Math.round(combinedDiscPct) : null;
 
   return {
     id: row.id,
@@ -298,17 +302,21 @@ export function mapRowToProductWithPricing(row: ProductRow): ProductWithPricing 
     uom: row.uom || "",
     packSize: row.pack_size || "",
     category: row.category || "",
-    basePrice: priceBeforeDiscounts,
+    // Already net of Period Discount (Step 2) — see combinedDiscPct's
+    // comment above for why this, not the raw Channel Price, is what's
+    // shown as "Base Price"/the strikethrough.
+    basePrice,
     imageUrl: row.image_url,
     isActive: !!row.is_active,
     displayPrice,
-    specialPrice: displayPrice < priceBeforeDiscounts ? displayPrice : null,
+    specialPrice: displayPrice < basePrice ? displayPrice : null,
     discountPercent,
-    // Individual waterfall percentages that compound into discountPercent
-    // above — 0 when that step didn't apply. Persisted per order line (see
+    // Individual percentages — 0 when that step didn't apply. periodDiscPct
+    // is already baked into basePrice above (not part of discountPercent);
+    // contractDiscPct + promoDiscPct together equal discountPercent (see
+    // combinedDiscPct above). Persisted per order line (see
     // order_lines.period_disc_pct/contract_disc_pct/promo_disc_pct) so
-    // Admin - Order can show which discount type(s) actually applied,
-    // instead of only the combined discountPercent.
+    // Admin - Order can show which discount type(s) actually applied.
     periodDiscPct,
     contractDiscPct,
     promoDiscPct,
@@ -367,6 +375,7 @@ export interface PricingContext {
  */
 export function buildStockGateClause(
   stockWarehouseCodes: string[],
+  companyId: string,
   cusGrp01: string,
   cusGrp02: string,
   cusGrp03: string
@@ -376,13 +385,46 @@ export function buildStockGateClause(
   return {
     clause: `EXISTS (
       SELECT 1 FROM item_warehouse_stock iws
-      WHERE iws.sap_item_code = i.sap_item_code
+      WHERE iws.company_id = ?
+        AND iws.sap_item_code = i.sap_item_code
         AND iws.warehouse_code IN (${stockWarehouseCodes.map(() => "?").join(",")})
         AND ${shelfLifeOkSql}
       GROUP BY iws.sap_item_code
       HAVING SUM(iws.in_stock - iws.committed) > 0
     )`,
-    params: [...stockWarehouseCodes, cusGrp01, cusGrp02, cusGrp03],
+    params: [companyId, ...stockWarehouseCodes, companyId, cusGrp01, cusGrp02, cusGrp03],
+  };
+}
+
+/**
+ * "Has a usable (non-zero) price" gate — excludes an item with no channel
+ * price row AND no SAP base price (items.base_price), or whose only channel
+ * price is 0, from ever being listed/orderable/importable. Mirrors
+ * mapRowToProductWithPricing's own channelBasePrice fallback (the matching
+ * channel price-list row's price when > 0, else items.base_price) so "which
+ * items are listed" and "what price shows" never disagree. Shared by
+ * queryPricedProducts' own WHERE and GET /api/products' separate COUNT(*)/
+ * categories-facet queries, which don't run the full LATERAL-joined query.
+ * `itemAlias` lets a caller with no alias on its `items` table (the
+ * categories facet query) pass "items" instead of the default "i".
+ */
+export function buildPriceGateClause(
+  companyId: string,
+  priceListNum: number,
+  itemAlias: string = "i"
+): { clause: string; params: (string | number)[] } {
+  return {
+    clause: `COALESCE(
+      (SELECT cpb.price
+       FROM item_channel_prices cp2
+       LEFT JOIN item_channel_prices cpb
+         ON cpb.company_id = cp2.company_id AND cpb.sap_item_code = cp2.sap_item_code AND cpb.price_list_num = cp2.base_price_list_num
+       WHERE cp2.company_id = ? AND cp2.sap_item_code = ${itemAlias}.sap_item_code AND cp2.price_list_num = ?
+         AND cpb.price > 0
+       LIMIT 1),
+      ${itemAlias}.base_price
+    ) > 0`,
+    params: [companyId, priceListNum],
   };
 }
 
@@ -391,15 +433,16 @@ export function buildStockGateClause(
  * inside queryPricedProducts — both must apply the identical shelf-life
  * condition, or the displayed "available" number could disagree with
  * whether the item is listed at all. `iwsAlias` lets each call site qualify
- * iws.shelf_life_pct with its own alias; 3 `?` placeholders (cusGrp01/02/03)
- * are needed wherever this is spliced in.
+ * iws.shelf_life_pct with its own alias; 4 `?` placeholders (companyId, then
+ * cusGrp01/02/03) are needed wherever this is spliced in.
  */
 function shelfLifeOkSqlFor(iwsAlias: string): string {
   return `(
     ${iwsAlias}.shelf_life_pct IS NULL
     OR NOT EXISTS (
       SELECT 1 FROM customer_require_shelflife crs
-      WHERE crs.cust_group_code IN (?, ?, ?)
+      WHERE crs.company_id = ?
+        AND crs.cust_group_code IN (?, ?, ?)
         AND crs.item_group_code IN (i.item_cat01, i.item_cat02, i.item_cat03, i.item_cat04, i.item_cat05, i.item_cat06)
         AND (crs.valid_from IS NULL OR crs.valid_from <= CURDATE())
         AND (crs.valid_to IS NULL OR crs.valid_to >= CURDATE())
@@ -412,30 +455,37 @@ function shelfLifeOkSqlFor(iwsAlias: string): string {
 }
 
 /**
- * Price flow (sequential, not additive — each step's output feeds the next
- * step's input, none of them computed off the original Channel Price):
+ * Price flow:
  *   Step 1: Channel Price      = the customer's applicable price-list price
  *                                 (their channel price list, falling back to
  *                                 items.base_price if they have no channel
- *                                 price cached).
+ *                                 price cached). Never shown to the customer
+ *                                 directly.
  *   Step 2: Period Discount    = Channel Price - Channel Price * (period
  *                                 discount % / 100) — the best-matching,
  *                                 currently-valid `period_discount` row for
  *                                 the customer's own channel price list (SAP
  *                                 scopes these to the whole price list, not
- *                                 a customer — see syncPeriodDiscounts).
- *   Step 3: Contract Discount  = Step 2's price - Step 2's price * (contract
- *                                 discount % / 100) — best-matching
- *                                 `contract_discount` row.
- *   Step 4: Promotion Discount = Step 3's price - Step 3's price * (promotion
- *                                 discount % / 100) — best-matching
- *                                 `promotion_discount` row. This is the final
- *                                 displayed price.
- * The `basePrice`/strikethrough and `discountPercent` returned to the client
- * are the Step 1 Channel Price (priceBeforeDiscounts) — never items.base_price
- * (S01) when a channel price exists — so the displayed "% off" always matches
- * the price the discounts were actually taken from, even when a channel list
- * prices an item above or below S01.
+ *                                 a customer — see syncPeriodDiscounts). This
+ *                                 is the `basePrice`/strikethrough shown to
+ *                                 the customer.
+ *   Step 3: Contract + Promotion Discount — NOT chained after each other, and
+ *                                 NOT chained after Step 2 sequentially;
+ *                                 each is independently computed as its own
+ *                                 % of Step 2's price and both amounts are
+ *                                 summed — confirmed empirically against a
+ *                                 real posted SAP order (see admin orders
+ *                                 confirm route's effectiveDiscountBasePrice:
+ *                                 a Period Discount of 117273 -> 93818, then
+ *                                 a 10% Contract Discount costing 9382 =
+ *                                 93818 x 10%, NOT 117273 x 10%). Equivalent
+ *                                 to one combined (contract + promo)% taken
+ *                                 off Step 2's price in a single step. This
+ *                                 combined % is `discountPercent`, and the
+ *                                 result is the final displayed price.
+ * The displayed "% off" (discountPercent) is always relative to `basePrice`
+ * (Step 2, the Period-discounted price) — never the raw Channel Price or
+ * items.base_price (S01).
  *
  * A discount (from `contract_discount` or `promotion_discount`) matches a
  * (customer, item) pair if its customer code equals the customer's own BP
@@ -466,18 +516,24 @@ export async function queryPricedProducts(
   orderLimitParams: (string | number)[]
 ): Promise<ProductWithPricing[]> {
   const { sapCardCode, cusGrp01, cusGrp02, cusGrp03, priceListNum, basePriceListNum, stockWarehouseCodes } = ctx;
+  const companyId = getCompanyId();
 
-  const whereClauses = ["i.is_active = TRUE", "i.is_manually_hidden = FALSE", ...hiddenClauses];
-  const params: (string | number | null)[] = [...hiddenParams];
+  const whereClauses = ["i.company_id = ?", "i.is_active = TRUE", "i.is_manually_hidden = FALSE", ...hiddenClauses];
+  const params: (string | number | null)[] = [companyId, ...hiddenParams];
 
   // Stock gate: only applies once an admin has marked at least one
   // warehouse "Included" — until then this is a no-op, so turning the
   // feature on is opt-in and never silently empties the result set.
-  const stockGate = buildStockGateClause(stockWarehouseCodes, cusGrp01, cusGrp02, cusGrp03);
+  const stockGate = buildStockGateClause(stockWarehouseCodes, companyId, cusGrp01, cusGrp02, cusGrp03);
   if (stockGate.clause) {
     whereClauses.push(stockGate.clause);
     params.push(...stockGate.params);
   }
+
+  // Never list/match a 0-priced or unpriced item (see buildPriceGateClause).
+  const priceGate = buildPriceGateClause(companyId, priceListNum ?? basePriceListNum);
+  whereClauses.push(priceGate.clause);
+  params.push(...priceGate.params);
 
   whereClauses.push(...extraWhereSql);
   params.push(...extraWhereParams);
@@ -495,7 +551,8 @@ export async function queryPricedProducts(
   const availableQtySql =
     stockWarehouseCodes.length > 0
       ? `(SELECT SUM(iws.in_stock - iws.committed) FROM item_warehouse_stock iws
-          WHERE iws.sap_item_code = i.sap_item_code
+          WHERE iws.company_id = ?
+            AND iws.sap_item_code = i.sap_item_code
             AND iws.warehouse_code IN (${stockWarehouseCodes.map(() => "?").join(",")})
             AND ${shelfLifeOkSqlFor("iws")})`
       : "NULL";
@@ -519,15 +576,16 @@ export async function queryPricedProducts(
             ${availableQtySql} AS available_qty
      FROM items i
      LEFT JOIN item_channel_prices cp
-       ON cp.sap_item_code = i.sap_item_code AND cp.price_list_num = ?
+       ON cp.company_id = ? AND cp.sap_item_code = i.sap_item_code AND cp.price_list_num = ?
      LEFT JOIN item_channel_prices cp_base
-       ON cp_base.sap_item_code = i.sap_item_code AND cp_base.price_list_num = cp.base_price_list_num
+       ON cp_base.company_id = ? AND cp_base.sap_item_code = i.sap_item_code AND cp_base.price_list_num = cp.base_price_list_num
      LEFT JOIN cost_centers cc
-       ON cc.ocr_code = i.brand_code AND cc.dimension = 1
+       ON cc.company_id = ? AND cc.ocr_code = i.brand_code AND cc.dimension = 1
      LEFT JOIN LATERAL (
        SELECT pdisc.discount_percent AS pct
        FROM period_discount pdisc
-       WHERE pdisc.price_list_num = ?
+       WHERE pdisc.company_id = ?
+         AND pdisc.price_list_num = ?
          AND pdisc.sap_item_code = i.sap_item_code
          AND (pdisc.date_from IS NULL OR pdisc.date_from <= CURDATE())
          AND (pdisc.date_to IS NULL OR pdisc.date_to >= CURDATE())
@@ -537,7 +595,8 @@ export async function queryPricedProducts(
      LEFT JOIN LATERAL (
        SELECT cd.u_base_disc_pct AS pct
        FROM contract_discount cd
-       WHERE (cd.canceled IS NULL OR cd.canceled != 'Y')
+       WHERE cd.company_id = ?
+         AND (cd.canceled IS NULL OR cd.canceled != 'Y')
          AND cd.u_code_cust IN (?, ?, ?, ?)
          AND cd.u_code_item IN (i.sap_item_code, i.item_cat01, i.item_cat02, i.item_cat03, i.item_cat04, i.item_cat05, i.item_cat06)
          AND (cd.u_valid_from IS NULL OR cd.u_valid_from <= CURDATE())
@@ -571,7 +630,8 @@ export async function queryPricedProducts(
          'score', (${promoMatch.scoreSql})
        )) AS options
        FROM promotion_discount pd
-       WHERE pd.disc_pct IS NOT NULL
+       WHERE pd.company_id = ?
+         AND pd.disc_pct IS NOT NULL
          AND (pd.selling_qty IS NULL OR pd.selling_qty <= 1)
          AND (pd.begin_date IS NULL OR pd.begin_date <= CURDATE())
          AND (pd.end_date IS NULL OR pd.end_date >= CURDATE())
@@ -586,7 +646,8 @@ export async function queryPricedProducts(
          'score', (${giveMatch.scoreSql})
        )) AS options
        FROM promotion_discount pd2
-       WHERE pd2.giving_item_code IS NOT NULL
+       WHERE pd2.company_id = ?
+         AND pd2.giving_item_code IS NOT NULL
          AND (pd2.begin_date IS NULL OR pd2.begin_date <= CURDATE())
          AND (pd2.end_date IS NULL OR pd2.end_date >= CURDATE())
          AND ${giveMatch.bpSql}
@@ -595,13 +656,15 @@ export async function queryPricedProducts(
      WHERE ${whereSql}
      ${orderLimitSql}`,
     [
-      ...(stockWarehouseCodes.length > 0 ? [...stockWarehouseCodes, cusGrp01, cusGrp02, cusGrp03] : []), // available_qty subquery (SELECT list — comes first in the SQL text)
-      priceListNum ?? basePriceListNum, // cp.price_list_num
-      priceListNum ?? basePriceListNum, // period_discount.price_list_num (same list — SAP scopes these per price list, not per customer)
-      custCode, grp01, grp02, grp03, // contract WHERE u_code_cust IN list
+      ...(stockWarehouseCodes.length > 0 ? [companyId, ...stockWarehouseCodes, companyId, cusGrp01, cusGrp02, cusGrp03] : []), // available_qty subquery (SELECT list — comes first in the SQL text)
+      companyId, priceListNum ?? basePriceListNum, // cp
+      companyId, // cp_base
+      companyId, // cc
+      companyId, priceListNum ?? basePriceListNum, // period_discount
+      companyId, custCode, grp01, grp02, grp03, // contract WHERE company + u_code_cust IN list
       custCode, grp03, grp02, grp01, // contract ORDER BY customer-specificity weights
-      custCode, grp01, grp02, grp03, // promo WHERE bp_type='2'/'CG1'/'CG2'/'CG3' match
-      custCode, grp01, grp02, grp03, // giveaway WHERE bp_type='2'/'CG1'/'CG2'/'CG3' match
+      companyId, custCode, grp01, grp02, grp03, // promo WHERE company + bp_type='2'/'CG1'/'CG2'/'CG3' match
+      companyId, custCode, grp01, grp02, grp03, // giveaway WHERE company + bp_type='2'/'CG1'/'CG2'/'CG3' match
       ...params,
       ...orderLimitParams,
     ]

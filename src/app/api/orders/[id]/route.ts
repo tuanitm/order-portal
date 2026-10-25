@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query, queryOne } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import { getSessionUser } from "@/lib/auth/session";
 
 /**
@@ -22,11 +23,13 @@ export async function GET(
     return NextResponse.json({ error: "Invalid order ID" }, { status: 400 });
   }
 
+  const companyId = getCompanyId();
+
   const order = await queryOne(
     `SELECT id, order_number, customer_name, delivery_address, contact_phone, contact_email,
             subtotal, discount_total, grand_total, remark, status, sap_doc_entry, sap_doc_num, created_at
-     FROM orders WHERE id = ? AND user_id = ?`,
-    [orderId, user.id]
+     FROM orders WHERE company_id = ? AND id = ? AND user_id = ?`,
+    [companyId, orderId, user.id]
   );
   if (!order) {
     return NextResponse.json({ error: "Order not found" }, { status: 404 });
@@ -35,13 +38,13 @@ export async function GET(
   const lines = await query(
     `SELECT id, sap_item_code, item_name, quantity, uom, unit_price, discount_percent, line_total,
             confirm_qty, customer_confirm_status
-     FROM order_lines WHERE order_id = ?`,
-    [orderId]
+     FROM order_lines WHERE company_id = ? AND order_id = ?`,
+    [companyId, orderId]
   );
 
   const history = await query<{ status: string; created_at: string }[]>(
-    `SELECT status, created_at FROM order_status_history WHERE order_id = ? ORDER BY created_at DESC, id DESC`,
-    [orderId]
+    `SELECT status, created_at FROM order_status_history WHERE company_id = ? AND order_id = ? ORDER BY created_at DESC, id DESC`,
+    [companyId, orderId]
   );
 
   // Orders placed before status history existed have no rows — fall back to
@@ -72,9 +75,11 @@ export async function PATCH(
   const orderId = parseInt(id, 10);
   if (isNaN(orderId)) return NextResponse.json({ error: "Invalid order ID" }, { status: 400 });
 
+  const companyId = getCompanyId();
+
   const order = await queryOne<{ sap_doc_entry: number | null }>(
-    `SELECT sap_doc_entry FROM orders WHERE id = ? AND user_id = ?`,
-    [orderId, user.id]
+    `SELECT sap_doc_entry FROM orders WHERE company_id = ? AND id = ? AND user_id = ?`,
+    [companyId, orderId, user.id]
   );
   if (!order) return NextResponse.json({ error: "Order not found" }, { status: 404 });
   if (order.sap_doc_entry) {
@@ -101,7 +106,7 @@ export async function PATCH(
     return NextResponse.json({ error: "No valid fields to update" }, { status: 400 });
   }
 
-  values.push(String(orderId));
-  await query(`UPDATE orders SET ${updates.join(", ")} WHERE id = ?`, values);
+  values.push(companyId, String(orderId));
+  await query(`UPDATE orders SET ${updates.join(", ")} WHERE company_id = ? AND id = ?`, values);
   return NextResponse.json({ success: true });
 }

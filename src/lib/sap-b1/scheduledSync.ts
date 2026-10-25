@@ -1,4 +1,5 @@
 import { query } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import {
   syncSapCustomers,
   syncItems,
@@ -23,6 +24,7 @@ import { syncOneOrderStatusFromSap } from "@/lib/orderStatusSync";
  * the Admin Settings page).
  */
 export async function runScheduledSync(): Promise<{ status: "success" | "partial" | "failed"; summary: string }> {
+  const companyId = getCompanyId();
   const steps: [string, () => Promise<unknown>][] = [
     ["Customer Group", () => syncCustomerGroupsFromHana()],
     ["Item Group", () => syncItemGroupsFromHana()],
@@ -33,7 +35,7 @@ export async function runScheduledSync(): Promise<{ status: "success" | "partial
     [
       "Channel Price List",
       async () => {
-        const lists = await query<{ price_list_num: number }[]>(`SELECT price_list_num FROM price_lists`);
+        const lists = await query<{ price_list_num: number }[]>(`SELECT price_list_num FROM price_lists WHERE company_id = ?`, [companyId]);
         const results: Record<number, { customersProcessed: number; rowsSynced: number }> = {};
         for (const l of lists) {
           results[l.price_list_num] = await syncSpecialDiscountsForChannel(l.price_list_num);
@@ -44,7 +46,7 @@ export async function runScheduledSync(): Promise<{ status: "success" | "partial
     [
       "Period Discount",
       async () => {
-        const lists = await query<{ price_list_num: number }[]>(`SELECT price_list_num FROM price_lists`);
+        const lists = await query<{ price_list_num: number }[]>(`SELECT price_list_num FROM price_lists WHERE company_id = ?`, [companyId]);
         const results: Record<number, { rowsSynced: number }> = {};
         for (const l of lists) {
           results[l.price_list_num] = await syncPeriodDiscounts(l.price_list_num);
@@ -62,9 +64,11 @@ export async function runScheduledSync(): Promise<{ status: "success" | "partial
         // (completed/cancelled/rejected are final on the portal side).
         const pending = await query<{ id: number }[]>(
           `SELECT id FROM orders
-           WHERE sap_doc_entry IS NOT NULL
+           WHERE company_id = ?
+             AND sap_doc_entry IS NOT NULL
              AND status NOT IN ('completed', 'cancelled', 'rejected')
-           ORDER BY id`
+           ORDER BY id`,
+          [companyId]
         );
         let updated = 0;
         let errors = 0;
@@ -97,9 +101,15 @@ export async function runScheduledSync(): Promise<{ status: "success" | "partial
     okCount === steps.length ? "success" : okCount === 0 ? "failed" : "partial";
   const summary = lines.join("\n");
 
+  // sync_schedule_settings is now one row PER COMPANY (company_id is the
+  // PRIMARY KEY itself — see schema.sql) rather than a single `id = 1`
+  // singleton, so this is an upsert: a company's row may not exist yet
+  // (lazily created here or wherever its settings are first read/written).
   await query(
-    `UPDATE sync_schedule_settings SET last_run_at = NOW(), last_run_status = ?, last_run_summary = ? WHERE id = 1`,
-    [status, summary]
+    `INSERT INTO sync_schedule_settings (company_id, last_run_at, last_run_status, last_run_summary)
+     VALUES (?, NOW(), ?, ?)
+     ON DUPLICATE KEY UPDATE last_run_at = NOW(), last_run_status = VALUES(last_run_status), last_run_summary = VALUES(last_run_summary)`,
+    [companyId, status, summary]
   );
 
   return { status, summary };

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 
 /**
@@ -15,7 +16,9 @@ export async function GET(request: NextRequest) {
   const warehouses = await query(
     `SELECT sap_warehouse_code, warehouse_name, is_inactive_in_sap, is_included, last_synced
      FROM warehouses
-     ORDER BY warehouse_name ASC`
+     WHERE company_id = ?
+     ORDER BY warehouse_name ASC`,
+    [getCompanyId()]
   );
 
   return NextResponse.json({ warehouses });

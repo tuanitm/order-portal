@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { getOrderAllowedCustomerGroupCodes, orderGroupScopeClause } from "@/lib/adminScope";
 
@@ -20,8 +21,9 @@ export async function GET(request: NextRequest) {
   const limit = Math.min(100, Math.max(1, parseInt(searchParams.get("limit") || "50", 10) || 50));
   const offset = (page - 1) * limit;
 
-  const whereClauses: string[] = [];
-  const params: (string | number)[] = [];
+  const companyId = getCompanyId();
+  const whereClauses: string[] = ["o.company_id = ?"];
+  const params: (string | number)[] = [companyId];
 
   // Scoping:
   // - Superadmin sees all orders under config.json's masterdata.customerGroup
@@ -58,19 +60,19 @@ export async function GET(request: NextRequest) {
          SELECT o.id,
            (SELECT GROUP_CONCAT(DISTINCT COALESCE(cc2.ocr_name, i2.brand_code) ORDER BY 1 SEPARATOR ', ')
             FROM order_lines ol2
-            LEFT JOIN items i2 ON i2.sap_item_code = ol2.sap_item_code
-            LEFT JOIN cost_centers cc2 ON cc2.ocr_code = i2.brand_code AND cc2.dimension = 1
-            WHERE ol2.order_id = o.id AND ol2.is_gift_line = 0 AND i2.brand_code IS NOT NULL
+            LEFT JOIN items i2 ON i2.company_id = ol2.company_id AND i2.sap_item_code = ol2.sap_item_code
+            LEFT JOIN cost_centers cc2 ON cc2.company_id = ol2.company_id AND cc2.ocr_code = i2.brand_code AND cc2.dimension = 1
+            WHERE ol2.company_id = o.company_id AND ol2.order_id = o.id AND ol2.is_gift_line = 0 AND i2.brand_code IS NOT NULL
            ) AS brand
          FROM orders o
-         LEFT JOIN users u ON u.id = o.user_id
-         LEFT JOIN customers c ON c.sap_card_code = u.sap_card_code
+         LEFT JOIN users u ON u.company_id = o.company_id AND u.id = o.user_id
+         LEFT JOIN customers c ON c.company_id = o.company_id AND c.sap_card_code = u.sap_card_code
          ${whereSql}
          ${brandHaving}
        ) t`
     : `SELECT COUNT(*) AS cnt FROM orders o
-       LEFT JOIN users u ON u.id = o.user_id
-       LEFT JOIN customers c ON c.sap_card_code = u.sap_card_code
+       LEFT JOIN users u ON u.company_id = o.company_id AND u.id = o.user_id
+       LEFT JOIN customers c ON c.company_id = o.company_id AND c.sap_card_code = u.sap_card_code
        ${whereSql}`;
 
   const totalRows = await query<{ cnt: number }[]>(countSql, [...params, ...brandParam]);
@@ -83,13 +85,13 @@ export async function GET(request: NextRequest) {
             c.card_name AS sap_card_name,
             (SELECT GROUP_CONCAT(DISTINCT COALESCE(cc2.ocr_name, i2.brand_code) ORDER BY 1 SEPARATOR ', ')
              FROM order_lines ol2
-             LEFT JOIN items i2 ON i2.sap_item_code = ol2.sap_item_code
-             LEFT JOIN cost_centers cc2 ON cc2.ocr_code = i2.brand_code AND cc2.dimension = 1
-             WHERE ol2.order_id = o.id AND ol2.is_gift_line = 0 AND i2.brand_code IS NOT NULL
+             LEFT JOIN items i2 ON i2.company_id = ol2.company_id AND i2.sap_item_code = ol2.sap_item_code
+             LEFT JOIN cost_centers cc2 ON cc2.company_id = ol2.company_id AND cc2.ocr_code = i2.brand_code AND cc2.dimension = 1
+             WHERE ol2.company_id = o.company_id AND ol2.order_id = o.id AND ol2.is_gift_line = 0 AND i2.brand_code IS NOT NULL
             ) AS brand
      FROM orders o
-     LEFT JOIN users u ON u.id = o.user_id
-     LEFT JOIN customers c ON c.sap_card_code = u.sap_card_code
+     LEFT JOIN users u ON u.company_id = o.company_id AND u.id = o.user_id
+     LEFT JOIN customers c ON c.company_id = o.company_id AND c.sap_card_code = u.sap_card_code
      ${whereSql}
      ${brandHaving}
      ORDER BY o.created_at DESC

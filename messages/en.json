@@ -48,6 +48,15 @@
     "mstFound": "Business Partner found",
     "mstNotFound": "MST not found in the system",
     "mstOptional": "Optional — enter if available",
+    "companyName": "Company Name",
+    "companyAddress": "Company Address",
+    "contactPerson": "Contact Person",
+    "region": "Region",
+    "billingAddress": "Billing Address",
+    "shippingAddress": "Shipping Address",
+    "shippingSameAsBilling": "Shipping address is the same as billing address",
+    "remark": "Remark",
+    "newCompanyHint": "No existing Business Partner was found for this tax code — fill in your company details below to register as a new customer.",
     "loginBtn": "Login",
     "signupBtn": "Sign Up",
     "noAccount": "Don't have an account?",
@@ -99,6 +108,7 @@
   "product": {
     "addToCart": "Add to Cart",
     "addedToCart": "Added to cart",
+    "discountN": "Discount {n}",
     "originalPrice": "Original Price",
     "discountPrice": "Discount Price",
     "specialPrice": "Special Price",
@@ -155,8 +165,8 @@
     "remove": "Remove",
     "updateQty": "Update",
     "itemCount": "{count} items",
-    "freeGift": "Free gift: {qty} {item}",
-    "freeGiftSame": "Free gift: {qty} (same item)"
+    "freeGift": "Free gift: <b>{qty}</b> {item}",
+    "freeGiftSame": "Free gift: <b>{qty}</b> (same item)"
   },
   "checkout": {
     "title": "Place Order",
@@ -186,6 +196,7 @@
     "detail": "Details",
     "noOrders": "You have no orders yet",
     "statusHistory": "Order status updates",
+    "statusPrefix": "Status: ",
     "statusUpcoming": "Upcoming",
     "reorder": "Reorder",
     "reordering": "Adding...",

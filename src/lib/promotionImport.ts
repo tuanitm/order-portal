@@ -2,6 +2,7 @@ import { existsSync } from "fs";
 import { join } from "path";
 import * as XLSX from "xlsx";
 import { getPool } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 
 /**
  * Column → DB field mapping, by header name rather than fixed position — the
@@ -116,8 +117,10 @@ export async function importPromotionDiscountsFromXlsx(
 
   const dataRows = rows.slice(1);
   const now = new Date();
+  const companyId = getCompanyId();
 
   const values = dataRows.map((r) => [
+    companyId,
     numOrNull(r[columnIndex.doc_entry]),
     strOrNull(r[columnIndex.promotion_code]),
     strOrNull(r[columnIndex.promotion_name]),
@@ -151,6 +154,7 @@ export async function importPromotionDiscountsFromXlsx(
     await conn.execute(`
       CREATE TABLE IF NOT EXISTS promotion_discount (
         id INT AUTO_INCREMENT PRIMARY KEY,
+        company_id VARCHAR(50) NOT NULL,
         doc_entry INT NOT NULL,
         promotion_code VARCHAR(50),
         promotion_name VARCHAR(255),
@@ -174,6 +178,7 @@ export async function importPromotionDiscountsFromXlsx(
         giving_item_name VARCHAR(255),
         giving_qty DECIMAL(18,2),
         last_synced TIMESTAMP NULL,
+        INDEX idx_company (company_id),
         INDEX idx_bp_code (bp_code),
         INDEX idx_selling_item_code (selling_item_code),
         INDEX idx_active_dates (begin_date, end_date)
@@ -182,13 +187,13 @@ export async function importPromotionDiscountsFromXlsx(
 
     await conn.beginTransaction();
 
-    await conn.execute(`DELETE FROM promotion_discount`);
+    await conn.execute(`DELETE FROM promotion_discount WHERE company_id = ?`, [companyId]);
 
     for (let i = 0; i < values.length; i += CHUNK_SIZE) {
       const chunk = values.slice(i, i + CHUNK_SIZE);
       await conn.query(
         `INSERT INTO promotion_discount (
-           doc_entry, promotion_code, promotion_name, create_date, update_date, begin_date, end_date,
+           company_id, doc_entry, promotion_code, promotion_name, create_date, update_date, begin_date, end_date,
            bp_grp_code, bp_grp_name, bp_type, bp_code, bp_name,
            selling_grp_code, selling_grp_name, it_type, selling_item_code, selling_item_name,
            disc_pct, selling_qty, giving_item_code, giving_item_name, giving_qty, last_synced)

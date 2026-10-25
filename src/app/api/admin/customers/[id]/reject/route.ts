@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { query, queryOne } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import { sendRejectionEmail } from "@/lib/email/sender";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { isCustomerInApprovalScope } from "@/lib/adminScope";
@@ -36,6 +37,8 @@ export async function POST(
       );
     }
 
+    const companyId = getCompanyId();
+
     // Check customer exists and is pending
     const customer = await queryOne<{
       id: number;
@@ -54,9 +57,9 @@ export async function POST(
               COALESCE(u.sap_cus_grp03, c.cus_grp03) AS sap_cus_grp03,
               u.approval_status, u.language
        FROM users u
-       LEFT JOIN customers c ON c.sap_card_code = u.sap_card_code
-       WHERE u.id = ?`,
-      [customerId]
+       LEFT JOIN customers c ON c.company_id = u.company_id AND c.sap_card_code = u.sap_card_code
+       WHERE u.company_id = ? AND u.id = ?`,
+      [companyId, customerId]
     );
 
     if (!customer) {
@@ -81,8 +84,8 @@ export async function POST(
     // Reject
     await query(
       `UPDATE users SET approval_status = 'rejected', rejection_reason = ?
-       WHERE id = ?`,
-      [reason.trim(), customerId]
+       WHERE company_id = ? AND id = ?`,
+      [reason.trim(), companyId, customerId]
     );
 
     // Send rejection email

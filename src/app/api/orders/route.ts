@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPool, queryOne, query } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 import { getSessionUser } from "@/lib/auth/session";
 
 interface OrderLineInput {
@@ -50,14 +51,17 @@ interface OrderGroup {
  * a cart splits into several orders, same as it was called once for the
  * whole cart before the split existed.
  */
-async function generateOrderNumber(bpCode: string): Promise<string> {
+async function generateOrderNumber(companyId: string, bpCode: string): Promise<string> {
   const vnNow = new Date(Date.now() + 7 * 60 * 60 * 1000);
   const yymmdd = vnNow.toISOString().slice(2, 10).replace(/-/g, "");
   let orderNumber = "";
   for (let attempt = 0; attempt < 10; attempt++) {
     const seq = String(Math.floor(Math.random() * 1000)).padStart(3, "0");
     orderNumber = `SO-${bpCode}-${yymmdd}-${seq}`;
-    const taken = await queryOne<{ id: number }>("SELECT id FROM orders WHERE order_number = ? LIMIT 1", [orderNumber]);
+    const taken = await queryOne<{ id: number }>(
+      "SELECT id FROM orders WHERE company_id = ? AND order_number = ? LIMIT 1",
+      [companyId, orderNumber]
+    );
     if (!taken) break;
   }
   return orderNumber;
@@ -98,11 +102,13 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
     }
 
+    const companyId = getCompanyId();
+
     // Check the linked SAP customer's Enable toggle (admin > SAP Customers)
     if (user.sapCardCode) {
       const customer = await queryOne<{ is_enabled: number }>(
-        "SELECT is_enabled FROM customers WHERE sap_card_code = ? LIMIT 1",
-        [user.sapCardCode]
+        "SELECT is_enabled FROM customers WHERE company_id = ? AND sap_card_code = ? LIMIT 1",
+        [companyId, user.sapCardCode]
       );
       if (customer && !customer.is_enabled) {
         return NextResponse.json(
@@ -154,8 +160,8 @@ export async function POST(request: NextRequest) {
     const distinctCodes = [...new Set(roundedLines.map((l) => l.sapItemCode))];
     const brandRows = distinctCodes.length > 0
       ? await query<{ sap_item_code: string; brand_code: string | null }[]>(
-          `SELECT sap_item_code, brand_code FROM items WHERE sap_item_code IN (${distinctCodes.map(() => "?").join(",")})`,
-          distinctCodes
+          `SELECT sap_item_code, brand_code FROM items WHERE company_id = ? AND sap_item_code IN (${distinctCodes.map(() => "?").join(",")})`,
+          [companyId, ...distinctCodes]
         )
       : [];
     const brandByCode = new Map(brandRows.map((r) => [r.sap_item_code, r.brand_code]));
@@ -193,23 +199,23 @@ export async function POST(request: NextRequest) {
       await conn.beginTransaction();
 
       for (const group of groups) {
-        const orderNumber = await generateOrderNumber(bpCode);
+        const orderNumber = await generateOrderNumber(companyId, bpCode);
 
         const [result] = await conn.execute(
           `INSERT INTO orders (
-             order_number, user_id, customer_name, delivery_address, contact_phone, contact_email,
+             company_id, order_number, user_id, customer_name, delivery_address, contact_phone, contact_email,
              subtotal, discount_total, grand_total, remark, status, language)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'submitted', ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'submitted', ?)`,
           [
-            orderNumber, user.id, customerName, deliveryAddress || null, contactPhone, contactEmail || null,
+            companyId, orderNumber, user.id, customerName, deliveryAddress || null, contactPhone, contactEmail || null,
             group.subtotal, group.discountTotal, group.grandTotal, remark || null, language === "en" ? "en" : "vi",
           ]
         );
         const orderId = (result as { insertId: number }).insertId;
 
         await conn.execute(
-          `INSERT INTO order_status_history (order_id, status) VALUES (?, 'submitted')`,
-          [orderId]
+          `INSERT INTO order_status_history (company_id, order_id, status) VALUES (?, ?, 'submitted')`,
+          [companyId, orderId]
         );
 
         // Buy lines are always listed before their gift line (see the
@@ -225,12 +231,12 @@ export async function POST(request: NextRequest) {
 
           const [lineResult] = await conn.execute(
             `INSERT INTO order_lines (
-               order_id, sap_item_code, item_name, quantity, uom, base_unit_price, unit_price, discount_percent, line_total, confirm_qty,
+               company_id, order_id, sap_item_code, item_name, quantity, uom, base_unit_price, unit_price, discount_percent, line_total, confirm_qty,
                is_gift_line, source_line_id, promo_buy_qty, promo_give_qty, remark, period_disc_pct, contract_disc_pct, promo_disc_pct,
                promotion_code, promotion_name, giveaway_promotion_code, giveaway_promotion_name)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             [
-              orderId, line.sapItemCode, line.itemName, line.quantity, line.uom,
+              companyId, orderId, line.sapItemCode, line.itemName, line.quantity, line.uom,
               line.baseUnitPrice, line.netUnitPrice, line.discountPercent || 0, line.lineTotal, line.quantity,
               !!line.isGift, sourceLineId, line.promoBuyQty ?? null, line.promoGiveQty ?? null,
               line.remark?.trim() || null, line.periodDiscPct ?? null, line.contractDiscPct ?? null, line.promoDiscPct ?? null,
@@ -288,20 +294,22 @@ export async function GET(request: NextRequest) {
     const limit = Math.min(100, Math.max(1, parseInt(searchParams.get("limit") || "20", 10) || 20));
     const offset = (page - 1) * limit;
 
+    const companyId = getCompanyId();
+
     const totalRows = await query<{ cnt: number }[]>(
-      `SELECT COUNT(*) as cnt FROM orders WHERE user_id = ?`,
-      [user.id]
+      `SELECT COUNT(*) as cnt FROM orders WHERE company_id = ? AND user_id = ?`,
+      [companyId, user.id]
     );
     const total = totalRows[0]?.cnt ?? 0;
 
     const orders = await query(
       `SELECT o.id, o.order_number, o.customer_name, o.subtotal, o.discount_total, o.grand_total,
               o.status, o.sap_doc_entry, o.sap_doc_num, o.created_at,
-              (SELECT COUNT(*) FROM order_lines ol WHERE ol.order_id = o.id) AS line_count
-       FROM orders o WHERE o.user_id = ?
+              (SELECT COUNT(*) FROM order_lines ol WHERE ol.company_id = o.company_id AND ol.order_id = o.id) AS line_count
+       FROM orders o WHERE o.company_id = ? AND o.user_id = ?
        ORDER BY o.created_at DESC
        LIMIT ? OFFSET ?`,
-      [user.id, limit, offset]
+      [companyId, user.id, limit, offset]
     );
 
     return NextResponse.json({
