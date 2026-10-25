@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getPool, queryOne, query } from "@/lib/db/connection";
 import { getCompanyId } from "@/lib/config";
 import { getSessionUser } from "@/lib/auth/session";
+import { logAuditEvent } from "@/lib/auditLog";
 
 interface OrderLineInput {
   sapItemCode: string;
@@ -261,6 +262,13 @@ export async function POST(request: NextRequest) {
     } finally {
       conn.release();
     }
+
+    await logAuditEvent({
+      actorType: "customer", actorId: user.id, actorLabel: user.email || user.fullName,
+      action: "order_place", entityType: "order", entityId: createdOrders[0]?.orderId ?? null,
+      details: { orders: createdOrders.map((o) => ({ orderId: o.orderId, orderNumber: o.orderNumber, grandTotal: o.grandTotal })) },
+      request,
+    });
 
     return NextResponse.json({
       success: true,

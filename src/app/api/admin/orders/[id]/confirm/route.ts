@@ -8,6 +8,7 @@ import { recordOrderStatus, notifyCustomerOfStatusChange } from "@/lib/orderHist
 import { getLiveAvailabilityForOrder } from "@/lib/orderStock";
 import { getBasePriceListNum } from "@/lib/sap-b1/sync";
 import { isOrderInAdminScope } from "@/lib/adminScope";
+import { logAuditEvent } from "@/lib/auditLog";
 
 interface OrderRow {
   id: number;
@@ -809,18 +810,17 @@ export async function POST(
 
   const sap = getSapClient();
 
-  // Invoice-related header fields, sourced from the customer BusinessPartner
-  // itself. getBusinessPartner already catches its own errors and returns
-  // null rather than throwing, so a lookup failure here doesn't block the
-  // push (CardCode alone is enough for SAP to accept the order) — these
-  // fields just come back unset.
-  const businessPartner = await sap.getBusinessPartner(order.sap_card_code);
-
-  // Who this order's DocumentsOwner/U_OwnerName should be — see
-  // resolveOrderOwner's own docstring. Never blocks the push: a lookup
-  // failure or no-match leaves orderOwner null and those two header fields
-  // are simply omitted below.
-  const orderOwner = await sap.resolveOrderOwner(admin?.owner_code || null);
+  // Invoice-related header fields (from the customer BusinessPartner) and
+  // who this order's DocumentsOwner/U_OwnerName should be (see
+  // resolveOrderOwner's own docstring) — two independent SAP lookups, run
+  // concurrently rather than back-to-back. Neither blocks the push on
+  // failure: getBusinessPartner already catches its own errors into null,
+  // and resolveOrderOwner never throws either — a failure/no-match on
+  // either side just leaves its own header fields unset.
+  const [businessPartner, orderOwner] = await Promise.all([
+    sap.getBusinessPartner(order.sap_card_code),
+    sap.resolveOrderOwner(admin?.owner_code || null),
+  ]);
 
   // Read the Post SO Mode setting — determines whether to push as SAP Draft or
   // a confirmed SAP Sales Order. Defaults to 'draft' if the row is missing.
@@ -917,6 +917,16 @@ export async function POST(
       console.warn(`[Admin] Could not read back U_DocNo after SO create:`, err);
     }
   }
+
+  await logAuditEvent({
+    actorType: "admin", actorId: guard.session.adminId, actorLabel: guard.session.email,
+    action: "order_confirm", entityType: "order", entityId: orderId,
+    details: {
+      orderNumber, warehouseCode, postSoMode,
+      sapDocEntry: sapResult.DocEntry, sapDocNum: sapResult.DocNum, sapSoNumber,
+    },
+    request,
+  });
 
   return NextResponse.json({
     success: true,

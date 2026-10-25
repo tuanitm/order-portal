@@ -36,10 +36,14 @@ export async function PATCH(request: NextRequest) {
   if (typeof body.ownerCode !== "string") {
     return NextResponse.json({ error: "ownerCode is required" }, { status: 400 });
   }
+  const ownerCode = body.ownerCode.trim();
+  if (ownerCode.length > 50) {
+    return NextResponse.json({ error: "Owner code must be 50 characters or fewer" }, { status: 400 });
+  }
 
   await query(
     `UPDATE admin_users SET owner_code = ? WHERE company_id = ? AND id = ?`,
-    [body.ownerCode.trim() || null, getCompanyId(), session.adminId]
+    [ownerCode || null, getCompanyId(), session.adminId]
   );
   return NextResponse.json({ success: true });
 }

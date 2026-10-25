@@ -7,6 +7,7 @@ import { getCustomerGroupAncestors } from "@/lib/customerGroups";
 import { generateCardCode } from "@/lib/sap-b1/cardCode";
 import { getSapClient } from "@/lib/sap-b1/client";
 import { sendApprovalEmail } from "@/lib/email/sender";
+import { logAuditEvent } from "@/lib/auditLog";
 
 /**
  * POST /api/admin/customers/[id]/create-bp — for a new-company registration
@@ -264,6 +265,13 @@ export async function POST(
     }
 
     console.log(`[Admin] Customer ${customerId} approved with new BP ${cardCode}`);
+
+    await logAuditEvent({
+      actorType: "admin", actorId: session.adminId, actorLabel: session.email,
+      action: "customer_create_bp", entityType: "customer", entityId: customerId,
+      details: { cardCode, cardName, mstCode, cusGrp03 },
+      request,
+    });
 
     return NextResponse.json({ success: true, cardCode });
   } catch (error) {

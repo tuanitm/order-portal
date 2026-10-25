@@ -4,6 +4,7 @@ import bcrypt from "bcryptjs";
 import { queryOne } from "@/lib/db/connection";
 import { getCompanyId } from "@/lib/config";
 import { signAdminToken } from "@/lib/auth/adminSession";
+import { logAuditEvent } from "@/lib/auditLog";
 
 interface AdminUserRow {
   id: number;
@@ -39,11 +40,19 @@ export async function POST(request: NextRequest) {
       [getCompanyId(), email.trim().toLowerCase()]
     );
     if (!adminUser || !adminUser.is_active) {
+      await logAuditEvent({
+        actorType: "admin", actorId: adminUser?.id ?? null, actorLabel: email.trim().toLowerCase(),
+        action: "login_failed", details: { reason: adminUser ? "inactive" : "no_such_account" }, request,
+      });
       return NextResponse.json({ error: "Invalid admin credentials" }, { status: 401 });
     }
 
     const passwordValid = await bcrypt.compare(password, adminUser.password_hash);
     if (!passwordValid) {
+      await logAuditEvent({
+        actorType: "admin", actorId: adminUser.id, actorLabel: adminUser.email,
+        action: "login_failed", details: { reason: "bad_password" }, request,
+      });
       return NextResponse.json({ error: "Invalid admin credentials" }, { status: 401 });
     }
 
@@ -59,6 +68,10 @@ export async function POST(request: NextRequest) {
       sameSite: "lax",
       maxAge: 8 * 60 * 60,
       path: "/",
+    });
+    await logAuditEvent({
+      actorType: "admin", actorId: adminUser.id, actorLabel: adminUser.email,
+      action: "login_success", request,
     });
     return response;
   } catch (error) {

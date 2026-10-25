@@ -4,6 +4,7 @@ import { getCompanyId } from "@/lib/config";
 import { sendApprovalEmail } from "@/lib/email/sender";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { isCustomerInApprovalScope } from "@/lib/adminScope";
+import { logAuditEvent } from "@/lib/auditLog";
 
 /**
  * POST /api/admin/customers/[id]/approve — Approve a customer
@@ -107,6 +108,13 @@ export async function POST(
     }
 
     console.log(`[API] Customer ${customerId} approved`);
+
+    await logAuditEvent({
+      actorType: "admin", actorId: session.adminId, actorLabel: session.email,
+      action: "customer_approve", entityType: "customer", entityId: customerId,
+      details: { email: customer.email, sapCardCode: customer.sap_card_code },
+      request,
+    });
 
     return NextResponse.json({
       success: true,

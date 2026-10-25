@@ -247,6 +247,7 @@ const NAV_GROUPS: NavGroup[] = [
       { key: "settings",           label: "SAP Sync Config",  href: "settings",           icon: "🔄", rootOnly: true },
       { key: "admin-roles",        label: "Admin Roles",       href: "admin-roles",        icon: "🛡️", rootOnly: true },
       { key: "admin-users",        label: "Admin Users",       href: "admin-users",        icon: "🔑", rootOnly: true },
+      { key: "audit-logs",         label: "Audit Logs",        href: "audit-logs",         icon: "📜", rootOnly: true },
     ],
   },
 ];

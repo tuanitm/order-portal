@@ -3,6 +3,7 @@ import bcrypt from "bcryptjs";
 import { query, queryOne } from "@/lib/db/connection";
 import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
+import { logAuditEvent } from "@/lib/auditLog";
 
 /**
  * PATCH /api/admin/users/[id] — Body: { fullName?, email?, roleId?, isActive?, password? }
@@ -22,20 +23,23 @@ export async function PATCH(
   if (isNaN(adminUserId)) return NextResponse.json({ error: "Invalid admin user ID" }, { status: 400 });
 
   const companyId = getCompanyId();
-  const target = await queryOne<{ is_root: number }>(`SELECT is_root FROM admin_users WHERE company_id = ? AND id = ?`, [companyId, adminUserId]);
+  const target = await queryOne<{ is_root: number; email: string }>(`SELECT is_root, email FROM admin_users WHERE company_id = ? AND id = ?`, [companyId, adminUserId]);
   if (!target) return NextResponse.json({ error: "Admin user not found" }, { status: 404 });
 
   const body = await request.json();
   const updates: string[] = [];
   const values: (string | number | boolean | null)[] = [];
+  const changedFields: string[] = [];
 
   if (typeof body.fullName === "string") {
     updates.push("full_name = ?");
     values.push(body.fullName.trim());
+    changedFields.push("fullName");
   }
   if (typeof body.email === "string" && body.email.trim()) {
     updates.push("email = ?");
     values.push(body.email.trim().toLowerCase());
+    changedFields.push("email");
   }
   if (typeof body.roleId === "number") {
     if (!guard.session.isSuperAdmin) {
@@ -46,6 +50,7 @@ export async function PATCH(
     }
     updates.push("role_id = ?");
     values.push(body.roleId);
+    changedFields.push("roleId");
   }
   if (typeof body.isActive === "boolean") {
     if (target.is_root && !body.isActive) {
@@ -59,14 +64,21 @@ export async function PATCH(
     }
     updates.push("is_active = ?");
     values.push(body.isActive);
+    changedFields.push(body.isActive ? "activated" : "deactivated");
   }
   if (typeof body.departmentCode === "string") {
     updates.push("department_code = ?");
     values.push(body.departmentCode.trim() || null);
+    changedFields.push("departmentCode");
   }
   if (typeof body.ownerCode === "string") {
+    const ownerCode = body.ownerCode.trim();
+    if (ownerCode.length > 50) {
+      return NextResponse.json({ error: "Owner code must be 50 characters or fewer" }, { status: 400 });
+    }
     updates.push("owner_code = ?");
-    values.push(body.ownerCode.trim() || null);
+    values.push(ownerCode || null);
+    changedFields.push("ownerCode");
   }
   if (typeof body.password === "string" && body.password.length > 0) {
     if (body.password.length < 6) {
@@ -74,6 +86,7 @@ export async function PATCH(
     }
     updates.push("password_hash = ?");
     values.push(await bcrypt.hash(body.password, 12));
+    changedFields.push("password");
   }
 
   if (updates.length === 0) {
@@ -90,6 +103,12 @@ export async function PATCH(
     console.error("[Admin] Update admin user failed:", error);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
+  await logAuditEvent({
+    actorType: "admin", actorId: guard.session.adminId, actorLabel: guard.session.email,
+    action: "admin_user_update", entityType: "admin_user", entityId: adminUserId,
+    details: { targetEmail: target.email, changedFields },
+    request,
+  });
   return NextResponse.json({ success: true });
 }
 
@@ -109,11 +128,17 @@ export async function DELETE(
   if (isNaN(adminUserId)) return NextResponse.json({ error: "Invalid admin user ID" }, { status: 400 });
 
   const companyId = getCompanyId();
-  const target = await queryOne<{ is_root: number }>(`SELECT is_root FROM admin_users WHERE company_id = ? AND id = ?`, [companyId, adminUserId]);
+  const target = await queryOne<{ is_root: number; email: string }>(`SELECT is_root, email FROM admin_users WHERE company_id = ? AND id = ?`, [companyId, adminUserId]);
   if (target?.is_root) {
     return NextResponse.json({ error: "A root account cannot be deleted here" }, { status: 400 });
   }
 
   await query(`DELETE FROM admin_users WHERE company_id = ? AND id = ?`, [companyId, adminUserId]);
+  await logAuditEvent({
+    actorType: "admin", actorId: guard.session.adminId, actorLabel: guard.session.email,
+    action: "admin_user_delete", entityType: "admin_user", entityId: adminUserId,
+    details: { targetEmail: target?.email ?? null },
+    request,
+  });
   return NextResponse.json({ success: true });
 }

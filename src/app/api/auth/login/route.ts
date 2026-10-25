@@ -4,6 +4,7 @@ import { queryOne } from "@/lib/db/connection";
 import { getCompanyId } from "@/lib/config";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import { logAuditEvent } from "@/lib/auditLog";
 
 const JWT_SECRET = process.env.JWT_SECRET || "order-portal-secret-key-change-in-production";
 
@@ -54,6 +55,7 @@ export async function POST(request: NextRequest) {
     );
 
     if (!user) {
+      await logAuditEvent({ actorType: "customer", actorLabel: value, action: "login_failed", details: { reason: "no_such_account" }, request });
       return NextResponse.json(
         { error: "Invalid credentials" },
         { status: 401 }
@@ -63,6 +65,7 @@ export async function POST(request: NextRequest) {
     // Verify password
     const passwordValid = await bcrypt.compare(password, user.password_hash);
     if (!passwordValid) {
+      await logAuditEvent({ actorType: "customer", actorId: user.id, actorLabel: user.email || value, action: "login_failed", details: { reason: "bad_password" }, request });
       return NextResponse.json(
         { error: "Invalid credentials" },
         { status: 401 }
@@ -71,6 +74,7 @@ export async function POST(request: NextRequest) {
 
     // Check if account is active
     if (!user.is_active) {
+      await logAuditEvent({ actorType: "customer", actorId: user.id, actorLabel: user.email || value, action: "login_failed", details: { reason: "inactive" }, request });
       return NextResponse.json(
         { error: "Account is disabled" },
         { status: 403 }
@@ -79,6 +83,7 @@ export async function POST(request: NextRequest) {
 
     // Check approval status
     if (user.approval_status === "pending") {
+      await logAuditEvent({ actorType: "customer", actorId: user.id, actorLabel: user.email || value, action: "login_failed", details: { reason: "pending_approval" }, request });
       return NextResponse.json(
         {
           error: "pending_approval",
@@ -89,6 +94,7 @@ export async function POST(request: NextRequest) {
     }
 
     if (user.approval_status === "rejected") {
+      await logAuditEvent({ actorType: "customer", actorId: user.id, actorLabel: user.email || value, action: "login_failed", details: { reason: "account_rejected" }, request });
       return NextResponse.json(
         {
           error: "account_rejected",
@@ -106,6 +112,7 @@ export async function POST(request: NextRequest) {
         [companyId, user.sap_card_code]
       );
       if (customer && !customer.is_enabled) {
+        await logAuditEvent({ actorType: "customer", actorId: user.id, actorLabel: user.email || value, action: "login_failed", details: { reason: "sap_customer_blocked" }, request });
         return NextResponse.json(
           {
             error: "This account was blocked, please contact Admin 0908404678 to enable account again.",
@@ -153,6 +160,8 @@ export async function POST(request: NextRequest) {
       ...(rememberMe ? { maxAge: 30 * 24 * 60 * 60 } : {}),
       path: "/",
     });
+
+    await logAuditEvent({ actorType: "customer", actorId: user.id, actorLabel: user.email || user.full_name, action: "login_success", request });
 
     return response;
   } catch (error) {

@@ -39,6 +39,9 @@ export default function ChangePasswordPage() {
         const res = await fetch("/api/admin/me/owner-code");
         const data = await res.json();
         if (res.ok) setOwnerCode(data.ownerCode || "");
+        else setOwnerCodeError(data.error || "Failed to load Owner Code");
+      } catch {
+        setOwnerCodeError("Failed to load Owner Code");
       } finally {
         setOwnerCodeLoaded(true);
       }

@@ -4,6 +4,7 @@ import { getCompanyId } from "@/lib/config";
 import { getSessionUser } from "@/lib/auth/session";
 import { recordOrderStatus } from "@/lib/orderHistory";
 import { postOrderMessage } from "@/lib/orderMessages";
+import { logAuditEvent } from "@/lib/auditLog";
 
 const TERMINAL_STATUSES = ["cancelled", "completed", "rejected"];
 
@@ -41,6 +42,13 @@ export async function POST(
   await query(`UPDATE orders SET status = 'cancelled' WHERE company_id = ? AND id = ?`, [companyId, orderId]);
   await recordOrderStatus(orderId, "cancelled");
   await postOrderMessage(orderId, "customer", user.fullName, "Cancelled this order.");
+
+  await logAuditEvent({
+    actorType: "customer", actorId: user.id, actorLabel: user.email || user.fullName,
+    action: "order_cancel", entityType: "order", entityId: orderId,
+    details: { previousStatus: order.status },
+    request,
+  });
 
   return NextResponse.json({ success: true });
 }

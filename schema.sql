@@ -11,12 +11,13 @@
 -- data apart. Every UNIQUE/PRIMARY key that used to assume a business key
 -- (an item code, a card code, an email, ...) was globally unique now leads
 -- with company_id instead, since the same business key can legitimately
--- exist for two different companies. For an EXISTING database that
--- predates this column, run `node migrate_company_id.js` first (adds the
--- column, backfills every existing row with the currently-configured
--- entityID, then rebuilds the affected keys as composite) — a fresh
--- install already gets the composite keys from the CREATE TABLE
--- statements below.
+-- exist for two different companies. A fresh install gets all of this
+-- directly from the CREATE TABLE statements below; the one-off script that
+-- migrated an existing pre-company_id database (added the column,
+-- backfilled every row with the then-configured entityID, rebuilt the
+-- affected keys as composite) has already been run against every known
+-- deployment and was removed from the repo — see git history
+-- (migrate_company_id.js) if a never-migrated database ever turns up.
 
 -- Users & Authentication
 CREATE TABLE IF NOT EXISTS users (
@@ -82,24 +83,18 @@ CREATE TABLE IF NOT EXISTS users (
 -- ALTER TABLE users ADD INDEX idx_approval_status (approval_status);
 -- UPDATE users SET approval_status = 'approved' WHERE is_active = TRUE;
 
--- Migration for existing databases: run `node migrate_pricing.js` to add
--- sap_price_list_num, items_group_code and the item_channel_prices table.
--- Then run `node migrate_admin.js` to add the admin management tables below.
--- Then run `node migrate_item_categories.js` for the ItemCat01-06 hierarchy
--- (replaces the old OITB-based group sellability gate — see item_groups below).
--- Then run `node migrate_contract_discount.js` for the contract_discount table.
--- Then run `node migrate_sap_customers.js` for the customers table.
--- Then run `node migrate_company_id.js` for the company_id column + composite
--- keys on every table (see the top-of-file comment).
--- Then run `node migrate_new_customer_fields.js` to add
--- registration_address/sap_group_code/pay_terms_grp_code/salesperson_code/
--- credit_limit/currency to `users` (new-company registration — see
--- POST /api/admin/customers/[id]/create-bp).
--- Then run `node migrate_customer_region_fields.js` to add
--- registration_shipping_address/registration_remark/declared_region_code
--- to `users`.
--- Then run `node migrate_contact_person_field.js` to add
--- registration_contact_person to `users`.
+-- The sap_price_list_num/items_group_code/item_channel_prices, admin
+-- management tables, ItemCat01-06 hierarchy, contract_discount, customers,
+-- company_id, and users.registration_*/sap_group_code/pay_terms_grp_code/
+-- salesperson_code/credit_limit/currency/declared_region_code columns
+-- below all came from one-off migration scripts that have since been run
+-- against every known deployment and removed from the repo — see git
+-- history (migrate_pricing.js, migrate_admin.js, migrate_item_categories.js,
+-- migrate_contract_discount.js, migrate_sap_customers.js,
+-- migrate_company_id.js, migrate_new_customer_fields.js,
+-- migrate_customer_region_fields.js, migrate_contact_person_field.js) if a
+-- database that still needs one of them ever turns up. A fresh install
+-- gets everything directly from the CREATE TABLE statements below.
 
 -- Product Cache (synced from SAP B1). is_active is purely sync-driven
 -- (reflects the current sellable-category filter); is_manually_hidden is a
@@ -922,4 +917,39 @@ CREATE TABLE IF NOT EXISTS sync_schedule_settings (
   last_run_status ENUM('success', 'partial', 'failed') NULL,
   last_run_summary TEXT NULL,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Audit Logs — append-only trail of login/logout (success AND failure) for
+-- both admin and customer accounts, plus the highest-value business
+-- events (admin user/role CRUD, customer approve/reject/create-BP, order
+-- confirm/cancel on both the admin and customer side, customer signup/
+-- order placement) — see src/lib/auditLog.ts's logAuditEvent(), the single
+-- write path every one of those routes calls through.
+-- actor_id is nullable (a failed login before any row matched has no id
+-- yet); actor_label is a denormalized snapshot of the actor's email/name
+-- at the time of the event — intentionally NOT a FK to admin_users/users,
+-- same reasoning as order_messages.sender_name, so a log entry still
+-- reads correctly even after that account is later renamed or removed.
+-- entity_type/entity_id identify WHAT the action targeted (e.g. entity_type
+-- 'order', entity_id the order's own id/order_number) — both NULL for a
+-- pure auth event (login/logout) that has no target entity. details is
+-- free-form JSON for whatever extra context that specific action wants
+-- (old/new values, failure reason, ...) — never queried into, only read
+-- back whole, so it doesn't need its own columns.
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  company_id VARCHAR(50) NOT NULL,
+  actor_type ENUM('admin', 'customer') NOT NULL,
+  actor_id INT NULL,
+  actor_label VARCHAR(255) NULL,
+  action VARCHAR(100) NOT NULL,
+  entity_type VARCHAR(50) NULL,
+  entity_id VARCHAR(100) NULL,
+  details JSON NULL,
+  ip_address VARCHAR(45) NULL,
+  user_agent VARCHAR(255) NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_company_created (company_id, created_at),
+  INDEX idx_company_actor (company_id, actor_type, actor_id),
+  INDEX idx_company_entity (company_id, entity_type, entity_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

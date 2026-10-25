@@ -4,6 +4,7 @@ import { getCompanyId } from "@/lib/config";
 import { sendRejectionEmail } from "@/lib/email/sender";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { isCustomerInApprovalScope } from "@/lib/adminScope";
+import { logAuditEvent } from "@/lib/auditLog";
 
 /**
  * POST /api/admin/customers/[id]/reject — Reject a customer
@@ -103,6 +104,13 @@ export async function POST(
     }
 
     console.log(`[API] Customer ${customerId} rejected: ${reason}`);
+
+    await logAuditEvent({
+      actorType: "admin", actorId: session.adminId, actorLabel: session.email,
+      action: "customer_reject", entityType: "customer", entityId: customerId,
+      details: { email: customer.email, reason: reason.trim() },
+      request,
+    });
 
     return NextResponse.json({
       success: true,

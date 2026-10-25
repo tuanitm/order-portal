@@ -6,6 +6,7 @@ import { getSapClient } from "@/lib/sap-b1/client";
 import { recordOrderStatus, notifyCustomerOfStatusChange } from "@/lib/orderHistory";
 import { postOrderMessage } from "@/lib/orderMessages";
 import { isOrderInAdminScope } from "@/lib/adminScope";
+import { logAuditEvent } from "@/lib/auditLog";
 
 const TERMINAL_STATUSES = ["cancelled", "completed", "rejected"];
 
@@ -82,6 +83,13 @@ export async function POST(
     [companyId, guard.session.adminId]
   );
   await postOrderMessage(orderId, "admin", admin?.full_name || null, "Cancelled this order.");
+
+  await logAuditEvent({
+    actorType: "admin", actorId: guard.session.adminId, actorLabel: guard.session.email,
+    action: "order_cancel", entityType: "order", entityId: orderId,
+    details: { previousStatus: order.status },
+    request,
+  });
 
   return NextResponse.json({ success: true });
 }

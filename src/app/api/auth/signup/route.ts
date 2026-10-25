@@ -3,6 +3,7 @@ import { query, queryOne } from "@/lib/db/connection";
 import { getCompanyId } from "@/lib/config";
 import { getSapClient } from "@/lib/sap-b1/client";
 import bcrypt from "bcryptjs";
+import { logAuditEvent } from "@/lib/auditLog";
 
 /**
  * POST /api/auth/signup — Create a new user account (pending approval)
@@ -175,9 +176,17 @@ export async function POST(request: NextRequest) {
 
     console.log("[API] New user registered (pending approval):", email);
 
+    const newUserId = (result as unknown as { insertId: number }).insertId;
+    await logAuditEvent({
+      actorType: "customer", actorId: newUserId, actorLabel: email.trim().toLowerCase(),
+      action: "signup", entityType: "user", entityId: newUserId,
+      details: { sapCardCode: sapCardCode || null, newCompany: !sapCardCode },
+      request,
+    });
+
     return NextResponse.json({
       success: true,
-      userId: (result as unknown as { insertId: number }).insertId,
+      userId: newUserId,
       approvalStatus: "pending",
     });
   } catch (error) {

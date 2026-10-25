@@ -3,6 +3,7 @@ import bcrypt from "bcryptjs";
 import { query } from "@/lib/db/connection";
 import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
+import { logAuditEvent } from "@/lib/auditLog";
 
 export async function GET(request: NextRequest) {
   const guard = await requireAdminPermission(request, "admin-users");
@@ -49,9 +50,16 @@ export async function POST(request: NextRequest) {
       `INSERT INTO admin_users (company_id, email, password_hash, full_name, role_id) VALUES (?, ?, ?, ?, ?)`,
       [getCompanyId(), email.trim().toLowerCase(), passwordHash, fullName.trim(), roleId]
     );
+    const newAdminId = (result as unknown as { insertId: number }).insertId;
+    await logAuditEvent({
+      actorType: "admin", actorId: guard.session.adminId, actorLabel: guard.session.email,
+      action: "admin_user_create", entityType: "admin_user", entityId: newAdminId,
+      details: { email: email.trim().toLowerCase(), fullName: fullName.trim(), roleId },
+      request,
+    });
     return NextResponse.json({
       success: true,
-      adminUserId: (result as unknown as { insertId: number }).insertId,
+      adminUserId: newAdminId,
     });
   } catch (error: unknown) {
     if ((error as { code?: string })?.code === "ER_DUP_ENTRY") {

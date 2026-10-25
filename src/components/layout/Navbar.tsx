@@ -99,8 +99,10 @@ export default function Navbar() {
 
   const handleLogout = async () => {
     try {
-      // Clear the auth cookie by setting it to expire
-      document.cookie = "auth-token=; path=/; max-age=0";
+      // auth-token is httpOnly (set that way since login) — document.cookie
+      // can't clear it from here, only a server Set-Cookie response can;
+      // this route does that and records the logout in the audit log.
+      await fetch("/api/auth/logout", { method: "POST" });
       setUser(null);
       setShowMenu(false);
       window.location.href = `/${locale}/identify`;

@@ -15,6 +15,20 @@ function toSqlList(values: string[]): string {
   return values.map(toSqlLiteral).join(",");
 }
 
+/**
+ * A single OData $filter string literal, with embedded single quotes
+ * escaped (doubled, the OData-standard way — happens to match
+ * toSqlLiteral's escaping rule today, but kept separate since these are
+ * two different query languages and there's no guarantee that stays true).
+ * Used by every `$filter=...eq '<value>'`/`contains(field,'<value>')` built
+ * in this file from a value that isn't already known-safe (a hardcoded
+ * literal or an internal enum), rather than inlining
+ * `value.replace(/'/g, "''")` at each call site.
+ */
+function toODataLiteral(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
 // ── SAP B1 Types ──
 
 export interface SapLoginPayload {
@@ -334,8 +348,11 @@ export interface SapBusinessPartnerTaxMatch {
 export interface SapOrderOwner {
   /** EmployeesInfo.EmployeeID — posted as the order's DocumentsOwner. */
   employeeId: number;
-  /** LastName + " " + FirstName — posted as the order's U_OwnerName UDF. */
-  ownerName: string;
+  /** LastName + " " + FirstName — posted as the order's U_OwnerName UDF.
+   *  Undefined (not "") when the Employee has neither name part set, so a
+   *  caller's `|| undefined` chain omits U_OwnerName entirely rather than
+   *  sending an empty string alongside a real DocumentsOwner. */
+  ownerName: string | undefined;
 }
 
 /** POST /BusinessPartners body for registering a brand-new company (not yet a SAP BP). */
@@ -376,6 +393,16 @@ export class SapB1Client {
   private password: string;
   private sessionId: string | null = null;
   private loginPromise: Promise<void> | null = null;
+  /** Memoized result of resolveOrderOwner's fallback lookup (the
+   *  integration login's own linked Employee) — that Employee doesn't
+   *  change during this client's process lifetime, so there's no reason
+   *  to re-run its two SAP round trips on every single order confirmation
+   *  that doesn't resolve via an admin's own owner_code. Only a SUCCESSFUL
+   *  resolution is cached — a transient failure (or a genuine "no Employee
+   *  linked yet") is deliberately left uncached so it keeps retrying on
+   *  the next push instead of getting stuck null for the rest of the
+   *  process's life over what might have been a one-off SAP hiccup. */
+  private fallbackOwnerCache: SapOrderOwner | null = null;
 
   constructor() {
     const sapConfig = loadConfig().sapb1;
@@ -527,7 +554,7 @@ export class SapB1Client {
    */
   async findBusinessPartnerByTaxId(taxId: string): Promise<SapBusinessPartnerTaxMatch | null> {
     await this.ensureSession();
-    const filter = encodeURIComponent(`FederalTaxID eq '${taxId.replace(/'/g, "''")}'`);
+    const filter = encodeURIComponent(`FederalTaxID eq ${toODataLiteral(taxId)}`);
     const select = encodeURIComponent('CardCode,CardName,FederalTaxID');
     const result = await this.request<{ value: SapBusinessPartnerTaxMatch[] }>(
       'GET',
@@ -546,7 +573,7 @@ export class SapB1Client {
    */
   async findBpCommercialDefaultsByGroup3(cusGrp03: string): Promise<{ GroupCode: number; PayTermsGrpCode: number } | null> {
     await this.ensureSession();
-    const filter = encodeURIComponent(`CardType eq 'cCustomer' and U_CusGrp03 eq '${cusGrp03.replace(/'/g, "''")}'`);
+    const filter = encodeURIComponent(`CardType eq 'cCustomer' and U_CusGrp03 eq ${toODataLiteral(cusGrp03)}`);
     const select = encodeURIComponent('GroupCode,PayTermsGrpCode');
     const result = await this.request<{ value: { GroupCode: number; PayTermsGrpCode: number }[] }>(
       'GET',
@@ -565,7 +592,7 @@ export class SapB1Client {
    */
   async findMaxCardCodeWithPrefix(prefix: string): Promise<string | null> {
     await this.ensureSession();
-    const filter = encodeURIComponent(`startswith(CardCode,'${prefix.replace(/'/g, "''")}')`);
+    const filter = encodeURIComponent(`startswith(CardCode,${toODataLiteral(prefix)})`);
     const result = await this.request<{ value: { CardCode: string }[] }>(
       'GET',
       `/BusinessPartners?$filter=${filter}&$select=CardCode&$orderby=CardCode desc&$top=1`
@@ -573,16 +600,19 @@ export class SapB1Client {
     return result.value?.[0]?.CardCode || null;
   }
 
-  /** EmployeesInfo row shape needed by both owner-resolution lookups below. */
+  /** EmployeesInfo row shape needed by both owner-resolution lookups below.
+   *  Always scoped to Active eq 'tYES' — a terminated Employee should never
+   *  be posted as an order's Owner, even if an admin's owner_code (or the
+   *  integration login's ApplicationUserID link) still points at one. */
   private async findEmployeeInfo(filter: string): Promise<SapOrderOwner | null> {
     const select = encodeURIComponent('EmployeeID,FirstName,LastName');
     const result = await this.request<{ value: { EmployeeID: number; FirstName: string | null; LastName: string | null }[] }>(
       'GET',
-      `/EmployeesInfo?$filter=${encodeURIComponent(filter)}&$select=${select}&$top=1`
+      `/EmployeesInfo?$filter=${encodeURIComponent(`(${filter}) and Active eq 'tYES'`)}&$select=${select}&$top=1`
     );
     const row = result.value?.[0];
     if (!row) return null;
-    return { employeeId: row.EmployeeID, ownerName: [row.LastName, row.FirstName].filter(Boolean).join(' ') };
+    return { employeeId: row.EmployeeID, ownerName: [row.LastName, row.FirstName].filter(Boolean).join(' ') || undefined };
   }
 
   /**
@@ -598,31 +628,39 @@ export class SapB1Client {
    *     company) nor the primary-key EmployeeID itself (numeric only,
    *     can't hold a code like this). Several admins may share one code,
    *     pointing at the same Employee.
-   *  2. Otherwise, or if no Employee has that EmployeeCode, fall back to
-   *     the Employee linked to THIS client's own shared Service Layer
-   *     login (config.json's sapb1.userId, e.g. "admin02") via
-   *     Users.UserCode -> Users.InternalKey -> EmployeesInfo.ApplicationUserID.
+   *  2. Otherwise, or if no ACTIVE Employee has that EmployeeCode, fall
+   *     back to the Employee linked to THIS client's own shared Service
+   *     Layer login (config.json's sapb1.userId, e.g. "admin02") via
+   *     Users.UserCode -> Users.InternalKey -> EmployeesInfo.ApplicationUserID
+   *     — memoized in fallbackOwnerCache, since that Employee can't change
+   *     within this client's process lifetime.
    * Returns null if neither step finds an Employee at all (e.g. the
    * integration login itself has no linked Employee yet) — the caller
    * should then just omit DocumentsOwner/U_OwnerName from the push rather
-   * than block it; this never throws.
+   * than block it; this never throws (ensureSession included — a login
+   * failure here is just another reason to return null, not a hard error).
    */
   async resolveOrderOwner(ownerCode: string | null | undefined): Promise<SapOrderOwner | null> {
-    await this.ensureSession();
     try {
+      await this.ensureSession();
+
       if (ownerCode) {
-        const byCode = await this.findEmployeeInfo(`EmployeeCode eq '${ownerCode.replace(/'/g, "''")}'`);
+        const byCode = await this.findEmployeeInfo(`EmployeeCode eq ${toODataLiteral(ownerCode)}`);
         if (byCode) return byCode;
       }
 
+      if (this.fallbackOwnerCache) return this.fallbackOwnerCache;
+
       const userResult = await this.request<{ value: { InternalKey: number }[] }>(
         'GET',
-        `/Users?$filter=${encodeURIComponent(`UserCode eq '${this.userName.replace(/'/g, "''")}'`)}&$select=InternalKey&$top=1`
+        `/Users?$filter=${encodeURIComponent(`UserCode eq ${toODataLiteral(this.userName)}`)}&$select=InternalKey&$top=1`
       );
       const internalKey = userResult.value?.[0]?.InternalKey;
       if (internalKey === undefined) return null;
 
-      return await this.findEmployeeInfo(`ApplicationUserID eq ${internalKey}`);
+      const fallback = await this.findEmployeeInfo(`ApplicationUserID eq ${internalKey}`);
+      if (fallback) this.fallbackOwnerCache = fallback;
+      return fallback;
     } catch (error) {
       console.error('[SAP] Failed to resolve order owner:', error);
       return null;
@@ -656,7 +694,7 @@ export class SapB1Client {
         'CardCode,CardName,FederalTaxID,Phone1,EmailAddress,Address,PriceListNum,U_CusGrp01,U_CusGrp02,U_CusGrp03'
       );
       const pairFilter = params.pairs
-        .map((p) => `(U_CusGrp01 eq '${p.cat1}' and U_CusGrp02 eq '${p.cat2}')`)
+        .map((p) => `(U_CusGrp01 eq ${toODataLiteral(p.cat1)} and U_CusGrp02 eq ${toODataLiteral(p.cat2)})`)
         .join(' or ');
       const filter = encodeURIComponent(`CardType eq 'cCustomer' and (${pairFilter})`);
       const result = await this.request<{ value: SapBusinessPartner[] }>(
@@ -894,14 +932,15 @@ export class SapB1Client {
       if (params?.itemCatPairs && params.itemCatPairs.length > 0) {
         filters.push(
           `(${params.itemCatPairs
-            .map((p) => `(U_ItemCat01 eq '${p.cat1}' and U_ItemCat02 eq '${p.cat2}')`)
+            .map((p) => `(U_ItemCat01 eq ${toODataLiteral(p.cat1)} and U_ItemCat02 eq ${toODataLiteral(p.cat2)})`)
             .join(' or ')})`
         );
       }
       if (params?.filter) filters.push(params.filter);
       if (params?.search) {
+        const searchLiteral = toODataLiteral(params.search);
         filters.push(
-          `(contains(ItemCode,'${params.search}') or contains(ItemName,'${params.search}'))`
+          `(contains(ItemCode,${searchLiteral}) or contains(ItemName,${searchLiteral}))`
         );
       }
       queryParts.push(`$filter=${encodeURIComponent(filters.join(' and '))}`);
@@ -921,7 +960,7 @@ export class SapB1Client {
   async getSpecialPrices(cardCode: string): Promise<SapSpecialPrice[]> {
     await this.ensureSession();
     try {
-      const filter = encodeURIComponent(`CardCode eq '${cardCode}'`);
+      const filter = encodeURIComponent(`CardCode eq ${toODataLiteral(cardCode)}`);
       const result = await this.request<{ value: SapSpecialPrice[] }>(
         'GET',
         `/SpecialPrices?$filter=${filter}`
@@ -1071,7 +1110,7 @@ export class SapB1Client {
     // ── Attempt 1: filter by U_RelDocs (portal order number) ──────────────
     if (orderNumber) {
       try {
-        const filter = encodeURIComponent(`U_RelDocs eq '${orderNumber}'`);
+        const filter = encodeURIComponent(`U_RelDocs eq ${toODataLiteral(orderNumber)}`);
         const listResult = await this.request<{ value: Row[] }>(
           'GET',
           `/Orders?$filter=${filter}&$top=1`
