@@ -210,11 +210,13 @@ function parseJsonArray<T>(value: unknown): T[] {
  * LATERAL join below (percent-discount and buy-give alike) — see
  * queryPricedProducts' docstring for what these columns mean. Takes the
  * alias to qualify columns with (distinct LATERAL subqueries can't share one
- * alias) and returns the SQL text; the caller still needs to bind 4 bp
- * params (exact/CG1/CG2/CG3) for the bp clause — there are no params for the
- * it clause (all column-to-column).
+ * alias) and returns the SQL text: `fromSql` replaces the subquery's
+ * `FROM promotion_discount <alias>` (it carries the it_type match), `bpSql`
+ * goes in its WHERE. The caller still needs to bind 4 bp params
+ * (exact/CG1/CG2/CG3) for the bp clause — `fromSql` has no params (all
+ * column-to-column).
  */
-export function promotionMatchSql(alias: string): { bpSql: string; itSql: string; scoreSql: string } {
+export function promotionMatchSql(alias: string): { bpSql: string; fromSql: string; scoreSql: string } {
   return {
     bpSql: `(
       (${alias}.bp_type = '2' AND ${alias}.bp_code = ?)
@@ -223,15 +225,21 @@ export function promotionMatchSql(alias: string): { bpSql: string; itSql: string
       OR (${alias}.bp_type = 'CG3' AND ${alias}.bp_code = ?)
       OR (${alias}.bp_type IS NULL AND ${alias}.bp_code IS NULL)
     )`,
-    itSql: `(
-      (${alias}.it_type = '4' AND ${alias}.selling_item_code = i.sap_item_code)
-      OR (${alias}.it_type = 'IC1' AND ${alias}.selling_item_code = i.item_cat01)
-      OR (${alias}.it_type = 'IC2' AND ${alias}.selling_item_code = i.item_cat02)
-      OR (${alias}.it_type = 'IC3' AND ${alias}.selling_item_code = i.item_cat03)
-      OR (${alias}.it_type = 'IC4' AND ${alias}.selling_item_code = i.item_cat04)
-      OR (${alias}.it_type = 'IC5' AND ${alias}.selling_item_code = i.item_cat05)
-      OR (${alias}.it_type = 'IC6' AND ${alias}.selling_item_code = i.item_cat06)
-    )`,
+    // The item side is a JOIN, not a WHERE: the item's own code plus its 6
+    // item-group codes, each paired with the it_type it must carry, joined on
+    // (selling_item_code, it_type). Same matches as an OR chain of
+    // (it_type = 'IC1' AND selling_item_code = i.item_cat01) ..., but MySQL
+    // can only turn this form into a lookup on idx_company_item_bp — with the
+    // OR chain every product scanned all of the customer's promotion rows
+    // (~8k each; measured 2.3 s vs 46 ms per 100 products).
+    fromSql: `(
+      SELECT i.sap_item_code AS code, '4' AS it_type
+      UNION ALL SELECT i.item_cat01, 'IC1' UNION ALL SELECT i.item_cat02, 'IC2'
+      UNION ALL SELECT i.item_cat03, 'IC3' UNION ALL SELECT i.item_cat04, 'IC4'
+      UNION ALL SELECT i.item_cat05, 'IC5' UNION ALL SELECT i.item_cat06, 'IC6'
+    ) ${alias}_codes
+    JOIN promotion_discount ${alias}
+      ON ${alias}.selling_item_code = ${alias}_codes.code AND ${alias}.it_type = ${alias}_codes.it_type`,
     scoreSql: `(
       (CASE ${alias}.it_type
          WHEN '4' THEN 600 WHEN 'IC6' THEN 60 WHEN 'IC5' THEN 50 WHEN 'IC4' THEN 40
@@ -629,14 +637,13 @@ export async function queryPricedProducts(
          'code', pd.promotion_code, 'name', pd.promotion_name, 'pct', pd.disc_pct,
          'score', (${promoMatch.scoreSql})
        )) AS options
-       FROM promotion_discount pd
+       FROM ${promoMatch.fromSql}
        WHERE pd.company_id = ?
          AND pd.disc_pct IS NOT NULL
          AND (pd.selling_qty IS NULL OR pd.selling_qty <= 1)
          AND (pd.begin_date IS NULL OR pd.begin_date <= CURDATE())
          AND (pd.end_date IS NULL OR pd.end_date >= CURDATE())
          AND ${promoMatch.bpSql}
-         AND ${promoMatch.itSql}
      ) promo_options ON TRUE
      LEFT JOIN LATERAL (
        -- Same idea for every currently-valid buy-X-get-Y program.
@@ -645,13 +652,12 @@ export async function queryPricedProducts(
          'giveCode', pd2.giving_item_code, 'giveName', pd2.giving_item_name, 'giveQty', pd2.giving_qty,
          'score', (${giveMatch.scoreSql})
        )) AS options
-       FROM promotion_discount pd2
+       FROM ${giveMatch.fromSql}
        WHERE pd2.company_id = ?
          AND pd2.giving_item_code IS NOT NULL
          AND (pd2.begin_date IS NULL OR pd2.begin_date <= CURDATE())
          AND (pd2.end_date IS NULL OR pd2.end_date >= CURDATE())
          AND ${giveMatch.bpSql}
-         AND ${giveMatch.itSql}
      ) giveaway_options ON TRUE
      WHERE ${whereSql}
      ${orderLimitSql}`,

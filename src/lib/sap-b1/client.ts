@@ -990,10 +990,11 @@ export class SapB1Client {
    * level); each line targets items (specific ItemCode or an item-category
    * level) with a discount percentage.
    */
-  async getContractDiscounts(params: { top: number; skip: number }): Promise<SapContractDiscount[]> {
+  async getContractDiscounts(params: { top: number; skip: number; filter?: string }): Promise<SapContractDiscount[]> {
     await this.ensureSession();
     try {
       const queryParts = [`$top=${params.top}`, `$skip=${params.skip}`];
+      if (params.filter) queryParts.push(`$filter=${encodeURIComponent(params.filter)}`);
       const result = await this.request<{ value: SapContractDiscount[] }>(
         'GET',
         `/CBD?${queryParts.join('&')}`

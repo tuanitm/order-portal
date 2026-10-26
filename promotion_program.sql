@@ -26,6 +26,27 @@
    */
 WITH
 /* ================================================================
+   0. ACTIVE PROMOTIONS ONLY
+      Released, not canceled, not MT/BB, and in effect today
+      (U_StartDate <= today <= U_EndDate; a missing date = open-ended).
+      Filtered first so the BP/item expansion below only runs for these
+      programs — expanding every program ever entered produced ~720k rows,
+      most of them long expired.
+   ================================================================ */
+"ACTIVE_HEADERS" AS
+(
+    SELECT H."DocEntry"
+    FROM "@PM_HEADER" H
+    WHERE IFNULL(H."U_Status", 'N') = 'R'
+      AND IFNULL(H."Canceled", 'N') <> 'Y'
+      -- Not Get MT, BB
+      AND IFNULL(H."U_Prefix", 'GT') <> 'MT'
+      AND IFNULL(H."U_Prefix", 'GT') <> 'BB'
+      AND (H."U_StartDate" IS NULL OR H."U_StartDate" <= CURRENT_DATE)
+      AND (H."U_EndDate" IS NULL OR H."U_EndDate" >= CURRENT_DATE)
+),
+
+/* ================================================================
    1. EXPAND PROMOTION BUSINESS PARTNERS
    ================================================================ */
 "BP_EXPANDED" AS
@@ -50,7 +71,8 @@ WITH
         ON BP."CardCode" = A."Code"
 
     WHERE A."Type" = '2'
-    
+      AND A."DocEntry" IN (SELECT "DocEntry" FROM "ACTIVE_HEADERS")
+
     -- GET FMCG GT ONLY
     /*
     AND BP."U_CusGrp02" 
@@ -98,6 +120,7 @@ WITH
 		OR (D."Type" = 'CG3' AND BP."U_CusGrp03" = D."Code"))
 
     WHERE A."Type" = 'UDO_PM_GRP_BP'
+      AND A."DocEntry" IN (SELECT "DocEntry" FROM "ACTIVE_HEADERS")
 
       /* Excluded BP should not be considered part of group */
       AND IFNULL(D."Exclude", 'N') <> 'Y'
@@ -154,7 +177,8 @@ WITH
         ON F."ItemCode" = S."FreeItemCode"
 
     WHERE S."Type" = '4'
-    
+      AND S."DocEntry" IN (SELECT "DocEntry" FROM "ACTIVE_HEADERS")
+
     -- GET PIGEON, ETSUKO ONLY
     AND I."U_ItemCat01" IN('D1','L1','A1','A2')
 
@@ -218,6 +242,7 @@ WITH
         ON F."ItemCode" = S."FreeItemCode"
 
     WHERE S."Type" = 'UDO_PM_GRP_ITEM'
+      AND S."DocEntry" IN (SELECT "DocEntry" FROM "ACTIVE_HEADERS")
 
       /* Excluded item should not be expanded */
       AND IFNULL(D."Exclude", 'N') <> 'Y'
@@ -337,12 +362,9 @@ LEFT OUTER JOIN "ITEM_EXPANDED" IT
 /* ================================================================
    FILTER
    ================================================================ */
-WHERE 
-IFNULL("U_Status", 'N') = 'R' 
-AND IFNULL(H."Canceled", 'N') <> 'Y'
--- Not Get MT, BB
-AND IFNULL(H."U_Prefix", 'GT') <> 'MT'
-AND IFNULL(H."U_Prefix", 'GT') <> 'BB'
+WHERE
+-- Status / canceled / MT-BB / effective-date rules: see ACTIVE_HEADERS
+H."DocEntry" IN (SELECT "DocEntry" FROM "ACTIVE_HEADERS")
 -- TEST
 -- AND H."DocEntry" = 35
 

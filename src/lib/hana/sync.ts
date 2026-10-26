@@ -1,6 +1,7 @@
 import { readFileSync } from "fs";
 import { join } from "path";
-import { getPool } from "@/lib/db/connection";
+import { withTableLocks } from "@/lib/db/tableLock";
+import { swapInFreshTable } from "@/lib/db/idReset";
 import { getCompanyId } from "@/lib/config";
 import { queryHana, getHanaSchema } from "@/lib/hana/client";
 
@@ -177,32 +178,26 @@ export async function syncPromotionDiscountsFromHana(): Promise<{ rowsSynced: nu
     ]);
   }
 
-  const pool = getPool();
-  const conn = await pool.getConnection();
-  try {
-    await conn.beginTransaction();
-    await conn.execute(`DELETE FROM promotion_discount WHERE company_id = ?`, [getCompanyId()]);
-
-    for (let i = 0; i < values.length; i += CHUNK_SIZE) {
-      const chunk = values.slice(i, i + CHUNK_SIZE);
-      await conn.query(
-        `INSERT INTO promotion_discount (
-           company_id, doc_entry, promotion_code, promotion_name, create_date, update_date, begin_date, end_date,
+  // Loaded into a fresh copy of the table and swapped in atomically, instead
+  // of DELETE + INSERT in place: every sync replaces ~720k rows, and in-place
+  // inserts burned that many ids each time (12M+ after a few weeks, on an
+  // INT column). A fresh table numbers from 1 again on every sync. Other
+  // companies sharing this database keep their rows (copied across as-is).
+  const columns = `company_id, doc_entry, promotion_code, promotion_name, create_date, update_date, begin_date, end_date,
            after_cus_disc, after_price_disc,
            bp_grp_code, bp_grp_name, bp_type, bp_code, bp_name,
            selling_grp_code, selling_grp_name, it_type, selling_item_code, selling_item_name,
-           disc_pct, selling_qty, giving_item_code, giving_item_name, giving_qty, last_synced)
-         VALUES ?`,
-        [chunk]
+           disc_pct, selling_qty, giving_item_code, giving_item_name, giving_qty, last_synced`;
+  await withTableLocks(["promotion_discount"], () =>
+    swapInFreshTable("promotion_discount", async (conn, fresh) => {
+      await conn.query(
+        `INSERT INTO \`${fresh}\` (${columns}) SELECT ${columns} FROM promotion_discount WHERE company_id <> ? ORDER BY id`,
+        [getCompanyId()]
       );
-    }
-
-    await conn.commit();
-    return { rowsSynced: values.length, rowsSkipped };
-  } catch (error) {
-    await conn.rollback();
-    throw error;
-  } finally {
-    conn.release();
-  }
+      for (let i = 0; i < values.length; i += CHUNK_SIZE) {
+        await conn.query(`INSERT INTO \`${fresh}\` (${columns}) VALUES ?`, [values.slice(i, i + CHUNK_SIZE)]);
+      }
+    })
+  );
+  return { rowsSynced: values.length, rowsSkipped };
 }

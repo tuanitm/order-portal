@@ -430,8 +430,11 @@ CREATE TABLE IF NOT EXISTS customer_require_shelflife (
 --   it_type='IC1'..'IC6' -> selling_item_code is an item_groups code at that level.
 -- bp_grp_code/selling_grp_code are NOT item_groups/customer_groups codes —
 -- they're free-text labels (e.g. "GT.TOILETRIES") and are display-only.
+-- id is BIGINT and the HANA sync rebuilds this table fresh each run (see
+-- syncPromotionDiscountsFromHana): every sync replaces ~720k rows, which
+-- used to burn that many ids per run on an INT column.
 CREATE TABLE IF NOT EXISTS promotion_discount (
-  id INT AUTO_INCREMENT PRIMARY KEY,
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
   company_id VARCHAR(50) NOT NULL,
   doc_entry INT NOT NULL,
   promotion_code VARCHAR(50),
@@ -461,35 +464,24 @@ CREATE TABLE IF NOT EXISTS promotion_discount (
   INDEX idx_company (company_id),
   INDEX idx_bp_code (bp_code),
   INDEX idx_selling_item_code (selling_item_code),
-  INDEX idx_active_dates (begin_date, end_date)
+  INDEX idx_active_dates (begin_date, end_date),
+  -- Per-product promotion lookup on the storefront (promotionMatchSql's
+  -- fromSql joins on selling_item_code); without it each product scanned all
+  -- of the customer's rows — this table holds ~700k per-BP rows.
+  INDEX idx_company_item_bp (company_id, selling_item_code, bp_code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 -- Migration for an existing DB:
+-- ALTER TABLE promotion_discount MODIFY id BIGINT NOT NULL AUTO_INCREMENT, ALGORITHM=COPY, LOCK=SHARED;
+-- ALTER TABLE promotion_discount ADD INDEX idx_company_item_bp (company_id, selling_item_code, bp_code), ALGORITHM=INPLACE, LOCK=NONE;
 -- ALTER TABLE promotion_discount ADD COLUMN bp_type VARCHAR(10) NULL AFTER bp_grp_name;
 -- ALTER TABLE promotion_discount ADD COLUMN it_type VARCHAR(10) NULL AFTER selling_grp_name;
 -- ALTER TABLE promotion_discount ADD COLUMN after_cus_disc VARCHAR(10) NULL AFTER end_date;
 -- ALTER TABLE promotion_discount ADD COLUMN after_price_disc VARCHAR(10) NULL AFTER after_cus_disc;
 
--- Promotions
-CREATE TABLE IF NOT EXISTS promotions (
-  id INT AUTO_INCREMENT PRIMARY KEY,
-  company_id VARCHAR(50) NOT NULL,
-  promo_code VARCHAR(50),
-  title_vi VARCHAR(255),
-  title_en VARCHAR(255),
-  description_vi TEXT,
-  description_en TEXT,
-  discount_type ENUM('percent', 'amount', 'buy_x_get_y') NOT NULL,
-  discount_value DECIMAL(18,2),
-  min_qty INT,
-  applicable_items JSON,
-  applicable_bps JSON,
-  valid_from DATE,
-  valid_to DATE,
-  is_active BOOLEAN DEFAULT TRUE,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  INDEX idx_company (company_id),
-  INDEX idx_active_dates (is_active, valid_from, valid_to)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- The old hand-maintained `promotions` table was never used (all promotions
+-- come from SAP into promotion_discount above) and has been removed.
+-- Migration for an existing DB:
+-- DROP TABLE IF EXISTS promotions;
 
 -- Orders
 CREATE TABLE IF NOT EXISTS orders (

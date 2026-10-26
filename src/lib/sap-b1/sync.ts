@@ -4,6 +4,7 @@ import { getItemCategoryPairsFromDB, getInactiveItemGroupCodesByLevel } from "@/
 import { getCustomerGroupPairsFromDB } from "@/lib/customerGroups";
 import { loadConfig, getCompanyId } from "@/lib/config";
 import type { PoolConnection } from "mysql2/promise";
+import { withTableLocks } from "@/lib/db/tableLock";
 
 /** Parse a ready-made SQL IN-list literal from config.json (e.g. "'1000','1001'") into plain codes. */
 function parseSqlInList(sqlInList: string): Set<string> {
@@ -238,6 +239,11 @@ export function computeBatchShelfLifePct(mnfDate: string | null, expDate: string
  * why the % itself is computed here in JS rather than in the SAP query.
  */
 export async function syncInventoryStock(): Promise<{ rowsSynced: number }> {
+  // Waits for an id reset of the same table to finish (see tableLock.ts).
+  return withTableLocks(["item_warehouse_stock"], () => syncInventoryStockUnlocked());
+}
+
+async function syncInventoryStockUnlocked(): Promise<{ rowsSynced: number }> {
   const sap = getSapClient();
   const pool = getPool();
   const companyId = getCompanyId();
@@ -299,6 +305,11 @@ export async function syncInventoryStock(): Promise<{ rowsSynced: number }> {
  * Which price lists are "tracked" comes from `price_lists` (admin-editable).
  */
 export async function syncItems(): Promise<{ itemsSynced: number }> {
+  // Waits for an id reset of the same table to finish (see tableLock.ts).
+  return withTableLocks(["item_channel_prices"], () => syncItemsUnlocked());
+}
+
+async function syncItemsUnlocked(): Promise<{ itemsSynced: number }> {
   const sap = getSapClient();
   const pool = getPool();
   const companyId = getCompanyId();
@@ -541,6 +552,11 @@ function expandSpecialPriceTiers(sp: {
  * SAP has.
  */
 export async function syncPeriodDiscounts(priceListNum: number): Promise<{ rowsSynced: number }> {
+  // Waits for an id reset of the same table to finish (see tableLock.ts).
+  return withTableLocks(["period_discount"], () => syncPeriodDiscountsUnlocked(priceListNum));
+}
+
+async function syncPeriodDiscountsUnlocked(priceListNum: number): Promise<{ rowsSynced: number }> {
   const sap = getSapClient();
   const pool = getPool();
   const companyId = getCompanyId();
@@ -662,6 +678,11 @@ export async function syncCustomerGroupsForCard(
  *   - Line U_Code IN (item group codes + item codes from DB)
  */
 export async function syncContractDiscounts(): Promise<{ headersSynced: number; linesSynced: number; headersSkipped: number }> {
+  // Waits for an id reset of the same table to finish (see tableLock.ts).
+  return withTableLocks(["contract_discount"], () => syncContractDiscountsUnlocked());
+}
+
+async function syncContractDiscountsUnlocked(): Promise<{ headersSynced: number; linesSynced: number; headersSkipped: number }> {
   const sap = getSapClient();
   const pool = getPool();
   const companyId = getCompanyId();
@@ -716,12 +737,22 @@ export async function syncContractDiscounts(): Promise<{ headersSynced: number; 
   let linesSynced = 0;
   let headersSkipped = 0;
 
+  // Only agreements in effect today (not canceled, today within
+  // U_ValidFrom..U_ValidTo, a missing date meaning open-ended — the same rule
+  // the storefront prices with), filtered by SAP itself. The company's rows
+  // are replaced, not upserted, so an agreement that has since expired or
+  // been canceled drops out instead of lingering.
+  const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Ho_Chi_Minh" }).format(new Date());
+  const activeFilter =
+    `Canceled ne 'Y' and (U_ValidFrom le '${today}' or U_ValidFrom eq null) and (U_ValidTo ge '${today}' or U_ValidTo eq null)`;
+
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
+    await conn.execute(`DELETE FROM contract_discount WHERE company_id = ?`, [companyId]);
 
     for (;;) {
-      const headers = await sap.getContractDiscounts({ top: PAGE_SIZE, skip });
+      const headers = await sap.getContractDiscounts({ top: PAGE_SIZE, skip, filter: activeFilter });
       if (headers.length === 0) break;
 
       for (const h of headers) {

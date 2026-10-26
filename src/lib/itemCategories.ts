@@ -1,6 +1,7 @@
 import { getPool } from "@/lib/db/connection";
 import { loadConfig, getCompanyId } from "@/lib/config";
 import { queryHana, getHanaSchema } from "@/lib/hana/client";
+import { withTableLocks } from "@/lib/db/tableLock";
 
 interface HanaItemGroupRow {
   ItemGrpCode1: string;
@@ -39,6 +40,11 @@ interface HanaItemGroupRow {
  * 6 category levels populated (verified against the live `items` table).
  */
 export async function syncItemGroupsFromHana(): Promise<{ rowsRead: number; levelsImported: number }> {
+  // Waits for an id reset of the same table to finish (see tableLock.ts).
+  return withTableLocks(["item_groups"], () => syncItemGroupsFromHanaUnlocked());
+}
+
+async function syncItemGroupsFromHanaUnlocked(): Promise<{ rowsRead: number; levelsImported: number }> {
   const schema = getHanaSchema();
   const itemGroupFilter = loadConfig().masterdata.itemGroup;
 

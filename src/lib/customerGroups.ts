@@ -1,6 +1,7 @@
 import { getPool } from "@/lib/db/connection";
 import { loadConfig, getCompanyId } from "@/lib/config";
 import { queryHana, getHanaSchema } from "@/lib/hana/client";
+import { withTableLocks } from "@/lib/db/tableLock";
 
 interface HanaCustomerGroupRow {
   CustGrpCode1: string;
@@ -30,6 +31,11 @@ interface HanaCustomerGroupRow {
  * literal, e.g. "'GT'") — only level-1/2 groups matching it are pulled.
  */
 export async function syncCustomerGroupsFromHana(): Promise<{ rowsRead: number; levelsImported: number }> {
+  // Waits for an id reset of the same table to finish (see tableLock.ts).
+  return withTableLocks(["customer_groups"], () => syncCustomerGroupsFromHanaUnlocked());
+}
+
+async function syncCustomerGroupsFromHanaUnlocked(): Promise<{ rowsRead: number; levelsImported: number }> {
   const schema = getHanaSchema();
   const customerGroupFilter = loadConfig().masterdata.customerGroup;
 

@@ -245,6 +245,7 @@ const NAV_GROUPS: NavGroup[] = [
       { key: "change-password",    label: "My Profile",        href: "change-password",    icon: "👤" },
       { key: "catalog-visibility", label: "Catalog Visibility",href: "catalog-visibility", icon: "🔒" },
       { key: "settings",           label: "SAP Sync Config",  href: "settings",           icon: "🔄", rootOnly: true },
+      { key: "id-reset",           label: "Reset the Id",      href: "id-reset",           icon: "🔢", rootOnly: true },
       { key: "admin-roles",        label: "Admin Roles",       href: "admin-roles",        icon: "🛡️", rootOnly: true },
       { key: "admin-users",        label: "Admin Users",       href: "admin-users",        icon: "🔑", rootOnly: true },
       { key: "audit-logs",         label: "Audit Logs",        href: "audit-logs",         icon: "📜", rootOnly: true },
