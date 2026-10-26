@@ -20,7 +20,8 @@
     "baseUrl": "https://sapsld.imv.com.vn:50000/b1s/v1",
     "companyID": "IMV260806",
     "userId": "admin02",
-    "passWrd": "ENV:SAPB1_PASSWORD"
+    "passWrd": "ENV:SAPB1_PASSWORD",
+    "fillOwner": "Yes"
   },
   "mysql": {
     "dbIp": "mysql8",

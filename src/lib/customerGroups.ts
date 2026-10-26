@@ -1,43 +1,6 @@
-import { readFileSync, existsSync } from "fs";
-import { join } from "path";
 import { getPool } from "@/lib/db/connection";
 import { loadConfig, getCompanyId } from "@/lib/config";
 import { queryHana, getHanaSchema } from "@/lib/hana/client";
-
-export interface ImportWarning {
-  index: number;
-  message: string;
-}
-
-export interface ImportResult {
-  rowsRead: number;
-  levelsImported: number;
-  warnings: ImportWarning[];
-}
-
-/**
- * Import customer_groups codes/names from `SAP_Customer_Group.xlsx` at the
- * project root — the CUSGRP01/02/03 master tables aren't reachable via SAP
- * Service Layer, so this Excel file is the authoritative source for names.
- * Falls back to the legacy `custgroup.json` if the xlsx is not present.
- */
-export async function importCustomerGroupsFromFile(): Promise<ImportResult> {
-  const xlsxPath = join(process.cwd(), "SAP_Customer_Group.xlsx");
-
-  if (existsSync(xlsxPath)) {
-    return importFromXlsx(xlsxPath);
-  }
-
-  // Legacy fallback: custgroup.json via the generic hierarchy importer
-  const { importHierarchyFromFile } = await import("@/lib/hierarchyImport");
-  return importHierarchyFromFile({
-    fileName: "custgroup.json",
-    listKey: "custGrpList",
-    fieldPrefix: "custgrp",
-    tableName: "customer_groups",
-    maxLevels: 3,
-  });
-}
 
 interface HanaCustomerGroupRow {
   CustGrpCode1: string;
@@ -54,11 +17,12 @@ interface HanaCustomerGroupRow {
  * Promotion tables, so SAP B1's own Query Generator Authorization blocks
  * them via Service Layer SQLQueries regardless of grants; confirmed
  * empirically, error 702 "not accessible") and upsert into
- * `customer_groups`. Supersedes the SAP_Customer_Group.xlsx import as the
- * primary source; that importer remains as a manual fallback.
+ * `customer_groups` — the only sync path for this table (the
+ * SAP_Customer_Group.xlsx/custgroup.json manual import that used to stand
+ * in for this before HANA access was available has been removed).
  *
- * Same upsert semantics as importFromXlsx (ON DUPLICATE KEY UPDATE
- * parent_code/name only) rather than a full replace: `is_active` toggles
+ * Upserts (ON DUPLICATE KEY UPDATE parent_code/name only) rather than a
+ * full replace: `is_active` toggles
  * made on the admin page, and any group added manually there, must survive
  * a re-sync untouched.
  *
@@ -111,80 +75,6 @@ export async function syncCustomerGroupsFromHana(): Promise<{ rowsRead: number; 
   }
 
   return { rowsRead: rows.length, levelsImported };
-}
-
-/**
- * Read SAP_Customer_Group.xlsx and upsert into customer_groups.
- * Expected columns: CUSTGRPCODE1, CUSTGRPNAME1, CUSTGRPCODE2, CUSTGRPNAME2, CUSTGRPCODE3, CUSTGRPNAME3
- */
-async function importFromXlsx(filePath: string): Promise<ImportResult> {
-  // require() instead of dynamic import — xlsx is a CJS module and
-  // `await import("xlsx")` can lose exports under Next.js bundling.
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const XLSX = require("xlsx");
-
-  const workbook = XLSX.readFile(filePath);
-  const sheet = workbook.Sheets[workbook.SheetNames[0]];
-  const rows: Record<string, string | number | undefined>[] = XLSX.utils.sheet_to_json(sheet);
-
-  const warnings: ImportWarning[] = [];
-  let levelsImported = 0;
-
-  const pool = getPool();
-  const conn = await pool.getConnection();
-  try {
-    await conn.beginTransaction();
-
-    for (let index = 0; index < rows.length; index++) {
-      const row = rows[index];
-      const levels = [
-        { code: row.CUSTGRPCODE1, name: row.CUSTGRPNAME1 },
-        { code: row.CUSTGRPCODE2, name: row.CUSTGRPNAME2 },
-        { code: row.CUSTGRPCODE3, name: row.CUSTGRPNAME3 },
-      ];
-
-      let parent: string | null = null;
-      let sawGap = false;
-
-      for (let i = 0; i < levels.length; i++) {
-        const lvl = levels[i];
-        const level = i + 1;
-
-        if (!lvl.code) {
-          if (levels.slice(i + 1).some((l) => l.code)) {
-            warnings.push({
-              index,
-              message: `Row ${index}: level ${level} code is missing but a deeper level is present — chain broken from here`,
-            });
-          }
-          sawGap = true;
-          continue;
-        }
-        if (sawGap) continue;
-
-        if (!lvl.name) {
-          warnings.push({ index, message: `Row ${index}: level ${level} code "${lvl.code}" has no name` });
-        }
-
-        await conn.execute(
-          `INSERT INTO customer_groups (company_id, level, code, parent_code, name) VALUES (?, ?, ?, ?, ?)
-           ON DUPLICATE KEY UPDATE parent_code = VALUES(parent_code), name = VALUES(name)`,
-          [getCompanyId(), level, String(lvl.code).trim(), parent, lvl.name ? String(lvl.name).trim() : null]
-        );
-        levelsImported++;
-        parent = String(lvl.code).trim();
-      }
-    }
-
-    await conn.commit();
-  } catch (error) {
-    await conn.rollback();
-    throw error;
-  } finally {
-    conn.release();
-  }
-
-  return { rowsRead: rows.length, levelsImported, warnings };
 }
 
 export interface CustomerGroupPair {
@@ -330,57 +220,3 @@ export async function getCustomerGroupPairsFromDB(): Promise<CustomerGroupPair[]
   return pairs;
 }
 
-/**
- * The exact (level-1, level-2) code pairs from SAP_Customer_Group.xlsx —
- * legacy fallback for sync scope. Prefer getCustomerGroupPairsFromDB().
- */
-export function getCustomerGroupPairsFromFile(): CustomerGroupPair[] {
-  const xlsxPath = join(process.cwd(), "SAP_Customer_Group.xlsx");
-
-  if (existsSync(xlsxPath)) {
-    return getCustomerGroupPairsFromXlsx(xlsxPath);
-  }
-
-  // Legacy fallback: custgroup.json
-  return getCustomerGroupPairsFromJson();
-}
-
-function getCustomerGroupPairsFromXlsx(filePath: string): CustomerGroupPair[] {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const XLSX = require("xlsx");
-  const workbook = XLSX.readFile(filePath);
-  const sheet = workbook.Sheets[workbook.SheetNames[0]];
-  const rows: Record<string, string | number | undefined>[] = XLSX.utils.sheet_to_json(sheet);
-
-  const pairs = new Map<string, CustomerGroupPair>();
-  for (const row of rows) {
-    const cat1 = row.CUSTGRPCODE1;
-    const cat2 = row.CUSTGRPCODE2;
-    if (cat1 && cat2) {
-      pairs.set(`${cat1}|${cat2}`, { cat1: String(cat1).trim(), cat2: String(cat2).trim() });
-    }
-  }
-  return [...pairs.values()];
-}
-
-function getCustomerGroupPairsFromJson(): CustomerGroupPair[] {
-  const filePath = join(process.cwd(), "custgroup.json");
-  if (!existsSync(filePath)) return [];
-
-  const raw = readFileSync(filePath, "utf-8");
-  let data: { custGrpList?: Record<string, string | undefined>[] };
-  try {
-    data = JSON.parse(raw);
-  } catch {
-    return [];
-  }
-  if (!Array.isArray(data.custGrpList)) return [];
-
-  const pairs = new Map<string, CustomerGroupPair>();
-  for (const entry of data.custGrpList) {
-    const cat1 = entry.custgrpcode1;
-    const cat2 = entry.custgrpcode2;
-    if (cat1 && cat2) pairs.set(`${cat1}|${cat2}`, { cat1, cat2 });
-  }
-  return [...pairs.values()];
-}

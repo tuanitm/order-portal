@@ -1,6 +1,8 @@
 "use client";
 
 import { useState } from "react";
+import Image from "next/image";
+import logo from "@/app/icon.png";
 import { useTranslations, useLocale } from "next-intl";
 import { Link } from "@/i18n/navigation";
 import { useSearchParams } from "next/navigation";
@@ -65,11 +67,14 @@ export default function LoginPage() {
         {/* Logo */}
         <div className="auth-card__logo">
           <div className="auth-card__logo-icon">
-            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z" />
-              <line x1="3" y1="6" x2="21" y2="6" />
-              <path d="M16 10a4 4 0 0 1-8 0" />
-            </svg>
+            <Image
+              src={logo}
+              alt={appName || "Logo"}
+              width={160}
+              height={92}
+              style={{ objectFit: "contain", height: "auto", maxHeight: "64px", width: "auto" }}
+              priority
+            />
           </div>
           <h1 className="auth-card__title">{t("auth.loginTitle")}</h1>
           <p className="auth-card__subtitle">

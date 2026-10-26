@@ -1272,6 +1272,16 @@ ul, ol {
   font-size: var(--text-2xl);
 }
 
+.auth-card__logo-icon:has(img),
+.auth-card__logo-icon--image {
+  width: auto;
+  height: auto;
+  min-height: 48px;
+  background: transparent;
+  border-radius: 0;
+  box-shadow: none;
+}
+
 .auth-card__title {
   font-size: var(--text-2xl);
   font-weight: var(--font-bold);

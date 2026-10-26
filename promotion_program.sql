@@ -58,6 +58,10 @@ WITH
     AND (BP."U_CusCCDept"='HCMD01')
     */
 
+    -- @@BP_GROUP_BRANCH_START -- stripped at sync time (src/lib/hana/sync.ts)
+    -- for a company whose "@PM_GRP_BP" UDO has no DocEntry column (some
+    -- companies' Promotion Management add-on install never fully set up
+    -- BP-group-level promotions) — do not remove this marker comment.
     UNION ALL
 
     /* ------------------------------------------------------------
@@ -105,6 +109,7 @@ WITH
       IN('GTSO','GTNO','GTSE','GTMK')
       AND (BP."U_CusCCDept" = 'HCMD01')
       */
+    -- @@BP_GROUP_BRANCH_END
 ),
 
 
@@ -153,7 +158,10 @@ WITH
     -- GET PIGEON, ETSUKO ONLY
     AND I."U_ItemCat01" IN('D1','L1','A1','A2')
 
-
+    -- @@ITEM_GROUP_BRANCH_START -- stripped at sync time (src/lib/hana/sync.ts)
+    -- for a company whose "@PM_GRP_ITEM" UDO has no DocEntry column (some
+    -- companies' Promotion Management add-on install never fully set up
+    -- item-group-level promotions) — do not remove this marker comment.
     UNION ALL
 
     /* ------------------------------------------------------------
@@ -216,6 +224,7 @@ WITH
       
       -- GET PIGEON, ETSUKO ONLY
       AND I."U_ItemCat01" IN('D1','L1','A1','A2')
+    -- @@ITEM_GROUP_BRANCH_END
 )
 
 /* ================================================================

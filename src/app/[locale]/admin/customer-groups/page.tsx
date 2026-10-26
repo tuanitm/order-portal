@@ -125,7 +125,6 @@ export default function CustomerGroupsPage() {
           {isSuperAdmin && (
             <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
               <SyncButton url="/api/admin/customer-groups/sync" label="Sync from SAP (HANA)" onDone={load} />
-              <SyncButton url="/api/admin/customer-groups/import" label="Import from Excel file (fallback)" onDone={load} />
             </div>
           )}
         </div>

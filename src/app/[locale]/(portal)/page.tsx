@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useTranslations, useLocale } from "next-intl";
 import ProductCard from "@/components/product/ProductCard";
 import ImportExcelModal from "@/components/cart/ImportExcelModal";
@@ -21,19 +21,30 @@ export default function HomePage() {
   const t = useTranslations();
   const locale = useLocale();
   const { searchQuery, setSearchQuery } = useSearch();
-  // Auto-focused on "Khuyến mãi" when the page opens, to surface deals first.
+  // Auto-focused on "Khuyến mãi" when the page opens, to surface deals first
+  // (falls back to "Tất cả" when there are none — see isDefaultPromo).
   const [activeCategory, setActiveCategory] = useState<string | null>(PROMO_FILTER);
   const [products, setProducts] = useState<ProductWithPricing[]>([]);
   const [categories, setCategories] = useState<string[]>([]);
   const [total, setTotal] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
   const [isImportOpen, setIsImportOpen] = useState(false);
+  // True only while "Khuyến mãi" is the page-open default (not a customer click):
+  // if that first load finds no promo items, fall back to "Tất cả" instead of
+  // greeting the customer with an empty grid.
+  const isDefaultPromo = useRef(true);
+
+  const selectCategory = (category: string | null) => {
+    isDefaultPromo.current = false;
+    setActiveCategory(category);
+  };
 
   // Debounced fetch whenever search/category changes
   useEffect(() => {
     const controller = new AbortController();
     const timer = setTimeout(async () => {
       setIsLoading(true);
+      let fallingBack = false;
       try {
         const params = new URLSearchParams();
         if (searchQuery) params.set("search", searchQuery);
@@ -54,6 +65,15 @@ export default function HomePage() {
         });
         if (!res.ok) throw new Error("Failed to load products");
         const data: ProductListResponse & { categories: string[] } = await res.json();
+        if (isDefaultPromo.current && activeCategory === PROMO_FILTER && !searchQuery) {
+          isDefaultPromo.current = false;
+          if (data.items.length === 0) {
+            // Keep the spinner up through the refetch so the empty promo grid never flashes.
+            fallingBack = true;
+            setActiveCategory(null);
+            return;
+          }
+        }
         setProducts(data.items);
         setTotal(data.total);
         setCategories(data.categories || []);
@@ -62,7 +82,7 @@ export default function HomePage() {
           console.error("Failed to load products:", err);
         }
       } finally {
-        setIsLoading(false);
+        if (!fallingBack) setIsLoading(false);
       }
     }, 250);
 
@@ -170,14 +190,14 @@ export default function HomePage() {
           <div className="category-filter" style={{ marginBottom: "1.5rem" }} id="category-filter">
             <button
               className={`category-chip ${activeCategory === null ? "active" : ""}`}
-              onClick={() => setActiveCategory(null)}
+              onClick={() => selectCategory(null)}
             >
               {t("common.all")}
             </button>
             <button
               id="promo-filter-chip"
               className={`category-chip category-chip--promo ${activeCategory === PROMO_FILTER ? "active" : ""}`}
-              onClick={() => setActiveCategory(PROMO_FILTER)}
+              onClick={() => selectCategory(PROMO_FILTER)}
             >
               🔥 {t("product.promotion")}
             </button>
@@ -185,7 +205,7 @@ export default function HomePage() {
               <button
                 key={cat}
                 className={`category-chip ${activeCategory === cat ? "active" : ""}`}
-                onClick={() => setActiveCategory(activeCategory === cat ? null : cat)}
+                onClick={() => selectCategory(activeCategory === cat ? null : cat)}
               >
                 {cat}
               </button>

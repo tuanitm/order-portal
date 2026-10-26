@@ -82,7 +82,7 @@ export default function PromotionsPage() {
               SAP Promotion Programs (@PM_HEADER) — flat rows mapping a promotion to a Business Partner
               (or BP group) and a selling item (or item group), with either a discount % or a free/bonus item.
               Synced directly from SAP HANA (promotion_program.sql) — the SAP Service Layer has no accessible
-              route to these promotion tables at all. The Excel import below remains as a manual fallback.
+              route to these promotion tables at all.
             </p>
           </div>
           {isSuperAdmin && (
@@ -91,12 +91,6 @@ export default function PromotionsPage() {
                 url="/api/admin/promotions/sync"
                 label="Sync promotion discounts from SAP (HANA)"
                 loadingLabel="Syncing..."
-                onDone={() => load(searchFilter, bpCodeFilter, itemCodeFilter, typeFilter, activeOnly, validDate)}
-              />
-              <SyncButton
-                url="/api/admin/promotions/import"
-                label="Import from Excel file (fallback)"
-                loadingLabel="Importing..."
                 onDone={() => load(searchFilter, bpCodeFilter, itemCodeFilter, typeFilter, activeOnly, validDate)}
               />
             </div>

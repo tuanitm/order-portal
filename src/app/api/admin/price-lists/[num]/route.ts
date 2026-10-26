@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getPool, query } from "@/lib/db/connection";
 import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
+import { getBasePriceListNum } from "@/lib/sap-b1/sync";
 
 /**
  * GET /api/admin/price-lists/[num] — item-level pricing for one price list,
@@ -10,10 +11,20 @@ import { requireAdminPermission } from "@/lib/auth/adminSession";
  * this same list, meaning the price is set directly here, not derived),
  * the Factor, the resolved Base Price (that base list's own price for the
  * item), and the final Price (already SAP-resolved; Base Price × Factor).
- * Paginated/searchable, same shape as GET /api/admin/items. Only items with
- * a cached price for this list are returned (item_channel_prices is
- * populated per tracked list — base or channel — by syncItems, so an
- * untracked list has none).
+ * Paginated/searchable, same shape as GET /api/admin/items.
+ *
+ * Normally only items with a cached row in `item_channel_prices` for this
+ * list are returned (that table is populated per tracked list — base or
+ * channel — by syncItems, so an untracked list has none). The one
+ * exception: when `num` IS the price list currently flagged as Base (see
+ * price_lists.is_base), every active item is shown even before its
+ * `item_channel_prices` row exists yet, falling back to `items.base_price`
+ * — syncItems already computes that column from this exact list, so it's
+ * not a guess, just read from where it already landed. This covers the gap
+ * right after a price list is first marked Base: items synced before that
+ * point have no item_channel_prices row for it yet (only the next Items
+ * sync backfills one), but items.base_price itself is still correct once
+ * Items has been synced at least once since the Base flag was set.
  */
 export async function GET(
   request: NextRequest,
@@ -35,6 +46,47 @@ export async function GET(
   const offset = (page - 1) * limit;
 
   const companyId = getCompanyId();
+  const isBaseList = priceListNum === (await getBasePriceListNum());
+
+  if (isBaseList) {
+    const whereClauses: string[] = ["i.company_id = ?", "i.is_active = TRUE"];
+    const baseParams: (string | number)[] = [companyId];
+    if (search) {
+      whereClauses.push("(i.item_name_vi LIKE ? OR i.item_name_en LIKE ? OR i.sap_item_code LIKE ?)");
+      baseParams.push(`%${search}%`, `%${search}%`, `%${search}%`);
+    }
+    const whereSql = `WHERE ${whereClauses.join(" AND ")}`;
+
+    const totalRows = await query<{ cnt: number }[]>(
+      `SELECT COUNT(*) as cnt FROM items i ${whereSql}`,
+      baseParams
+    );
+    const total = totalRows[0]?.cnt ?? 0;
+
+    const items = await query(
+      `SELECT i.sap_item_code, i.item_name_vi, i.item_name_en, COALESCE(i.sales_uom, i.uom) AS uom, i.category,
+              COALESCE(cp.base_price_list_num, ?) AS base_price_list_num,
+              COALESCE(bpl.list_name, selfbpl.list_name) AS base_price_list_name,
+              COALESCE(bp.price, i.base_price) AS base_price,
+              COALESCE(cp.factor, 1) AS factor,
+              COALESCE(cp.price, i.base_price) AS price,
+              cp.last_synced
+       FROM items i
+       LEFT JOIN item_channel_prices cp
+         ON cp.company_id = i.company_id AND cp.sap_item_code = i.sap_item_code AND cp.price_list_num = ?
+       LEFT JOIN price_lists bpl ON bpl.company_id = i.company_id AND bpl.price_list_num = cp.base_price_list_num
+       LEFT JOIN item_channel_prices bp
+         ON bp.company_id = i.company_id AND bp.sap_item_code = i.sap_item_code AND bp.price_list_num = cp.base_price_list_num
+       LEFT JOIN price_lists selfbpl ON selfbpl.company_id = i.company_id AND selfbpl.price_list_num = ?
+       ${whereSql}
+       ORDER BY i.item_name_vi ASC
+       LIMIT ? OFFSET ?`,
+      [priceListNum, priceListNum, priceListNum, ...baseParams, limit, offset]
+    );
+
+    return NextResponse.json({ items, total, page, totalPages: Math.ceil(total / limit) });
+  }
+
   const whereClauses: string[] = ["cp.company_id = ?", "cp.price_list_num = ?"];
   const params_: (string | number)[] = [companyId, priceListNum];
   if (search) {

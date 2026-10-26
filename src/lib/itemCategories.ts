@@ -1,43 +1,6 @@
-import { readFileSync, existsSync } from "fs";
-import { join } from "path";
 import { getPool } from "@/lib/db/connection";
 import { loadConfig, getCompanyId } from "@/lib/config";
 import { queryHana, getHanaSchema } from "@/lib/hana/client";
-
-export interface ImportWarning {
-  index: number;
-  message: string;
-}
-
-export interface ImportResult {
-  rowsRead: number;
-  levelsImported: number;
-  warnings: ImportWarning[];
-}
-
-/**
- * Import item_groups codes/names from `SAP_Item_Group.xlsx` at the project
- * root — the ItemCat01-06 master tables aren't reachable via SAP Service
- * Layer, so this Excel file is the authoritative source for names.
- * Falls back to the legacy `itemgroup.json` if the xlsx is not present.
- */
-export async function importItemCategoriesFromFile(): Promise<ImportResult> {
-  const xlsxPath = join(process.cwd(), "SAP_Item_Group.xlsx");
-
-  if (existsSync(xlsxPath)) {
-    return importFromXlsx(xlsxPath);
-  }
-
-  // Legacy fallback: itemgroup.json via the generic hierarchy importer
-  const { importHierarchyFromFile } = await import("@/lib/hierarchyImport");
-  return importHierarchyFromFile({
-    fileName: "itemgroup.json",
-    listKey: "itemGrpList",
-    fieldPrefix: "itemgrp",
-    tableName: "item_groups",
-    maxLevels: 6,
-  });
-}
 
 interface HanaItemGroupRow {
   ItemGrpCode1: string;
@@ -60,11 +23,12 @@ interface HanaItemGroupRow {
  * the Promotion and Customer Group tables, so SAP B1's own Query Generator
  * Authorization blocks them via Service Layer SQLQueries regardless of
  * grants; confirmed empirically, error 702 "not accessible") and upsert
- * into `item_groups`. Supersedes the SAP_Item_Group.xlsx import as the
- * primary source; that importer remains as a manual fallback.
+ * into `item_groups` — the only sync path for this table (the
+ * SAP_Item_Group.xlsx/itemgroup.json manual import that used to stand in
+ * for this before HANA access was available has been removed).
  *
- * Same upsert semantics as importFromXlsx (ON DUPLICATE KEY UPDATE
- * parent_code/name only) rather than a full replace: `is_active` toggles
+ * Upserts (ON DUPLICATE KEY UPDATE parent_code/name only) rather than a
+ * full replace: `is_active` toggles
  * made on the admin page, and any group added manually there, must survive
  * a re-sync untouched.
  *
@@ -137,79 +101,6 @@ export async function syncItemGroupsFromHana(): Promise<{ rowsRead: number; leve
   }
 
   return { rowsRead: rows.length, levelsImported };
-}
-
-/**
- * Read SAP_Item_Group.xlsx and upsert into item_groups.
- * Expected columns: ITEMGRPCODE1..6, ITEMGRPNAME1..6
- */
-async function importFromXlsx(filePath: string): Promise<ImportResult> {
-  // require() instead of dynamic import — xlsx is a CJS module and
-  // `await import("xlsx")` can lose exports under Next.js bundling.
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const XLSX = require("xlsx");
-
-  const workbook = XLSX.readFile(filePath);
-  const sheet = workbook.Sheets[workbook.SheetNames[0]];
-  const rows: Record<string, string | number | undefined>[] = XLSX.utils.sheet_to_json(sheet);
-
-  const warnings: ImportWarning[] = [];
-  let levelsImported = 0;
-
-  const pool = getPool();
-  const conn = await pool.getConnection();
-  try {
-    await conn.beginTransaction();
-
-    for (let index = 0; index < rows.length; index++) {
-      const row = rows[index];
-      const levels: { code?: string | number; name?: string | number }[] = [];
-      for (let i = 1; i <= 6; i++) {
-        levels.push({ code: row[`ITEMGRPCODE${i}`], name: row[`ITEMGRPNAME${i}`] });
-      }
-
-      let parent: string | null = null;
-      let sawGap = false;
-
-      for (let i = 0; i < levels.length; i++) {
-        const lvl = levels[i];
-        const level = i + 1;
-
-        if (!lvl.code) {
-          if (levels.slice(i + 1).some((l) => l.code)) {
-            warnings.push({
-              index,
-              message: `Row ${index}: level ${level} code is missing but a deeper level is present — chain broken from here`,
-            });
-          }
-          sawGap = true;
-          continue;
-        }
-        if (sawGap) continue;
-
-        if (!lvl.name) {
-          warnings.push({ index, message: `Row ${index}: level ${level} code "${lvl.code}" has no name` });
-        }
-
-        await conn.execute(
-          `INSERT INTO item_groups (company_id, level, code, parent_code, name) VALUES (?, ?, ?, ?, ?)
-           ON DUPLICATE KEY UPDATE parent_code = VALUES(parent_code), name = VALUES(name)`,
-          [getCompanyId(), level, String(lvl.code).trim(), parent, lvl.name ? String(lvl.name).trim() : null]
-        );
-        levelsImported++;
-        parent = String(lvl.code).trim();
-      }
-    }
-
-    await conn.commit();
-  } catch (error) {
-    await conn.rollback();
-    throw error;
-  } finally {
-    conn.release();
-  }
-
-  return { rowsRead: rows.length, levelsImported, warnings };
 }
 
 export interface ItemCategoryPair {
@@ -439,58 +330,4 @@ export async function getInactiveItemGroupCodesByLevel(): Promise<Map<number, Se
   return byLevel;
 }
 
-/**
- * The exact (level-1, level-2) code pairs from SAP_Item_Group.xlsx —
- * legacy fallback for sync scope. Prefer getItemCategoryPairsFromDB().
- */
-export function getItemCategoryPairsFromFile(): ItemCategoryPair[] {
-  const xlsxPath = join(process.cwd(), "SAP_Item_Group.xlsx");
-
-  if (existsSync(xlsxPath)) {
-    return getItemCategoryPairsFromXlsx(xlsxPath);
-  }
-
-  // Legacy fallback: itemgroup.json
-  return getItemCategoryPairsFromJson();
-}
-
-function getItemCategoryPairsFromXlsx(filePath: string): ItemCategoryPair[] {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const XLSX = require("xlsx");
-  const workbook = XLSX.readFile(filePath);
-  const sheet = workbook.Sheets[workbook.SheetNames[0]];
-  const rows: Record<string, string | number | undefined>[] = XLSX.utils.sheet_to_json(sheet);
-
-  const pairs = new Map<string, ItemCategoryPair>();
-  for (const row of rows) {
-    const cat1 = row.ITEMGRPCODE1;
-    const cat2 = row.ITEMGRPCODE2;
-    if (cat1 && cat2) {
-      pairs.set(`${cat1}|${cat2}`, { cat1: String(cat1).trim(), cat2: String(cat2).trim() });
-    }
-  }
-  return [...pairs.values()];
-}
-
-function getItemCategoryPairsFromJson(): ItemCategoryPair[] {
-  const filePath = join(process.cwd(), "itemgroup.json");
-  if (!existsSync(filePath)) return [];
-
-  const raw = readFileSync(filePath, "utf-8");
-  let data: { itemGrpList?: Record<string, string | undefined>[] };
-  try {
-    data = JSON.parse(raw);
-  } catch {
-    return [];
-  }
-  if (!Array.isArray(data.itemGrpList)) return [];
-
-  const pairs = new Map<string, ItemCategoryPair>();
-  for (const entry of data.itemGrpList) {
-    const cat1 = entry.itemgrpcode1;
-    const cat2 = entry.itemgrpcode2;
-    if (cat1 && cat2) pairs.set(`${cat1}|${cat2}`, { cat1, cat2 });
-  }
-  return [...pairs.values()];
-}
 

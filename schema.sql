@@ -177,15 +177,17 @@ CREATE TABLE IF NOT EXISTS cost_centers (
 -- merchandising hierarchy, replaces the old OITB-based item groups as the
 -- sellability gate). Master category names aren't exposed via SAP Service
 -- Layer (the backing @AMDM_ID_ITEMCAT01-06 UDTs return "Service Not
--- Found"), so codes and names are added manually via itemgroup.json (see
--- src/lib/itemCategories.ts) — never synced automatically from SAP. Which
--- (ItemCat01, ItemCat02) pairs are declared there is also the sync scope
--- for which items get pulled from SAP at all (see syncItems in sync.ts).
--- is_active is a per-row admin on/off switch at ANY level: turning a group
--- off removes it (and, for level 1/2, its pair) from the sync scope, so
--- items under it stop being pulled from SAP and are left/marked inactive
--- (items.is_active = FALSE) rather than deleted. Re-imports never touch
--- this column, so the toggle survives a re-import of SAP_Item_Group.xlsx.
+-- Found" — Service Layer's own SQLQueries Query Generator Authorization
+-- blocks them regardless of HANA grants), so codes and names are synced
+-- directly from SAP HANA instead (see syncItemGroupsFromHana in
+-- src/lib/itemCategories.ts), or added manually. Which (ItemCat01,
+-- ItemCat02) pairs exist here is also the sync scope for which items get
+-- pulled from SAP at all (see syncItems in sync.ts). is_active is a
+-- per-row admin on/off switch at ANY level: turning a group off removes it
+-- (and, for level 1/2, its pair) from the sync scope, so items under it
+-- stop being pulled from SAP and are left/marked inactive
+-- (items.is_active = FALSE) rather than deleted. A re-sync never touches
+-- this column, so the toggle survives it.
 CREATE TABLE IF NOT EXISTS item_groups (
   id INT AUTO_INCREMENT PRIMARY KEY,
   company_id VARCHAR(50) NOT NULL,
@@ -861,8 +863,8 @@ CREATE TABLE IF NOT EXISTS admin_user_item_groups (
 
 -- SAP Customer Master cache (Business Partners) — mirrors `items` for
 -- customers. Scoped to customer_groups pairs from the customer_groups table
--- (imported from SAP_Customer_Group.xlsx or added manually via admin UI).
--- Distinct from `users` (portal-registered accounts).
+-- (synced from SAP HANA — see syncCustomerGroupsFromHana — or added
+-- manually via admin UI). Distinct from `users` (portal-registered accounts).
 -- The `account` column is NULL by default; it is filled with the user's
 -- email when a new customer signs up and admin approves the account.
 CREATE TABLE IF NOT EXISTS customers (

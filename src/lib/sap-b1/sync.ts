@@ -291,8 +291,8 @@ export async function syncInventoryStock(): Promise<{ rowsSynced: number }> {
  * Pull items + their tracked price-list prices from SAP B1 and upsert them
  * into the local MySQL cache (`items`, `item_channel_prices`). Sync scope
  * is the (ItemCat01, ItemCat02) pairs from the `item_groups` table in MySQL
- * (imported from SAP_Item_Group.xlsx or added manually via admin UI) —
- * an item only syncs once its level-1 + level-2 category pair exists there
+ * (synced from SAP HANA — see syncItemGroupsFromHana — or added manually
+ * via admin UI) — an item only syncs once its level-1 + level-2 category pair exists there
  * AND both rows are active; an item is also skipped (left/marked inactive)
  * if any of its level 3-6 categories point at a group switched off in the
  * admin UI, even though those levels aren't part of the SAP-side filter.
@@ -312,7 +312,7 @@ export async function syncItems(): Promise<{ itemsSynced: number }> {
 
   if (catPairs.length === 0) {
     console.warn(
-      "[Sync] No (ItemCat01, ItemCat02) pairs found in item_groups table — import from SAP_Item_Group.xlsx or add manually first."
+      "[Sync] No (ItemCat01, ItemCat02) pairs found in item_groups table — run Sync from SAP (HANA) on the Item Groups admin page, or add a group manually first."
     );
     return { itemsSynced: 0 };
   }
@@ -340,7 +340,7 @@ export async function syncItems(): Promise<{ itemsSynced: number }> {
   };
 
   // Deactivate everything first — the loop below reactivates (is_active =
-  // TRUE) only items SAP actually returns for the current itemgroup.json
+  // TRUE) only items SAP actually returns for the current item_groups
   // pairs, so anything no longer covered (including legacy rows with no
   // item_cat01/02 at all) ends up inactive. Items an admin manually hid
   // are unaffected either way (is_manually_hidden is a separate column).
@@ -634,8 +634,8 @@ export async function syncSpecialDiscountsForChannel(
 /**
  * Refresh one customer's SAP card code / channel price list / customer
  * group codes from BusinessPartners. Only updates that customer's own
- * `users` row — never writes to `customer_groups`, which is populated only
- * by the manual custgroup.json import.
+ * `users` row — never writes to `customer_groups`, which is populated by
+ * syncCustomerGroupsFromHana (or added manually via admin UI).
  */
 export async function syncCustomerGroupsForCard(
   cardCode: string
@@ -895,8 +895,8 @@ export async function syncCustomerRequiredShelfLife(): Promise<{ rowsSynced: num
  * Pull SAP customers (BusinessPartners) into the local `customers`
  * cache — one row per real SAP customer, scoped to the (U_CusGrp01,
  * U_CusGrp02) pairs from the `customer_groups` table in MySQL
- * (imported from SAP_Customer_Group.xlsx or added manually via admin UI).
- * Distinct from `users` (portal-registered accounts).
+ * (synced from SAP HANA — see syncCustomerGroupsFromHana — or added
+ * manually via admin UI). Distinct from `users` (portal-registered accounts).
  * The `account` column is NOT touched by sync — it is only set when
  * an admin approves a customer signup.
  */
@@ -908,7 +908,7 @@ export async function syncSapCustomers(): Promise<{ customersSynced: number }> {
   const pairs = await getCustomerGroupPairsFromDB();
   if (pairs.length === 0) {
     console.warn(
-      "[Sync] No (CusGrp01, CusGrp02) pairs found in customer_groups table — import from SAP_Customer_Group.xlsx or add manually first."
+      "[Sync] No (CusGrp01, CusGrp02) pairs found in customer_groups table — run Sync from SAP (HANA) on the Customer Groups admin page, or add a group manually first."
     );
     return { customersSynced: 0 };
   }

@@ -4,7 +4,8 @@ import { syncSapCustomers } from "@/lib/sap-b1/sync";
 
 /**
  * POST /api/admin/sap-customers/sync — pull SAP customers into the local
- * cache, scoped to the pairs declared in custgroup.json.
+ * cache, scoped to the (CusGrp01, CusGrp02) pairs in the `customer_groups`
+ * table (see syncCustomerGroupsFromHana / the Customer Groups admin page).
  */
 export async function POST(request: NextRequest) {
   const guard = await requireAdminPermission(request, "sap-customers");

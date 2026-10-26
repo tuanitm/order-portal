@@ -40,19 +40,55 @@ function toMySQLDate(value: string | Date | null): string | null {
 const CHUNK_SIZE = 1000;
 
 /**
+ * Whether `table` (in `schema`) has a column named `column` — used to
+ * detect a company whose Promotion Management add-on install never fully
+ * set up group-level promotions: in that case the "@PM_GRP_BP"/
+ * "@PM_GRP_ITEM" UDO header table exists but was registered without the
+ * usual system columns (no "DocEntry", among others), leaving it with only
+ * Code/Name/U_Inactive — confirmed empirically against a real company
+ * ("ADS") where "@PM_GRP_ITEM" has just those 3 columns while the sibling
+ * "@PM_GRP_BP" has the full ~17-column UDO structure in the SAME schema.
+ * Querying SYS.TABLE_COLUMNS (not attempting the join and catching the
+ * error) keeps this a cheap, side-effect-free pre-check.
+ */
+async function hasColumn(schema: string, table: string, column: string): Promise<boolean> {
+  const rows = await queryHana<{ cnt: number }>(
+    `SELECT COUNT(*) AS "cnt" FROM SYS.TABLE_COLUMNS WHERE SCHEMA_NAME = '${schema.replace(/'/g, "''")}' AND TABLE_NAME = '${table.replace(/'/g, "''")}' AND COLUMN_NAME = '${column}'`
+  );
+  return (rows[0]?.cnt ?? 0) > 0;
+}
+
+/**
+ * Removes a marked branch of promotion_program.sql — everything from
+ * `-- @@${marker}_START` through `-- @@${marker}_END` inclusive, which
+ * covers the `UNION ALL` right after the START marker and the whole SELECT
+ * branch up to the END marker — leaving the CTE as just its first SELECT
+ * branch. Throws if the markers aren't found, rather than silently
+ * returning the unmodified (still-broken) SQL text.
+ */
+function stripBranch(sqlText: string, marker: string): string {
+  // \r?\n (not a bare \n) around the markers — promotion_program.sql has CRLF line endings.
+  const pattern = new RegExp(`\\r?\\n\\s*-- @@${marker}_START[\\s\\S]*?-- @@${marker}_END\\r?\\n`, "m");
+  if (!pattern.test(sqlText)) {
+    throw new Error(`[HANA] promotion_program.sql: could not find markers for ${marker} — has the file changed?`);
+  }
+  return sqlText.replace(pattern, "\n");
+}
+
+/**
  * Pull Promotion Discounts straight from SAP HANA (promotion_program.sql —
  * a CTE query SAP B1's own SQLQueries mechanism can't run anyway, since it
- * doesn't support WITH) and replace the local `promotion_discount` cache.
- * Supersedes the GT_Promotion_Detail.xlsx import as the primary source;
- * that importer still exists as a manual fallback if HANA access ever
- * breaks again.
+ * doesn't support WITH) and replace the local `promotion_discount` cache —
+ * the only sync path for this table (the GT_Promotion_Detail.xlsx manual
+ * import that used to stand in for this before HANA access was available
+ * has been removed).
  *
  * The query's own BP_EXPANDED/ITEM_EXPANDED CTEs already resolve a BP-group
  * or item-group promotion down to each individual member BP/item (via a
  * live join against OCRD/OITM at query time) — unlike the SAP-Service-Layer
- * sourced data elsewhere in this app (contract_discount, and the Excel
- * import this replaces), which keeps group-level rows and lets the app's
- * own matching SQL expand them at request time. That means:
+ * sourced data elsewhere in this app (contract_discount), which keeps
+ * group-level rows and lets the app's own matching SQL expand them at
+ * request time. That means:
  *   - bp_code/selling_item_code here are always a concrete CardCode/ItemCode
  *     once present (never a group code) — so bp_type/it_type are set to the
  *     "exact code" values ('2'/'4') for every row that has one, not a CG/IC
@@ -72,10 +108,28 @@ const CHUNK_SIZE = 1000;
 export async function syncPromotionDiscountsFromHana(): Promise<{ rowsSynced: number; rowsSkipped: number }> {
   const schema = getHanaSchema();
   const sqlPath = join(/*turbopackIgnore: true*/ process.cwd(), "promotion_program.sql");
-  const sqlText = readFileSync(sqlPath, "utf-8").replace(
+  let sqlText = readFileSync(sqlPath, "utf-8").replace(
     /"@PM_HEADER"|"PM_APPLYBP"|"PM_SELLING_ITEMS"|"@PM_GRP_BP"|"PM_GRP_BP_DETAILS"|"@PM_GRP_ITEM"|"PM_GRP_ITEM_DETAILS"|"OCRD"|"OITM"/g,
     (m) => `"${schema}".${m}`
   );
+
+  // Degrade gracefully for a company whose "@PM_GRP_BP"/"@PM_GRP_ITEM" UDO
+  // was never fully set up (missing DocEntry — see hasColumn's own
+  // comment): drop that group-level branch from the CTE entirely rather
+  // than let the whole sync fail to even compile. Single-BP/single-item
+  // promotions (the other branch of each CTE) are unaffected either way.
+  const [hasBpGroupDocEntry, hasItemGroupDocEntry] = await Promise.all([
+    hasColumn(schema, "@PM_GRP_BP", "DocEntry"),
+    hasColumn(schema, "@PM_GRP_ITEM", "DocEntry"),
+  ]);
+  if (!hasBpGroupDocEntry) {
+    console.warn(`[HANA] "${schema}"."@PM_GRP_BP" has no DocEntry column — skipping BP-group-level promotions for this sync`);
+    sqlText = stripBranch(sqlText, "BP_GROUP_BRANCH");
+  }
+  if (!hasItemGroupDocEntry) {
+    console.warn(`[HANA] "${schema}"."@PM_GRP_ITEM" has no DocEntry column — skipping item-group-level promotions for this sync`);
+    sqlText = stripBranch(sqlText, "ITEM_GROUP_BRANCH");
+  }
 
   const rows = await queryHana<PromotionRow>(sqlText);
 

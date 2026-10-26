@@ -88,7 +88,7 @@ export default function AdminDashboardPage() {
             <SyncButton url="/api/admin/price-lists/sync" label="Sync price lists from SAP" onDone={loadCounts} />
             <SyncButton url="/api/admin/period-discounts/sync" label="Sync period discounts from SAP" onDone={loadCounts} />
             <SyncButton url="/api/admin/contract-discounts/agreements/sync" label="Sync contract discounts from SAP" onDone={loadCounts} />
-            <SyncButton url="/api/admin/promotions/import" label="Sync promotion discounts from SAP" loadingLabel="Importing..." onDone={loadCounts} />
+            <SyncButton url="/api/admin/promotions/sync" label="Sync promotion discounts from SAP (HANA)" loadingLabel="Syncing..." onDone={loadCounts} />
           </div>
         </div>
       </div>

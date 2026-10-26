@@ -145,9 +145,9 @@ export async function POST(request: NextRequest) {
     // Hash password
     const passwordHash = await bcrypt.hash(password, 12);
 
-    // Note: customer_groups is populated only by the manual custgroup.json
-    // import, never automatically here — this just links the user to
-    // whatever group codes SAP reports for them.
+    // Note: customer_groups itself is populated by syncCustomerGroupsFromHana
+    // (or added manually via admin UI), never here — this just links the
+    // user to whatever group codes SAP reports for them.
 
     // Insert user with pending approval status
     const result = await query<{ insertId: number }>(

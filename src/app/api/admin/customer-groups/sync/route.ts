@@ -5,8 +5,9 @@ import { syncCustomerGroupsFromHana } from "@/lib/customerGroups";
 /**
  * POST /api/admin/customer-groups/sync — pull the CustGrp01->02->03 name
  * hierarchy straight from SAP HANA (see syncCustomerGroupsFromHana;
- * Service Layer SQLQueries can't reach these UDTs at all), replacing the
- * need for a manual SAP_Customer_Group.xlsx upload.
+ * Service Layer SQLQueries can't reach these UDTs at all) — the only sync
+ * path for this table; the old manual SAP_Customer_Group.xlsx upload has
+ * been removed.
  */
 export async function POST(request: NextRequest) {
   const guard = await requireAdminPermission(request, "customer-groups");

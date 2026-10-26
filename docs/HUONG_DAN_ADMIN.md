@@ -102,7 +102,7 @@ Khung **Quick sync** có các nút đồng bộ theo yêu cầu:
 | **Sync contract discounts from SAP** | Cập nhật chiết khấu hợp đồng |
 | **Sync promotion discounts from SAP** | Nhập khuyến mãi (xem [mục 13](#13-promotion-discounts--khuyến-mãi)) |
 
-Lưu ý: **Customer Groups** và **Item Groups** không bao giờ tự động kéo từ SAP. Phải cập nhật file `SAP_Customer_Group.xlsx` / `SAP_Item_Group.xlsx` rồi bấm nút **Import** ở trang riêng.
+Lưu ý: **Customer Groups** và **Item Groups** đồng bộ trực tiếp từ SAP HANA ở trang riêng của mỗi mục (xem [mục 7](#7-customer-groups--nhóm-khách-hàng) và [mục 10](#10-item-groups--nhóm-hàng)) — không còn qua file Excel.
 
 Sau khi bấm nút, nếu lỗi hệ thống hiển thị **mã lỗi và nội dung SAP trả về** ngay cạnh nút để bạn biết nguyên nhân.
 
@@ -156,7 +156,7 @@ Tick lại **Enable** để mở khóa.
 Nhóm khách hàng có **3 cấp** (Level 1 → 3). Trang này vừa để quản lý nhóm, vừa **quyết định phạm vi đồng bộ**: chỉ khách hàng thuộc các cặp (CusGrp01, CusGrp02) được liệt kê mới được kéo về.
 
 **Cập nhật danh sách nhóm**
-- **Import from SAP_Customer_Group**: nhập từ file `SAP_Customer_Group.xlsx`. Nhớ import lại sau khi cập nhật file.
+- **Sync from SAP (HANA)**: đồng bộ trực tiếp tên nhóm từ SAP HANA — cách duy nhất để cập nhật tự động.
 - **Add Customer Group Manually**: chọn **Level**, nhập **Code** (bắt buộc), **Parent Code** (không bắt buộc), **Name** → thêm.
 - Mỗi dòng có thể sửa (**Save** / **Cancel**).
 
@@ -247,8 +247,7 @@ Hiển thị các **thỏa thuận chiết khấu** từ SAP (CBD): một khách
 
 Hiển thị khuyến mãi từ chương trình SAP Promotion Program. Mỗi dòng gắn một chương trình với **đối tượng khách hàng** (BP hoặc nhóm BP) và **hàng bán** (sản phẩm hoặc nhóm hàng), kèm **giảm %** hoặc **tặng hàng**.
 
-- **Sync promotion discounts from SAP**: nhập dữ liệu khuyến mãi. Hiện dữ liệu được nhập từ file `GT_Promotion_Detail.xlsx` (xuất từ SAP) đặt ở thư mục gốc của ứng dụng, vì tài khoản API chưa có quyền đọc trực tiếp các bảng khuyến mãi.
-- Nút **Sync promotions from Json file** đang **bị vô hiệu hóa**.
+- **Sync promotion discounts from SAP (HANA)**: đồng bộ trực tiếp từ SAP HANA (không còn qua file Excel) — đây là cách duy nhất để cập nhật dữ liệu khuyến mãi.
 - Bộ lọc: tìm theo **Promotion Code / Name**; **BP code or name**; **item code or name**; **Disc Type** (**Discount Pct** hoặc **Free Item**); **Active only**; **Valid date**.
 
 **Ý nghĩa các cột**
@@ -361,10 +360,10 @@ docker compose --profile sync up -d
 
 Chạy ngay một lần: `docker compose run --rm daily-sync node scripts/daily-sync.mjs`.
 
-> Bước **Promotions** trong tác vụ tự động hiện chưa chạy được (SAP chưa cấp quyền đọc bảng khuyến mãi), nên tác vụ có thể báo lỗi ở bước này. Khuyến mãi cần được nhập thủ công như [mục 13](#13-promotion-discounts--khuyến-mãi).
+Bước **Promotions** trong tác vụ tự động đồng bộ trực tiếp từ SAP HANA (không còn phụ thuộc file Excel) — xem [mục 13](#13-promotion-discounts--khuyến-mãi).
 
 ### Các file dữ liệu cần cập nhật thủ công
-Nằm ở thư mục gốc của ứng dụng: `SAP_Customer_Group.xlsx`, `SAP_Item_Group.xlsx`, `itemgroup.json`, `custgroup.json`, `GT_Promotion_Detail.xlsx`. Sau khi thay file, vào trang tương ứng bấm **Import**. Khi chạy trong Docker, các file này được đóng gói vào ảnh (image) lúc build, nên sau khi thay file cần chạy lại `docker compose up -d --build`.
+Nằm ở thư mục gốc của ứng dụng: `SAP_Customer_Group.xlsx`, `SAP_Item_Group.xlsx`, `itemgroup.json`, `custgroup.json`. Sau khi thay file, vào trang tương ứng bấm **Import**. Khi chạy trong Docker, các file này được đóng gói vào ảnh (image) lúc build, nên sau khi thay file cần chạy lại `docker compose up -d --build`.
 
 ### Cấu hình
 - `config.json`: thông tin kết nối MySQL, SAP, email, tài khoản Super-admin và `admin.companyPrefix` (tiền tố hiển thị trước tên cổng, ví dụ **IMV**).

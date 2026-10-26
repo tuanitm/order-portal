@@ -1,14 +1,18 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import Image from "next/image";
+import logo from "@/app/icon.png";
 import { useTranslations, useLocale } from "next-intl";
 import { Link } from "@/i18n/navigation";
 import { useSearchParams } from "next/navigation";
+import { useAppName } from "@/hooks/useAppName";
 
 type Step = "info" | "otp" | "complete";
 
 export default function SignupPage() {
   const t = useTranslations();
+  const appName = useAppName();
   const locale = useLocale();
   const searchParams = useSearchParams();
 
@@ -498,12 +502,14 @@ export default function SignupPage() {
         {stepIndicator}
         <div className="auth-card__logo" style={{ marginBottom: "1.5rem" }}>
           <div className="auth-card__logo-icon">
-            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-              <circle cx="8.5" cy="7" r="4" />
-              <line x1="20" y1="8" x2="20" y2="14" />
-              <line x1="23" y1="11" x2="17" y2="11" />
-            </svg>
+            <Image
+              src={logo}
+              alt={appName || "Logo"}
+              width={160}
+              height={92}
+              style={{ objectFit: "contain", height: "auto", maxHeight: "64px", width: "auto" }}
+              priority
+            />
           </div>
           <h1 className="auth-card__title">{t("auth.signupTitle")}</h1>
         </div>

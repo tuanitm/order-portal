@@ -1,4 +1,4 @@
-# Order Portal — Next.js app. MySQL is NOT part of this file: it runs in its
+﻿# Order Portal — Next.js app. MySQL is NOT part of this file: it runs in its
 # own container, which joins this file's network ("order-network") and is
 # reached by container name (default "mysql8") on its internal port 3306.
 #
@@ -60,7 +60,7 @@ services:
         condition: service_healthy
     environment:
       TZ: Asia/Ho_Chi_Minh
-      PORTAL_BASE_URL: http://order-portal:5005
+      PORTAL_BASE_URL: https://order.imv.com.vn:5005
     volumes:
       - ./config.json:/app/config.json:ro
       - ./.env:/app/.env:ro
@@ -76,7 +76,7 @@ services:
   # Optional HTTPS front door — see "Domain / HTTPS" above. Enable with `--profile proxy`.
   caddy:
     image: caddy:2-alpine
-    profiles: ["proxy"]
+    profiles: [ "proxy" ]
     container_name: order-caddy
     restart: unless-stopped
     depends_on:

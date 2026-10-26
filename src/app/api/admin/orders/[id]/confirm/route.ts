@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "crypto";
 import { query, queryOne } from "@/lib/db/connection";
-import { getCompanyId } from "@/lib/config";
+import { getCompanyId, isFillOwnerEnabled } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { getSapClient } from "@/lib/sap-b1/client";
 import { recordOrderStatus, notifyCustomerOfStatusChange } from "@/lib/orderHistory";
@@ -817,9 +817,13 @@ export async function POST(
   // failure: getBusinessPartner already catches its own errors into null,
   // and resolveOrderOwner never throws either — a failure/no-match on
   // either side just leaves its own header fields unset.
+  // When fillOwner is disabled (config.json sapb1.fillOwner != "Yes"),
+  // skip the resolveOrderOwner round-trip entirely and leave owner fields
+  // out of the SAP payload so all SAP users can see every order.
+  const fillOwner = isFillOwnerEnabled();
   const [businessPartner, orderOwner] = await Promise.all([
     sap.getBusinessPartner(order.sap_card_code),
-    sap.resolveOrderOwner(admin?.owner_code || null),
+    fillOwner ? sap.resolveOrderOwner(admin?.owner_code || null) : Promise.resolve(null),
   ]);
 
   // Read the Post SO Mode setting — determines whether to push as SAP Draft or
@@ -850,11 +854,11 @@ export async function POST(
     U_InvTaxNo: businessPartner?.FederalTaxID || undefined,
     U_InvName: businessPartner?.CardName || undefined,
     // DocumentsOwner (SAP B1's "Owner" authorization field) / U_OwnerName —
-    // see resolveOrderOwner. Omitted entirely if no Employee could be
-    // resolved at all, same "set it up, or it's skipped cleanly" rule as
-    // departmentCode above.
-    DocumentsOwner: orderOwner?.employeeId,
-    U_OwnerName: orderOwner?.ownerName,
+    // see resolveOrderOwner. Only set when fillOwner is enabled in config;
+    // omitted entirely when disabled so all SAP users can see every order.
+    // Also omitted if no Employee could be resolved at all, same "set it up,
+    // or it's skipped cleanly" rule as departmentCode above.
+    ...(fillOwner && orderOwner ? { DocumentsOwner: orderOwner.employeeId, U_OwnerName: orderOwner.ownerName } : {}),
     // U_DocNo omitted — it's generated server-side by SAP's own
     // SBO_SP_TransactionNotification trigger after this Sales Order is
     // added (format SOO+YYMMDD+3-digit running number), not something

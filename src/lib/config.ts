@@ -18,6 +18,12 @@ export interface AppConfig {
     companyID: string;
     userId: string;
     passWrd: string;
+    /** "Yes"/"No" — when "Yes", DocumentsOwner and U_OwnerName are resolved
+     *  from the confirming admin's owner_code and pushed to SAP, restricting
+     *  each Sales Order's visibility to its owner. When "No" (or absent),
+     *  both fields are omitted from the push so every SAP user can see all
+     *  orders. */
+    fillOwner?: string;
   };
   admin: {
     /** Shown in front of the portal name, e.g. "IMV - Ordering Portal". Optional. */
@@ -109,6 +115,15 @@ export function loadConfig(): AppConfig {
  */
 export function getCompanyId(): string {
   return loadConfig().admin.entityID;
+}
+
+/**
+ * Whether to resolve and push DocumentsOwner/U_OwnerName when confirming a
+ * Sales Order to SAP (config.json's sapb1.fillOwner = "Yes"). Defaults to
+ * false (omit owner fields) when the key is absent or any other value.
+ */
+export function isFillOwnerEnabled(): boolean {
+  return loadConfig().sapb1.fillOwner?.trim().toLowerCase() === "yes";
 }
 
 /**
