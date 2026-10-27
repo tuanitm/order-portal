@@ -10,6 +10,7 @@ import { getBasePriceListNum } from "@/lib/sap-b1/sync";
 import { isOrderInAdminScope } from "@/lib/adminScope";
 import { getAdminWarehouseCodes } from "@/lib/adminWarehouses";
 import { logAuditEvent } from "@/lib/auditLog";
+import { recalculateOrderTotals } from "@/lib/orderTotals";
 
 interface OrderRow {
   id: number;
@@ -27,10 +28,15 @@ interface OrderRow {
   supervisor_code: string | null;
 }
 
+/** Appended to a free (gift) item's U_INVDesc on the SAP line. */
+const FREE_ITEM_SUFFIX = " - HÀNG KHUYẾN MÃI KHÔNG THU TIỀN";
+
 interface OrderLineRow {
   id: number;
   sap_item_code: string;
   item_name: string;
+  /** The SAP item master name (OITM.ItemName) — what SAP puts in the line's Dscription. */
+  sap_item_name: string;
   quantity: number;
   confirm_qty: number;
   customer_confirm_status: "pending" | "accepted" | "rejected";
@@ -226,7 +232,7 @@ export async function POST(
   const orderNumber = order.order_number;
 
   const allLines = await query<OrderLineRow[]>(
-    `SELECT ol.id, ol.sap_item_code, ol.item_name, ol.quantity, ol.confirm_qty, ol.customer_confirm_status, ol.base_unit_price,
+    `SELECT ol.id, ol.sap_item_code, ol.item_name, COALESCE(NULLIF(i.item_name_vi, ''), ol.item_name) AS sap_item_name, ol.quantity, ol.confirm_qty, ol.customer_confirm_status, ol.base_unit_price,
             ol.is_gift_line, ol.source_line_id, ol.promo_buy_qty, ol.promo_give_qty, i.brand_code, i.vat_group, i.item_tax_class,
             i.item_cat01, i.item_cat02, i.item_cat03, i.item_cat04, i.item_cat05, i.item_cat06
      FROM order_lines ol
@@ -538,6 +544,11 @@ export async function POST(
     }
   }
 
+  // Any cap above changed Cfm Qty — keep line totals and the order total in step.
+  if (adjustments.length > 0 || cappedLines.some((l, i) => l.confirm_qty !== allLines[i].confirm_qty)) {
+    await recalculateOrderTotals(orderId);
+  }
+
   // Gate the actual SAP push on every still-relevant line (0-qty lines are
   // dropped below, not pushed, so their status doesn't matter) having been
   // explicitly resolved — either it still matches what the customer
@@ -674,7 +685,9 @@ export async function POST(
       // Order is added, so there's nothing for this client to set here.
       U_SODate: vnToday,
       U_PM_BaseLine: `${meta.index}-${l.sap_item_code}`,
-      U_INVDesc: l.item_name,
+      // Same as the line's Dscription (the SAP item name).
+      ItemDescription: l.sap_item_name,
+      U_INVDesc: l.sap_item_name,
       U_SortField: `${sortFieldPrefix(meta.index, l.sap_item_code)}_00`,
       U_ItemTaxClass: l.item_tax_class || undefined,
     };
@@ -779,7 +792,10 @@ export async function POST(
       U_SODate: vnToday,
       U_PM_BaseItem: buyLine?.sap_item_code,
       U_PM_BaseLine: meta && buyLine ? `${meta.index}-${buyLine.sap_item_code}` : undefined,
-      U_INVDesc: l.item_name,
+      // Dscription stays the item name; the invoice text marks it as a free promotional item.
+      ItemDescription: l.sap_item_name,
+      // U_INVDesc is 254 chars max — trim the name, never the suffix.
+      U_INVDesc: `${l.sap_item_name.slice(0, 254 - FREE_ITEM_SUFFIX.length)}${FREE_ITEM_SUFFIX}`,
       U_SortField: meta && buyLine ? `${sortFieldPrefix(meta.index, buyLine.sap_item_code)}_31` : undefined,
       U_PM_Type: "31",
       U_PM_HavingSetupPrrt: "N",

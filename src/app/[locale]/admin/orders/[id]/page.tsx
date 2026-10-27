@@ -381,7 +381,11 @@ export default function AdminOrderDetailPage() {
       body: JSON.stringify({ confirmQty }),
     });
     const text = await res.text();
-    const data: { error?: string; giftAdjustment?: { sapItemCode: string; from: number; to: number } | null } = text ? JSON.parse(text) : {};
+    const data: {
+      error?: string;
+      giftAdjustment?: { sapItemCode: string; from: number; to: number } | null;
+      totals?: { subtotal: number; discountTotal: number; grandTotal: number; lines: { id: number; lineTotal: number }[] };
+    } = text ? JSON.parse(text) : {};
     if (!res.ok) throw new Error(data.error || `Failed to save Confirm Qty (${res.status})`);
     // Patch local state directly from THIS response instead of reloading
     // the whole order — the server already computed both this line's own
@@ -390,7 +394,7 @@ export default function AdminOrderDetailPage() {
     // (giftAdjustment.to, from recalculateLinkedGiftQty) — so the free
     // item row updates in the same render, with no extra round trip.
     setLines((prev) =>
-      prev.map((l) => {
+      prev.map((l): OrderLine => {
         if (l.id === lineId) {
           return { ...l, confirm_qty: confirmQty, customer_confirm_status: confirmQty === l.quantity ? "accepted" : "pending" };
         }
@@ -399,8 +403,16 @@ export default function AdminOrderDetailPage() {
           return { ...l, confirm_qty: to, customer_confirm_status: to === l.quantity ? "accepted" : "pending" };
         }
         return l;
+      }).map((l) => {
+        // Line Total follows Cfm Qty (server recalculated — see recalculateOrderTotals).
+        const t = data.totals?.lines.find((x) => x.id === l.id);
+        return t ? { ...l, line_total: String(t.lineTotal) } : l;
       })
     );
+    if (data.totals) {
+      const { subtotal, discountTotal, grandTotal } = data.totals;
+      setOrder((o) => (o ? { ...o, subtotal: String(subtotal), discount_total: String(discountTotal), grand_total: String(grandTotal) } : o));
+    }
   };
 
   const updateStatus = async (status: string) => {

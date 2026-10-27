@@ -3,6 +3,7 @@ import { query, queryOne } from "@/lib/db/connection";
 import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { recalculateLinkedGiftQty } from "@/lib/orderGifts";
+import { recalculateOrderTotals } from "@/lib/orderTotals";
 import { isOrderInAdminScope } from "@/lib/adminScope";
 
 /**
@@ -76,5 +77,7 @@ export async function PATCH(
   );
 
   const giftAdjustment = await recalculateLinkedGiftQty(orderLineId, confirmQty);
-  return NextResponse.json({ success: true, giftAdjustment });
+  // Line totals and the order's subtotal / discount / total follow Cfm Qty.
+  const totals = await recalculateOrderTotals(orderId);
+  return NextResponse.json({ success: true, giftAdjustment, totals });
 }

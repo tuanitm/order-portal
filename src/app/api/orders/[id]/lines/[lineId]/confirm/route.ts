@@ -3,6 +3,7 @@ import { query, queryOne } from "@/lib/db/connection";
 import { getCompanyId } from "@/lib/config";
 import { getSessionUser } from "@/lib/auth/session";
 import { postOrderMessage } from "@/lib/orderMessages";
+import { recalculateOrderTotals } from "@/lib/orderTotals";
 
 /**
  * POST /api/orders/[id]/lines/[lineId]/confirm — Body: { accept: boolean }.
@@ -55,6 +56,8 @@ export async function POST(
     `UPDATE order_lines SET customer_confirm_status = ? WHERE company_id = ? AND id = ?`,
     [body.accept ? "accepted" : "rejected", companyId, orderLineId]
   );
+  // A rejected line won't be delivered, so it drops out of the totals.
+  await recalculateOrderTotals(orderId);
 
   await postOrderMessage(
     orderId,
