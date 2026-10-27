@@ -107,7 +107,8 @@ export default function CartSidebar() {
             items.map((item) => {
               const lineKey = getCartLineKey(item);
               return (
-              <div className="cart-item" key={lineKey} id={`cart-item-${lineKey}`}>
+              // title: the name is cut to one line below — hovering anywhere on the item shows it in full.
+              <div className="cart-item" key={lineKey} id={`cart-item-${lineKey}`} title={item.itemName}>
                 <div className="cart-item__image">
                   {item.imageUrl ? (
                     <img src={item.imageUrl} alt={item.itemName} />

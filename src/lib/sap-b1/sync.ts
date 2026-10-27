@@ -959,20 +959,40 @@ export async function syncSapCustomers(): Promise<{ customersSynced: number }> {
         await conn.execute(
           `INSERT INTO customers (
              company_id, sap_card_code, card_name, mst_code, price_list_num,
-             cus_grp01, cus_grp02, cus_grp03, phone, email, address, last_synced)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+             cus_grp01, cus_grp02, cus_grp03, phone, email, address,
+             bill_to_default, ship_to_default, supervisor_code, last_synced)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
            ON DUPLICATE KEY UPDATE
              card_name = VALUES(card_name), mst_code = VALUES(mst_code),
              price_list_num = VALUES(price_list_num),
              cus_grp01 = VALUES(cus_grp01), cus_grp02 = VALUES(cus_grp02), cus_grp03 = VALUES(cus_grp03),
              phone = VALUES(phone), email = VALUES(email), address = VALUES(address),
+             bill_to_default = VALUES(bill_to_default), ship_to_default = VALUES(ship_to_default),
+             supervisor_code = VALUES(supervisor_code),
              last_synced = NOW()`,
           [
             companyId, c.CardCode, c.CardName || null, c.FederalTaxID || null, c.PriceListNum ?? null,
             c.U_CusGrp01 || null, c.U_CusGrp02 || null, c.U_CusGrp03 || null,
             c.Phone1 || null, c.EmailAddress || null, c.Address || null,
+            c.BilltoDefault || null, c.ShipToDefault || null, c.U_CusSEL04 || null,
           ]
         );
+
+        // Bill-to / ship-to addresses for the admin "Self create" order
+        // dialog — replaced as a set, so an address removed in SAP goes too.
+        await conn.execute(`DELETE FROM customer_addresses WHERE company_id = ? AND sap_card_code = ?`, [companyId, c.CardCode]);
+        for (const a of c.BPAddresses ?? []) {
+          const type = a.AddressType === "bo_BillTo" ? "bill_to" : a.AddressType === "bo_ShipTo" ? "ship_to" : null;
+          if (!type || !a.AddressName) continue;
+          const fullAddress = [a.BuildingFloorRoom, a.Street, a.Block, a.City, a.County, a.State]
+            .map((part) => part?.trim()).filter(Boolean).join(", ");
+          await conn.execute(
+            `INSERT INTO customer_addresses (company_id, sap_card_code, address_type, address_name, full_address, last_synced)
+             VALUES (?, ?, ?, ?, ?, NOW())
+             ON DUPLICATE KEY UPDATE full_address = VALUES(full_address), last_synced = NOW()`,
+            [companyId, c.CardCode, type, a.AddressName, fullAddress.slice(0, 1000) || null]
+          );
+        }
         customersSynced++;
       }
 
@@ -987,6 +1007,42 @@ export async function syncSapCustomers(): Promise<{ customersSynced: number }> {
     skip += customers.length;
   }
 
+  await syncSalesSupervisors();
   return { customersSynced };
+}
+
+/**
+ * Refreshes `sales_supervisors` from SAP's U_MDM_CD_SEL04 list (the values of
+ * the Sales Supervisor field). Runs at the end of the SAP Customers sync. A
+ * failure is logged, not thrown — customers are already saved by then.
+ */
+async function syncSalesSupervisors(): Promise<void> {
+  const companyId = getCompanyId();
+  let supervisors;
+  try {
+    supervisors = await getSapClient().getSalesSupervisors();
+  } catch (error) {
+    console.error("[Sync] Sales Supervisor list (U_MDM_CD_SEL04) could not be read — keeping the previous list:", error);
+    return;
+  }
+  if (supervisors.length === 0) return;
+
+  const conn = await getPool().getConnection();
+  try {
+    await conn.beginTransaction();
+    await conn.execute(`DELETE FROM sales_supervisors WHERE company_id = ?`, [companyId]);
+    for (const s of supervisors) {
+      await conn.execute(
+        `INSERT INTO sales_supervisors (company_id, code, name, last_synced) VALUES (?, ?, ?, NOW())`,
+        [companyId, s.Code, s.Name || null]
+      );
+    }
+    await conn.commit();
+  } catch (error) {
+    await conn.rollback();
+    throw error;
+  } finally {
+    conn.release();
+  }
 }
 

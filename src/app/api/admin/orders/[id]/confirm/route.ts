@@ -8,6 +8,7 @@ import { recordOrderStatus, notifyCustomerOfStatusChange } from "@/lib/orderHist
 import { getLiveAvailabilityForOrder } from "@/lib/orderStock";
 import { getBasePriceListNum } from "@/lib/sap-b1/sync";
 import { isOrderInAdminScope } from "@/lib/adminScope";
+import { getAdminWarehouseCodes } from "@/lib/adminWarehouses";
 import { logAuditEvent } from "@/lib/auditLog";
 
 interface OrderRow {
@@ -20,6 +21,10 @@ interface OrderRow {
   sap_cus_grp01: string | null;
   sap_cus_grp02: string | null;
   sap_cus_grp03: string | null;
+  /** Set only on admin-created ("Self create") orders — see schema.sql. */
+  bill_to_code: string | null;
+  ship_to_code: string | null;
+  supervisor_code: string | null;
 }
 
 interface OrderLineRow {
@@ -175,12 +180,25 @@ export async function POST(
   if (!warehouseCode) {
     return NextResponse.json({ error: "warehouseCode query param is required — select a warehouse on this page first" }, { status: 400 });
   }
+  if (!(await getAdminWarehouseCodes(guard.session)).includes(warehouseCode)) {
+    return NextResponse.json({ error: `Warehouse ${warehouseCode} is not one of your warehouses (Admin Users → Warehouse)` }, { status: 403 });
+  }
 
   const companyId = getCompanyId();
   const order = await queryOne<OrderRow>(
-    `SELECT o.id, o.order_number, o.remark, o.sap_doc_entry, u.sap_card_code, u.sap_price_list_num,
-            u.sap_cus_grp01, u.sap_cus_grp02, u.sap_cus_grp03
-     FROM orders o LEFT JOIN users u ON u.company_id = o.company_id AND u.id = o.user_id
+    // The order's own customer (orders.sap_card_code, always set for admin-
+    // created orders); pricing data from the login if there is one, else from
+    // the SAP customer record — an admin-created order may have no login.
+    `SELECT o.id, o.order_number, o.remark, o.sap_doc_entry,
+            COALESCE(o.sap_card_code, u.sap_card_code) AS sap_card_code,
+            COALESCE(u.sap_price_list_num, c.price_list_num) AS sap_price_list_num,
+            COALESCE(u.sap_cus_grp01, c.cus_grp01) AS sap_cus_grp01,
+            COALESCE(u.sap_cus_grp02, c.cus_grp02) AS sap_cus_grp02,
+            COALESCE(u.sap_cus_grp03, c.cus_grp03) AS sap_cus_grp03,
+            o.bill_to_code, o.ship_to_code, o.supervisor_code
+     FROM orders o
+     LEFT JOIN users u ON u.company_id = o.company_id AND u.id = o.user_id
+     LEFT JOIN customers c ON c.company_id = o.company_id AND c.sap_card_code = COALESCE(o.sap_card_code, u.sap_card_code)
      WHERE o.company_id = ? AND o.id = ?`,
     [companyId, orderId]
   );
@@ -853,6 +871,11 @@ export async function POST(
     U_InvAddress: businessPartner?.Address?.slice(0, 200) || undefined,
     U_InvTaxNo: businessPartner?.FederalTaxID || undefined,
     U_InvName: businessPartner?.CardName || undefined,
+    // Chosen in the admin "Self create" dialog; unset on storefront orders,
+    // where SAP fills the customer's own defaults.
+    PayToCode: order.bill_to_code || undefined,
+    ShipToCode: order.ship_to_code || undefined,
+    U_CusSEL04: order.supervisor_code || undefined,
     // DocumentsOwner (SAP B1's "Owner" authorization field) / U_OwnerName —
     // see resolveOrderOwner. Only set when fillOwner is enabled in config;
     // omitted entirely when disabled so all SAP users can see every order.

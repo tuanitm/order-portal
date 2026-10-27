@@ -137,7 +137,7 @@ export async function getUnreadCustomerMessageSummaryForAdmins(
        FROM order_messages om
        JOIN orders o ON o.company_id = om.company_id AND o.id = om.order_id
        LEFT JOIN users u ON u.company_id = om.company_id AND u.id = o.user_id
-       LEFT JOIN customers c ON c.company_id = om.company_id AND c.sap_card_code = u.sap_card_code
+       LEFT JOIN customers c ON c.company_id = om.company_id AND c.sap_card_code = COALESCE(o.sap_card_code, u.sap_card_code)
        WHERE om.company_id = ? AND om.sender_type = 'customer' AND om.read_at IS NULL
          ${scopeWhere}
      )

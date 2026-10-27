@@ -4,6 +4,7 @@ import { query, queryOne } from "@/lib/db/connection";
 import { getCompanyId } from "@/lib/config";
 import { getLiveAvailabilityForOrder } from "@/lib/orderStock";
 import { isOrderInAdminScope } from "@/lib/adminScope";
+import { getAdminWarehouseCodes } from "@/lib/adminWarehouses";
 
 /**
  * GET /api/admin/orders/[id]/stock?warehouseCode=XXXX — LIVE (not the
@@ -48,6 +49,9 @@ export async function GET(
   const warehouseCode = new URL(request.url).searchParams.get("warehouseCode")?.trim();
   if (!warehouseCode) {
     return NextResponse.json({ error: "warehouseCode query param is required" }, { status: 400 });
+  }
+  if (!(await getAdminWarehouseCodes(guard.session)).includes(warehouseCode)) {
+    return NextResponse.json({ error: `Warehouse ${warehouseCode} is not one of your warehouses (Admin Users → Warehouse)` }, { status: 403 });
   }
 
   let items;

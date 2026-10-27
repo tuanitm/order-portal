@@ -356,6 +356,23 @@ CREATE TABLE IF NOT EXISTS item_warehouse_stock (
   INDEX idx_warehouse_code (warehouse_code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Per-batch stock (SAP OBTQ/OBTN), refreshed with item_warehouse_stock by
+-- the inventory sync. Lets the available quantity count only the batches
+-- whose remaining shelf life meets a customer's required shelf-life %
+-- (customer_require_shelflife) — the % is worked out from the dates at
+-- query time. An item/warehouse with no rows here is not batch-managed.
+CREATE TABLE IF NOT EXISTS item_batch_stock (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  company_id VARCHAR(50) NOT NULL,
+  sap_item_code VARCHAR(50) NOT NULL,
+  warehouse_code VARCHAR(20) NOT NULL,
+  qty DECIMAL(18,3) NOT NULL DEFAULT 0,
+  mnf_date DATE NULL,
+  exp_date DATE NULL,
+  last_synced TIMESTAMP NULL,
+  INDEX idx_company_item_warehouse (company_id, sap_item_code, warehouse_code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- Contract Discounts (synced from SAP B1 CBD — @MDM_CD_CBD_H/@MDM_CD_CBD_L).
 -- One row per (header, line): a header targets a customer (specific
 -- CardCode or a customer_groups level 1-3 code); each line targets items
@@ -488,7 +505,25 @@ CREATE TABLE IF NOT EXISTS orders (
   id INT AUTO_INCREMENT PRIMARY KEY,
   company_id VARCHAR(50) NOT NULL,
   order_number VARCHAR(64) NOT NULL, -- SO-{BP code}-{yymmdd}-{3 digits}
-  user_id INT NOT NULL,
+  -- The portal login that placed it. NULL for an order an admin created
+  -- ("Self create") for a customer with no portal login.
+  user_id INT NULL,
+  -- The SAP customer (BP) the order is for. Always set for new orders;
+  -- before this column existed it was only reachable via users.sap_card_code.
+  sap_card_code VARCHAR(50) NULL,
+  -- Set when an admin created the order on the customer's behalf (admin_users.id).
+  created_by_admin_id INT NULL,
+  -- Header choices made in the admin "Self create" dialog (NULL for
+  -- storefront orders): SAP warehouse, bill-to/ship-to address names
+  -- (customer_addresses.address_name -> PayToCode/ShipToCode) and the
+  -- Sales Supervisor (U_CusSEL04 on the SAP order).
+  -- warehouse_code is also saved by the admin order page's warehouse picker.
+  warehouse_code VARCHAR(50) NULL,
+  bill_to_code VARCHAR(100) NULL,
+  billing_address VARCHAR(1000) NULL,
+  ship_to_code VARCHAR(100) NULL,
+  supervisor_code VARCHAR(50) NULL,
+  supervisor_name VARCHAR(255) NULL,
   customer_name VARCHAR(255),
   delivery_address TEXT,
   contact_phone VARCHAR(20),
@@ -510,9 +545,21 @@ CREATE TABLE IF NOT EXISTS orders (
   FOREIGN KEY (user_id) REFERENCES users(id),
   UNIQUE KEY uk_company_order_number (company_id, order_number),
   INDEX idx_user (user_id),
+  INDEX idx_card_code (company_id, sap_card_code),
   INDEX idx_status (status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 -- Migration for an existing DB:
+-- ALTER TABLE orders MODIFY user_id INT NULL,
+--   ADD COLUMN sap_card_code VARCHAR(50) NULL AFTER user_id,
+--   ADD COLUMN created_by_admin_id INT NULL AFTER sap_card_code,
+--   ADD COLUMN warehouse_code VARCHAR(50) NULL AFTER created_by_admin_id,  -- skip if it already exists
+--   ADD COLUMN bill_to_code VARCHAR(100) NULL AFTER warehouse_code,
+--   ADD COLUMN billing_address VARCHAR(1000) NULL AFTER bill_to_code,
+--   ADD COLUMN ship_to_code VARCHAR(100) NULL AFTER billing_address,
+--   ADD COLUMN supervisor_code VARCHAR(50) NULL AFTER ship_to_code,
+--   ADD COLUMN supervisor_name VARCHAR(255) NULL AFTER supervisor_code,
+--   ADD INDEX idx_card_code (company_id, sap_card_code);
+-- UPDATE orders o JOIN users u ON u.id = o.user_id SET o.sap_card_code = u.sap_card_code WHERE o.sap_card_code IS NULL;
 -- ALTER TABLE orders MODIFY COLUMN status ENUM('draft','submitted','processing','sap_draft_created','approved','delivered','rejected','completed','cancelled') DEFAULT 'draft';
 -- ALTER TABLE orders ADD COLUMN sap_so_number VARCHAR(50) NULL AFTER sap_doc_num;
 
@@ -842,6 +889,19 @@ CREATE TABLE IF NOT EXISTS admin_user_customer_groups (
   FOREIGN KEY (customer_group_id) REFERENCES customer_groups(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Warehouses a (non-root) admin may work with: the Inventory page, the
+-- "Self create" order dialog and the order page's warehouse picker. Codes
+-- outside config.json masterdata.wareHouse are ignored; root always gets
+-- every masterdata warehouse. None assigned = no warehouses (default-deny,
+-- same as the group tables). Edited on Admin Users ("Warehouse" column).
+CREATE TABLE IF NOT EXISTS admin_user_warehouses (
+  company_id VARCHAR(50) NOT NULL,
+  admin_user_id INT NOT NULL,
+  warehouse_code VARCHAR(50) NOT NULL,
+  PRIMARY KEY (company_id, admin_user_id, warehouse_code),
+  FOREIGN KEY (admin_user_id) REFERENCES admin_users(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS admin_user_item_groups (
   id INT AUTO_INCREMENT PRIMARY KEY,
   company_id VARCHAR(50) NOT NULL,
@@ -874,12 +934,46 @@ CREATE TABLE IF NOT EXISTS customers (
   address TEXT NULL,
   account VARCHAR(255) NULL,
   is_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  -- SAP defaults used by the admin "Self create" order dialog:
+  -- BilltoDefault / ShipToDefault (customer_addresses.address_name) and the
+  -- BP's Sales Supervisor (U_CusSEL04 -> sales_supervisors.code).
+  bill_to_default VARCHAR(100) NULL,
+  ship_to_default VARCHAR(100) NULL,
+  supervisor_code VARCHAR(50) NULL,
   last_synced TIMESTAMP NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY uk_company_card_code (company_id, sap_card_code),
   INDEX idx_mst_code (mst_code),
   INDEX idx_cus_grp01 (cus_grp01),
   INDEX idx_cus_grp02 (cus_grp02)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- Migration for an existing DB:
+-- ALTER TABLE customers ADD COLUMN bill_to_default VARCHAR(100) NULL, ADD COLUMN ship_to_default VARCHAR(100) NULL,
+--   ADD COLUMN supervisor_code VARCHAR(50) NULL;
+
+-- Each SAP customer's bill-to / ship-to addresses (BusinessPartners.BPAddresses),
+-- refreshed by the SAP Customers sync. Picked from in the admin "Self create"
+-- order dialog; address_name is what SAP's PayToCode/ShipToCode expect.
+CREATE TABLE IF NOT EXISTS customer_addresses (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  company_id VARCHAR(50) NOT NULL,
+  sap_card_code VARCHAR(50) NOT NULL,
+  address_type ENUM('bill_to', 'ship_to') NOT NULL,
+  address_name VARCHAR(100) NOT NULL,
+  full_address VARCHAR(1000),
+  last_synced TIMESTAMP NULL,
+  UNIQUE KEY uk_company_card_type_name (company_id, sap_card_code, address_type, address_name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- SAP "Sales Supervisor" list (user table U_MDM_CD_SEL04, the value list of
+-- the U_CusSEL04 field on customers and sales orders), refreshed by the SAP
+-- Customers sync.
+CREATE TABLE IF NOT EXISTS sales_supervisors (
+  company_id VARCHAR(50) NOT NULL,
+  code VARCHAR(50) NOT NULL,
+  name VARCHAR(255),
+  last_synced TIMESTAMP NULL,
+  PRIMARY KEY (company_id, code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Migration for existing databases:

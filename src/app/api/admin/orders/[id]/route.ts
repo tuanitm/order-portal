@@ -27,11 +27,12 @@ export async function GET(
 
   const companyId = getCompanyId();
   const order = await queryOne(
-    `SELECT o.*, u.email AS customer_email, u.sap_card_code,
-            c.card_name AS sap_card_name
+    `SELECT o.*, u.email AS customer_email, COALESCE(o.sap_card_code, u.sap_card_code) AS sap_card_code,
+            c.card_name AS sap_card_name, au.email AS created_by_admin_email
      FROM orders o
      LEFT JOIN users u ON u.company_id = o.company_id AND u.id = o.user_id
-     LEFT JOIN customers c ON c.company_id = o.company_id AND c.sap_card_code = u.sap_card_code
+     LEFT JOIN customers c ON c.company_id = o.company_id AND c.sap_card_code = COALESCE(o.sap_card_code, u.sap_card_code)
+     LEFT JOIN admin_users au ON au.id = o.created_by_admin_id
      WHERE o.company_id = ? AND o.id = ?`,
     [companyId, orderId]
   );

@@ -1,53 +1,54 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
-import { query } from "@/lib/db/connection";
 import { queryHana, getHanaSchema } from "@/lib/hana/client";
-import { loadConfig, getCompanyId } from "@/lib/config";
-import { getAllowedCustomerGroupCodes } from "@/lib/adminScope";
-import type { AdminSession } from "@/lib/auth/adminSession";
+import { loadConfig } from "@/lib/config";
+import { getAdminWarehouses } from "@/lib/adminWarehouses";
+import { computeBatchShelfLifePct } from "@/lib/sap-b1/sync";
+import { getSapClient } from "@/lib/sap-b1/client";
+
+const sqlString = (v: string) => `'${v.replace(/'/g, "''")}'`;
 
 /**
- * GET /api/admin/inventory?warehouse=<code>&page=1&limit=50&search=
+ * GET /api/admin/inventory?warehouses=1001,1003&page=1&limit=50&search=
  *
  * Runs the SAP QRM_Inventory by Warehouse query LIVE against HANA to get
- * OnHand, Committed (Open SO + Transfer Requests + Production Order components),
- * and Available per item per warehouse.
+ * OnHand, Committed (Open SO + Transfer Requests + Production Order components)
+ * and Available per item per warehouse, plus each row's remaining shelf life
+ * (worst batch, with every batch listed for the tooltip).
  *
- * Non-root admins only see warehouses mapped to the customer groups they manage
- * (via admin_user_customer_groups → customer_group_warehouses).
+ * Warehouses offered: this admin's warehouses (Admin Users → Warehouse; root =
+ * every masterdata.wareHouse warehouse — see getAdminWarehouseCodes). Warehouse
+ * Visibility doesn't apply here — it's the customers' rule. `warehouses` picks
+ * any subset of them; omitted/empty = all of them.
  */
 export async function GET(request: NextRequest) {
   const guard = await requireAdminPermission(request, "inventory");
   if (guard.response) return guard.response;
 
   const sp = request.nextUrl.searchParams;
-  const warehouseCode = sp.get("warehouse") || "";
+  const requested = (sp.get("warehouses") || "").split(",").map((s) => s.trim()).filter(Boolean);
   const page = Math.max(1, parseInt(sp.get("page") || "1", 10));
   const limit = Math.min(200, Math.max(10, parseInt(sp.get("limit") || "50", 10)));
   const search = (sp.get("search") || "").trim();
 
-  // ── Resolve which warehouses this admin can see ──────────────────────
-  const { masterdata } = loadConfig();
-  const warehouseRows = await getAdminVisibleWarehouses(guard.session, masterdata.wareHouse);
+  // ── Which warehouses this admin can see (Admin Users → Warehouse) ─────
+  const warehouseRows = await getAdminWarehouses(guard.session);
 
   if (warehouseRows.length === 0) {
-    return NextResponse.json({ warehouses: [], items: [], total: 0 });
+    return NextResponse.json({ warehouses: [], selectedWarehouses: [], items: [], total: 0 });
   }
 
-  // Auto-select first allowed warehouse if requested one is missing or not allowed
-  const targetWarehouse =
-    warehouseCode && warehouseRows.some((w) => w.code === warehouseCode)
-      ? warehouseCode
-      : warehouseRows[0].code;
+  const allowed = new Set(warehouseRows.map((w) => w.code));
+  const picked = requested.filter((c) => allowed.has(c));
+  const selected = picked.length > 0 ? picked : warehouseRows.map((w) => w.code);
+  const selectedSql = selected.map(sqlString).join(",");
 
   // ── Run the SAP QRM_Inventory by Warehouse query against HANA ───────
   try {
     const schema = getHanaSchema();
-    const itemGroupFilter = masterdata.itemGroup;   // e.g. 'D1','L1'
-    const warehouseFilter = masterdata.wareHouse;    // e.g. '1001','1003',...
+    const itemGroupFilter = loadConfig().masterdata.itemGroup;   // e.g. 'D1','L1'
 
     // SAP QRM_Inventory by Warehouse — Committed = Open SO + Transfer Requests + Production Order components
-    // Scoped by masterdata.itemGroup (U_ItemCat01/02) and masterdata.wareHouse
     const sql = `
       SELECT *
       FROM (
@@ -97,12 +98,11 @@ export async function GET(request: NextRequest) {
         ) T6 ON T0."ItemCode" = T6."ItemCode" AND T0."WhsCode" = T6."WhsCode"
         WHERE T1."InvntItem" = 'Y'
           AND (T1."U_ItemCat01" IN (${itemGroupFilter}) OR T1."U_ItemCat02" IN (${itemGroupFilter}))
-          AND T0."WhsCode" IN (${warehouseFilter})
+          AND T0."WhsCode" IN (${selectedSql})
       ) X
       WHERE (X."on_hand" <> 0 OR X."committed" <> 0)
-        AND X."whs_code" = '${targetWarehouse.replace(/'/g, "''")}'
-        ${search ? `AND (X."item_code" LIKE '%${search.replace(/'/g, "''")}%' OR X."item_name" LIKE '%${search.replace(/'/g, "''")}%')` : ""}
-      ORDER BY X."item_code"
+        ${search ? `AND (X."item_code" LIKE ${sqlString(`%${search}%`)} OR X."item_name" LIKE ${sqlString(`%${search}%`)})` : ""}
+      ORDER BY X."item_code", X."whs_code"
     `;
 
     interface HanaRow {
@@ -123,10 +123,36 @@ export async function GET(request: NextRequest) {
     const offset = (page - 1) * limit;
     const pageItems = allRows.slice(offset, offset + limit);
 
+    // ── Shelf life %: batches of just this page's items, in the selected warehouses ──
+    // Read through the Service Layer (SQLQueries), not HANA: the read-only HANA
+    // user has no grant on the batch tables (OBTQ/OBTN). One saved query per
+    // admin + warehouse, so two admins viewing the same warehouse can't
+    // overwrite each other's query text.
+    const batchesByRow = new Map<string, { pct: number; qty: number }[]>();
+    const sap = getSapClient();
+    await Promise.all(selected.map(async (whs) => {
+      const codes = [...new Set(pageItems.filter((r) => r.whs_code === whs).map((r) => r.item_code))];
+      if (codes.length === 0) return;
+      const batchRows = await sap.getLiveBatchStock(whs, codes, `I${guard.session.adminId ?? 0}W${whs}`);
+      for (const b of batchRows) {
+        const pct = computeBatchShelfLifePct(b.mnf_date, b.exp_date);
+        if (pct === null) continue;
+        const key = `${b.item_code}|${b.warehouse_code}`;
+        const list = batchesByRow.get(key) ?? [];
+        list.push({ pct: Math.round(pct * 10) / 10, qty: Number(b.qty) });
+        batchesByRow.set(key, list);
+      }
+    }));
+
+    const items = pageItems.map((r) => {
+      const batches = (batchesByRow.get(`${r.item_code}|${r.whs_code}`) ?? []).sort((a, b) => a.pct - b.pct);
+      return { ...r, shelf_life_pct: batches.length ? batches[0].pct : null, batches };
+    });
+
     return NextResponse.json({
       warehouses: warehouseRows,
-      selectedWarehouse: targetWarehouse,
-      items: pageItems,
+      selectedWarehouses: selected,
+      items,
       total,
     });
   } catch (error) {
@@ -136,86 +162,4 @@ export async function GET(request: NextRequest) {
       { status: 502 }
     );
   }
-}
-
-// ── Helper: get warehouses visible to this admin ───────────────────────
-
-async function getAdminVisibleWarehouses(
-  session: AdminSession,
-  configWarehouses: string
-): Promise<{ code: string; name: string | null }[]> {
-  const companyId = getCompanyId();
-
-  // Superadmin sees all included warehouses that are inside masterdata.wareHouse
-  if (session.isSuperAdmin) {
-    const rows = await query<{ sap_warehouse_code: string; warehouse_name: string | null }[]>(
-      `SELECT sap_warehouse_code, warehouse_name FROM warehouses
-       WHERE company_id = ? AND sap_warehouse_code IN (${configWarehouses}) AND is_included = TRUE
-       ORDER BY sap_warehouse_code`,
-      [companyId]
-    );
-    return rows.map((r) => ({ code: r.sap_warehouse_code, name: r.warehouse_name }));
-  }
-
-  // Non-root admin: must have customer groups assigned
-  if (!session.adminId) return [];
-
-  const assigned = await query<{ customer_group_id: number }[]>(
-    `SELECT customer_group_id FROM admin_user_customer_groups WHERE company_id = ? AND admin_user_id = ?`,
-    [companyId, session.adminId]
-  );
-  if (assigned.length === 0) return [];
-
-  // Load customer group hierarchy to resolve Level 2 codes
-  const allGroups = await query<{ id: number; level: number; code: string; parent_code: string | null }[]>(
-    `SELECT id, level, code, parent_code FROM customer_groups WHERE company_id = ?`,
-    [companyId]
-  );
-
-  const assignedIds = new Set(assigned.map((a) => a.customer_group_id));
-  const byId = new Map(allGroups.map((g) => [g.id, g]));
-  const byCodeAndLevel = new Map(allGroups.map((g) => [`${g.level}:${g.code}`, g]));
-
-  const level2GroupCodes = new Set<string>();
-  for (const id of assignedIds) {
-    let cur = byId.get(id);
-    if (!cur) continue;
-    if (cur.level === 2) {
-      level2GroupCodes.add(cur.code);
-    } else if (cur.level > 2) {
-      // Walk up to level 2
-      while (cur && cur.level > 2 && cur.parent_code) {
-        cur = byCodeAndLevel.get(`${cur.level - 1}:${cur.parent_code}`);
-      }
-      if (cur && cur.level === 2) {
-        level2GroupCodes.add(cur.code);
-      }
-    } else if (cur.level === 1) {
-      // Walk down to level 2
-      for (const g of allGroups) {
-        if (g.level === 2 && g.parent_code === cur.code) {
-          level2GroupCodes.add(g.code);
-        }
-      }
-    }
-  }
-
-  if (level2GroupCodes.size === 0) return [];
-
-  // Query customer_group_warehouses scoped to Level 2 groups and masterdata.wareHouse
-  const placeholders = [...level2GroupCodes].map(() => "?").join(",");
-  const mapped = await query<{ warehouse_code: string; warehouse_name: string | null }[]>(
-    `SELECT DISTINCT cgw.warehouse_code, w.warehouse_name
-     FROM customer_group_warehouses cgw
-     JOIN customer_groups cg ON cg.company_id = cgw.company_id AND cg.id = cgw.customer_group_id
-     LEFT JOIN warehouses w ON w.company_id = cgw.company_id AND w.sap_warehouse_code = cgw.warehouse_code
-     WHERE cgw.company_id = ?
-       AND cg.level = 2
-       AND cg.code IN (${placeholders})
-       AND cgw.warehouse_code IN (${configWarehouses})
-     ORDER BY cgw.warehouse_code`,
-    [companyId, ...level2GroupCodes]
-  );
-
-  return mapped.map((m) => ({ code: m.warehouse_code, name: m.warehouse_name }));
 }

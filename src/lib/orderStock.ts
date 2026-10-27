@@ -63,7 +63,7 @@ export async function getLiveAvailabilityForOrder(
             COALESCE(u.sap_cus_grp03, c.cus_grp03) AS sap_cus_grp03
      FROM orders o
      LEFT JOIN users u ON u.company_id = o.company_id AND u.id = o.user_id
-     LEFT JOIN customers c ON c.company_id = o.company_id AND c.sap_card_code = u.sap_card_code
+     LEFT JOIN customers c ON c.company_id = o.company_id AND c.sap_card_code = COALESCE(o.sap_card_code, u.sap_card_code)
      WHERE o.company_id = ? AND o.id = ?`,
     [companyId, orderId]
   );

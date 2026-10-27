@@ -36,7 +36,10 @@ export default function AdminUsersPage() {
   // see/manage (default: none, until root assigns some — see adminScope.ts).
   const [cgInputs, setCgInputs] = useState<Record<number, string>>({});
   const [igInputs, setIgInputs] = useState<Record<number, string>>({});
-  const [savingScope, setSavingScope] = useState<string | null>(null); // `${userId}:customer`|`${userId}:item`
+  // Warehouses the admin may use on Inventory and when creating / pushing orders (see adminWarehouses.ts).
+  const [whInputs, setWhInputs] = useState<Record<number, string>>({});
+  const [masterdataWarehouses, setMasterdataWarehouses] = useState<string[]>([]);
+  const [savingScope, setSavingScope] = useState<string | null>(null); // `${userId}:customer`|`${userId}:item`|`${userId}:warehouse`
   const [scopeMsg, setScopeMsg] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
@@ -55,29 +58,34 @@ export default function AdminUsersPage() {
     setDepartments(deptData.costCenters || []);
     setIsLoading(false);
 
-    // Seed each admin's two scope textboxes from their current assignments.
+    // Seed each admin's scope textboxes from their current assignments.
     await Promise.all(
       loadedUsers.map(async (u) => {
-        const [cgRes, igRes] = await Promise.all([
+        const [cgRes, igRes, whRes] = await Promise.all([
           fetch(`/api/admin/users/${u.id}/customer-groups`),
           fetch(`/api/admin/users/${u.id}/item-groups`),
+          fetch(`/api/admin/users/${u.id}/warehouses`),
         ]);
         const cgData = await cgRes.json();
         const igData = await igRes.json();
+        const whData = await whRes.json();
         setCgInputs((m) => (u.id in m ? m : { ...m, [u.id]: (cgData.codes || []).join(", ") }));
         setIgInputs((m) => (u.id in m ? m : { ...m, [u.id]: (igData.codes || []).join(", ") }));
+        setWhInputs((m) => (u.id in m ? m : { ...m, [u.id]: (whData.codes || []).join(", ") }));
+        if (whData.available) setMasterdataWarehouses(whData.available);
       })
     );
   }, []);
 
-  const saveScope = async (userId: number, kind: "customer" | "item") => {
+  const saveScope = async (userId: number, kind: "customer" | "item" | "warehouse") => {
     const key = `${userId}:${kind}`;
     setSavingScope(key);
     setScopeMsg((m) => ({ ...m, [key]: "" }));
-    const raw = (kind === "customer" ? cgInputs[userId] : igInputs[userId]) || "";
+    const raw = (kind === "customer" ? cgInputs[userId] : kind === "item" ? igInputs[userId] : whInputs[userId]) || "";
     const codes = raw.split(",").map((c) => c.trim()).filter(Boolean);
+    const endpoint = { customer: "customer-groups", item: "item-groups", warehouse: "warehouses" }[kind];
     try {
-      const res = await fetch(`/api/admin/users/${userId}/${kind === "customer" ? "customer-groups" : "item-groups"}`, {
+      const res = await fetch(`/api/admin/users/${userId}/${endpoint}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ codes }),
@@ -208,7 +216,9 @@ export default function AdminUsersPage() {
               root can see this page. <strong>Customer Groups</strong>/<strong>Item Groups</strong> (comma-separated codes) scope what
               each admin can see/manage on Customers, SAP Customers, Items, Item Groups and Customer Groups — an admin
               with none assigned sees/manages nothing on those pages. Assigning a group also grants every group
-              underneath it.
+              underneath it. <strong>Warehouse</strong> (comma-separated codes from masterdata
+              {masterdataWarehouses.length > 0 ? `: ${masterdataWarehouses.join(", ")}` : ""}) limits which warehouses the
+              admin sees on Inventory and can use when creating or pushing orders; root always has them all.
             </p>
           </div>
           {session?.isSuperAdmin && (
@@ -255,6 +265,7 @@ export default function AdminUsersPage() {
                     <th style={styles.th}>Owner Code</th>
                     <th style={styles.th}>Customer Groups</th>
                     <th style={styles.th}>Item Groups</th>
+                    <th style={styles.th}>Warehouse</th>
                     {session?.isSuperAdmin && <th style={styles.th}>Actions</th>}
                   </tr>
                 </thead>
@@ -285,6 +296,9 @@ export default function AdminUsersPage() {
                         <>
                           <td style={{ ...styles.td, color: "var(--text-tertiary, #94A3B8)", fontStyle: "italic" }}>— (sees everything)</td>
                           <td style={{ ...styles.td, color: "var(--text-tertiary, #94A3B8)", fontStyle: "italic" }}>— (sees everything)</td>
+                          <td style={{ ...styles.td, color: "var(--text-tertiary, #94A3B8)", fontStyle: "italic" }} title={masterdataWarehouses.join(", ")}>
+                            — (all in masterdata)
+                          </td>
                         </>
                       ) : (
                         <>
@@ -328,6 +342,27 @@ export default function AdminUsersPage() {
                               </p>
                             )}
                           </td>
+                          <td style={styles.td}>
+                            <div style={{ display: "flex", gap: "0.375rem" }}>
+                              <input
+                                type="text"
+                                value={whInputs[u.id] ?? ""}
+                                onChange={(e) => setWhInputs((m) => ({ ...m, [u.id]: e.target.value }))}
+                                onKeyDown={(e) => e.key === "Enter" && saveScope(u.id, "warehouse")}
+                                placeholder={masterdataWarehouses.length ? `e.g. ${masterdataWarehouses.slice(0, 2).join(", ")}` : "e.g. 1001, 1003"}
+                                title={masterdataWarehouses.length ? `Allowed: ${masterdataWarehouses.join(", ")}` : undefined}
+                                style={{ ...styles.input, width: "120px", padding: "0.25rem 0.5rem", fontSize: "0.75rem" }}
+                              />
+                              <button onClick={() => saveScope(u.id, "warehouse")} disabled={savingScope === `${u.id}:warehouse`} style={smallBtn}>
+                                {savingScope === `${u.id}:warehouse` ? "..." : "Save"}
+                              </button>
+                            </div>
+                            {scopeMsg[`${u.id}:warehouse`] && (
+                              <p style={{ marginTop: "0.25rem", fontSize: "0.7rem", color: scopeMsg[`${u.id}:warehouse`].startsWith("✓") ? "#059669" : "#DC2626" }}>
+                                {scopeMsg[`${u.id}:warehouse`]}
+                              </p>
+                            )}
+                          </td>
                         </>
                       )}
                       {session?.isSuperAdmin && (
@@ -345,7 +380,7 @@ export default function AdminUsersPage() {
                     </tr>
                     {editingId === u.id && (
                       <tr>
-                        <td colSpan={session?.isSuperAdmin ? 9 : 8} style={{ ...styles.td, background: "var(--bg-secondary, #F8FAFC)" }}>
+                        <td colSpan={session?.isSuperAdmin ? 10 : 9} style={{ ...styles.td, background: "var(--bg-secondary, #F8FAFC)" }}>
                           {editError && <div style={{ color: "#991B1B", fontSize: "0.8125rem", marginBottom: "0.75rem" }}>{editError}</div>}
                           <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "center" }}>
                             <input style={styles.input} placeholder="Full name" value={editForm.fullName} onChange={(e) => setEditForm({ ...editForm, fullName: e.target.value })} />

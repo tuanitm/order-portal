@@ -38,7 +38,7 @@ export async function GET(request: NextRequest) {
     params.push(status);
   }
   if (customer) {
-    whereClauses.push("(u.sap_card_code LIKE ? OR c.card_name LIKE ? OR o.customer_name LIKE ?)");
+    whereClauses.push("(COALESCE(o.sap_card_code, u.sap_card_code) LIKE ? OR c.card_name LIKE ? OR o.customer_name LIKE ?)");
     const p = `%${customer}%`;
     params.push(p, p, p);
   }
@@ -66,13 +66,13 @@ export async function GET(request: NextRequest) {
            ) AS brand
          FROM orders o
          LEFT JOIN users u ON u.company_id = o.company_id AND u.id = o.user_id
-         LEFT JOIN customers c ON c.company_id = o.company_id AND c.sap_card_code = u.sap_card_code
+         LEFT JOIN customers c ON c.company_id = o.company_id AND c.sap_card_code = COALESCE(o.sap_card_code, u.sap_card_code)
          ${whereSql}
          ${brandHaving}
        ) t`
     : `SELECT COUNT(*) AS cnt FROM orders o
        LEFT JOIN users u ON u.company_id = o.company_id AND u.id = o.user_id
-       LEFT JOIN customers c ON c.company_id = o.company_id AND c.sap_card_code = u.sap_card_code
+       LEFT JOIN customers c ON c.company_id = o.company_id AND c.sap_card_code = COALESCE(o.sap_card_code, u.sap_card_code)
        ${whereSql}`;
 
   const totalRows = await query<{ cnt: number }[]>(countSql, [...params, ...brandParam]);
@@ -81,7 +81,7 @@ export async function GET(request: NextRequest) {
   const orders = await query(
     `SELECT o.id, o.order_number, o.customer_name, o.subtotal, o.discount_total, o.grand_total,
             o.status, o.sap_doc_entry, o.sap_doc_num, o.sap_so_number, o.created_at,
-            u.email AS customer_email, u.sap_card_code,
+            u.email AS customer_email, COALESCE(o.sap_card_code, u.sap_card_code) AS sap_card_code,
             c.card_name AS sap_card_name,
             (SELECT GROUP_CONCAT(DISTINCT COALESCE(cc2.ocr_name, i2.brand_code) ORDER BY 1 SEPARATOR ', ')
              FROM order_lines ol2
@@ -91,7 +91,7 @@ export async function GET(request: NextRequest) {
             ) AS brand
      FROM orders o
      LEFT JOIN users u ON u.company_id = o.company_id AND u.id = o.user_id
-     LEFT JOIN customers c ON c.company_id = o.company_id AND c.sap_card_code = u.sap_card_code
+     LEFT JOIN customers c ON c.company_id = o.company_id AND c.sap_card_code = COALESCE(o.sap_card_code, u.sap_card_code)
      ${whereSql}
      ${brandHaving}
      ORDER BY o.created_at DESC

@@ -2,7 +2,8 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useLocale } from "next-intl";
-import { styles, Badge, LoadingOrEmpty, ORDER_STATUS_LABELS } from "../adminUi";
+import { styles, btn, Badge, LoadingOrEmpty, ORDER_STATUS_LABELS } from "../adminUi";
+import SelfCreateOrderDialog from "./SelfCreateOrderDialog";
 
 interface Order {
   id: number;
@@ -49,6 +50,7 @@ export default function AdminOrdersPage() {
   const [customer, setCustomer] = useState("");
   const [docNo, setDocNo] = useState("");
   const [isLoading, setIsLoading] = useState(true);
+  const [isCreateOpen, setIsCreateOpen] = useState(false);
 
   // Debounce text filters so we don't hammer the API on every keystroke
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -108,6 +110,13 @@ export default function AdminOrdersPage() {
             value={docNo}
             onChange={(e) => setDocNo(e.target.value)}
           />
+          <button
+            onClick={() => setIsCreateOpen(true)}
+            title="Create a sales order on behalf of a customer or distributor"
+            style={{ ...btn("primary"), padding: "0.375rem 0.875rem" }}
+          >
+            ＋ Self create
+          </button>
           {hasFilters && (
             <button
               onClick={() => { setBrand(""); setCustomer(""); setDocNo(""); }}
@@ -169,7 +178,7 @@ export default function AdminOrdersPage() {
                       <td style={styles.td}>{o.sap_card_name || o.customer_name || o.customer_email || "—"}</td>
                       <td style={styles.td}>{formatPrice(o.grand_total)}</td>
                       <td style={{ ...styles.td, fontFamily: "monospace" }}>{o.sap_doc_num || "—"}</td>
-                      <td style={{ ...styles.td, fontFamily: "monospace", fontSize: "0.75rem", color: o.sap_so_number ? "var(--color-primary, #2BBCB3)" : "var(--text-tertiary, #94A3B8)" }}>
+                      <td style={{ ...styles.td, fontFamily: "monospace", fontWeight: 600, color: o.sap_so_number ? undefined : "var(--text-tertiary, #94A3B8)" }}>
                         {o.sap_so_number || "—"}
                       </td>
                       <td style={styles.td}><Badge label={ORDER_STATUS_LABELS[o.status] || o.status} tone={STATUS_TONE[o.status] || "neutral"} /></td>
@@ -184,6 +193,14 @@ export default function AdminOrdersPage() {
           )}
         </div>
       </div>
+
+      {isCreateOpen && (
+        <SelfCreateOrderDialog
+          locale={locale}
+          onClose={() => setIsCreateOpen(false)}
+          onCreated={() => load(status, brand, customer, docNo)}
+        />
+      )}
     </div>
   );
 }

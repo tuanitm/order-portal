@@ -50,6 +50,30 @@ export interface SapBusinessPartner {
   U_CusGrp01?: string;
   U_CusGrp02?: string;
   U_CusGrp03?: string;
+  /** Default address names (BPAddresses.AddressName) and Sales Supervisor (U_MDM_CD_SEL04 code). */
+  BilltoDefault?: string | null;
+  ShipToDefault?: string | null;
+  U_CusSEL04?: string | null;
+  BPAddresses?: SapBpAddress[];
+}
+
+export interface SapBpAddress {
+  AddressName: string;
+  AddressType: "bo_BillTo" | "bo_ShipTo" | string;
+  Street?: string | null;
+  Block?: string | null;
+  BuildingFloorRoom?: string | null;
+  City?: string | null;
+  County?: string | null;
+  State?: string | null;
+  ZipCode?: string | null;
+  Country?: string | null;
+}
+
+/** One row of SAP user table U_MDM_CD_SEL04 — the Sales Supervisor value list. */
+export interface SapSalesSupervisor {
+  Code: string;
+  Name: string | null;
 }
 
 export interface SapPriceList {
@@ -267,6 +291,11 @@ export interface SapSalesOrderDraft {
   DocumentsOwner?: number;
   /** LastName + " " + FirstName of the same Employee as DocumentsOwner — see resolveOrderOwner. */
   U_OwnerName?: string;
+  /** Bill-to / ship-to address names (BPAddresses.AddressName) picked in the admin "Self create" dialog. */
+  PayToCode?: string;
+  ShipToCode?: string;
+  /** Sales Supervisor (value list: user table U_MDM_CD_SEL04). */
+  U_CusSEL04?: string;
   DocumentLines: {
     ItemCode: string;
     /** Only set for the synthetic Contract/Promotion Discount lines (see
@@ -691,7 +720,8 @@ export class SapB1Client {
     await this.ensureSession();
     try {
       const select = encodeURIComponent(
-        'CardCode,CardName,FederalTaxID,Phone1,EmailAddress,Address,PriceListNum,U_CusGrp01,U_CusGrp02,U_CusGrp03'
+        'CardCode,CardName,FederalTaxID,Phone1,EmailAddress,Address,PriceListNum,U_CusGrp01,U_CusGrp02,U_CusGrp03,' +
+          'BilltoDefault,ShipToDefault,U_CusSEL04,BPAddresses'
       );
       const pairFilter = params.pairs
         .map((p) => `(U_CusGrp01 eq ${toODataLiteral(p.cat1)} and U_CusGrp02 eq ${toODataLiteral(p.cat2)})`)
@@ -706,6 +736,26 @@ export class SapB1Client {
       console.error('[SAP] Failed to get customers by group pairs:', error);
       return [];
     }
+  }
+
+  /**
+   * Every Sales Supervisor (user table U_MDM_CD_SEL04 — the value list behind
+   * the U_CusSEL04 field on business partners and sales orders), all pages.
+   */
+  async getSalesSupervisors(): Promise<SapSalesSupervisor[]> {
+    await this.ensureSession();
+    const all: SapSalesSupervisor[] = [];
+    for (let skip = 0; ; ) {
+      const result = await this.request<{ value: SapSalesSupervisor[] }>(
+        'GET',
+        `/U_MDM_CD_SEL04?$select=Code,Name&$orderby=Code&$skip=${skip}`
+      );
+      const page = result.value || [];
+      if (page.length === 0) break;
+      all.push(...page);
+      skip += page.length;
+    }
+    return all;
   }
 
   /**

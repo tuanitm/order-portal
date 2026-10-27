@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams } from "next/navigation";
 import { styles, btn, Badge, BackLink, SyncButton, ORDER_STATUS_LABELS } from "../../adminUi";
+import SelfCreateOrderDialog, { type DuplicateSource } from "../SelfCreateOrderDialog";
 
 // 'cancelled' is excluded from the dropdown — it's set exclusively via the
 // dedicated "Cancel Order" button below, which also removes the SAP Draft
@@ -24,6 +25,10 @@ interface OrderDetail {
   sap_doc_num: number | null; sap_so_number: string | null; created_at: string;
   sap_card_code: string | null; sap_card_name: string | null;
   warehouse_code: string | null;
+  /** Set on orders an admin created with "Self create" (see schema.sql). */
+  created_by_admin_id: number | null; created_by_admin_email: string | null;
+  bill_to_code: string | null; billing_address: string | null; ship_to_code: string | null;
+  supervisor_code: string | null; supervisor_name: string | null;
 }
 interface OrderLine {
   id: number; sap_item_code: string; item_name: string; quantity: number; uom: string;
@@ -185,6 +190,8 @@ function ConfirmQtyInput({ line, onSave }: { line: OrderLine; onSave: (lineId: n
   const [draft, setDraft] = useState(String(line.confirm_qty));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  // Shown with thousand separators (same as the Qty column) except while being edited.
+  const [focused, setFocused] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const clearPendingCommit = () => {
@@ -230,7 +237,8 @@ function ConfirmQtyInput({ line, onSave }: { line: OrderLine; onSave: (lineId: n
     commit(draft);
   };
 
-  const handleChange = (value: string) => {
+  const handleChange = (raw: string) => {
+    const value = raw.replace(/\D/g, ""); // digits only — the box is text, not type=number
     setDraft(value);
     // Debounced so typing several digits from scratch doesn't fire one
     // PATCH per keystroke; a spinner click or arrow key almost always
@@ -243,20 +251,27 @@ function ConfirmQtyInput({ line, onSave }: { line: OrderLine; onSave: (lineId: n
   return (
     <div>
       <input
-        type="number"
-        min={0}
+        type="text"
+        inputMode="numeric"
         disabled={saving}
-        value={draft}
+        value={focused || draft === "" || !/^\d+$/.test(draft) ? draft : formatQty(Number(draft))}
         onChange={(e) => handleChange(e.target.value)}
-        onBlur={commitNow}
+        onFocus={(e) => { setFocused(true); requestAnimationFrame(() => e.target.select()); }}
+        onBlur={() => { setFocused(false); commitNow(); }}
         onKeyDown={(e) => {
           if (e.key === "Enter") {
             e.preventDefault();
             commitNow();
             e.currentTarget.blur();
           }
+          // Arrow keys step by 1, like the number spinner this replaced.
+          if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+            e.preventDefault();
+            const next = Math.max(0, (parseInt(draft, 10) || 0) + (e.key === "ArrowUp" ? 1 : -1));
+            handleChange(String(next));
+          }
         }}
-        style={{ ...styles.input, width: "80px", padding: "0.25rem 0.5rem" }}
+        style={{ ...styles.input, width: "80px", padding: "0.25rem 0.5rem", textAlign: "right" }}
       />
       {error && <div style={{ fontSize: "0.7rem", color: "#DC2626", marginTop: "0.25rem" }}>{error}</div>}
     </div>
@@ -264,10 +279,11 @@ function ConfirmQtyInput({ line, onSave }: { line: OrderLine; onSave: (lineId: n
 }
 
 export default function AdminOrderDetailPage() {
-  const params = useParams<{ id: string }>();
+  const params = useParams<{ id: string; locale: string }>();
   const [order, setOrder] = useState<OrderDetail | null>(null);
   const [lines, setLines] = useState<OrderLine[]>([]);
   const [isSaving, setIsSaving] = useState(false);
+  const [duplicateFrom, setDuplicateFrom] = useState<DuplicateSource | null>(null);
 
   // Warehouse stock check — "Warehouse Visibility" dropdown (the warehouses
   // THIS order's customer can see) plus a live (uncached) per-item Avail
@@ -434,6 +450,47 @@ export default function AdminOrderDetailPage() {
     return <div style={styles.page}><div style={styles.container}>Loading...</div></div>;
   }
 
+
+  // "Duplicate": open the Self create dialog pre-filled with this order —
+  // header and items (ordered quantity, chosen promotion / gift programs);
+  // gift lines are rebuilt there, prices are today's.
+  const openDuplicate = () => {
+    if (!order) return;
+    if (!order.sap_card_code) {
+      alert("This order has no SAP customer code, so it can't be duplicated.");
+      return;
+    }
+    setDuplicateFrom({
+      orderNumber: order.order_number,
+      customerCode: order.sap_card_code,
+      billTo: order.bill_to_code,
+      shipTo: order.ship_to_code,
+      warehouse: order.warehouse_code,
+      supervisor: order.supervisor_code,
+      remark: order.remark,
+      lines: lines.filter((l) => !l.is_gift_line).map((l) => {
+        const gift = lines.find((g) => g.is_gift_line && g.source_line_id === l.id);
+        return {
+          sapItemCode: l.sap_item_code,
+          quantity: Number(l.quantity),
+          promotionCode: l.promotion_code,
+          giveawayKey: gift ? `${l.giveaway_promotion_code ?? ""}::${gift.sap_item_code}` : null,
+        };
+      }),
+    });
+  };
+  const duplicateButton = (
+    <button
+      type="button"
+      onClick={openDuplicate}
+      disabled={isSaving}
+      title="Create a new order pre-filled with this order's customer, header and items"
+      style={btn("secondary", isSaving)}
+    >
+      ⧉ Duplicate
+    </button>
+  );
+
   return (
     <div style={styles.page}>
       <div style={styles.container}>
@@ -462,6 +519,7 @@ export default function AdminOrderDetailPage() {
         <div style={{ ...styles.cardPadded }}>
           <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", marginBottom: "1rem", flexWrap: "wrap" }}>
             <Badge label={ORDER_STATUS_LABELS[order.status] || order.status} tone={STATUS_TONE[order.status] || "neutral"} />
+            {TERMINAL_STATUSES.includes(order.status) && duplicateButton}
             {!TERMINAL_STATUSES.includes(order.status) && (
               <>
                 <select
@@ -510,6 +568,7 @@ export default function AdminOrderDetailPage() {
                 )}
                 {/* Cancel is disabled once the order is a confirmed SAP Sales Order
                     (status 'approved' from direct push) or already has a SAP SO # synced back. */}
+                {duplicateButton}
                 {(() => {
                   const isSapSalesOrder = order.status === "approved" || !!order.sap_so_number;
                   return (
@@ -613,9 +672,12 @@ export default function AdminOrderDetailPage() {
           </div>
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "1rem", fontSize: "0.8125rem" }}>
-            <div><strong>Address:</strong> {order.delivery_address || "—"}</div>
+            <div><strong>{order.ship_to_code ? `Ship to (${order.ship_to_code}):` : "Address:"}</strong> {order.delivery_address || "—"}</div>
+            {order.bill_to_code && <div><strong>Bill to ({order.bill_to_code}):</strong> {order.billing_address || "—"}</div>}
             <div><strong>Phone:</strong> {order.contact_phone || "—"}</div>
+            {order.supervisor_code && <div><strong>Sales supervisor:</strong> {order.supervisor_name || order.supervisor_code}</div>}
             <div><strong>Remark:</strong> {order.remark || "—"}</div>
+            {order.created_by_admin_id && <div><strong>Created by:</strong> {order.created_by_admin_email || `admin #${order.created_by_admin_id}`} (Self create)</div>}
           </div>
         </div>
 
@@ -731,6 +793,15 @@ export default function AdminOrderDetailPage() {
 
         <MessagesThread orderId={order.id} />
       </div>
+
+      {duplicateFrom && (
+        <SelfCreateOrderDialog
+          locale={params.locale}
+          initial={duplicateFrom}
+          onClose={() => setDuplicateFrom(null)}
+          onCreated={() => undefined}
+        />
+      )}
     </div>
   );
 }
