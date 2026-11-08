@@ -65,9 +65,8 @@ export default function CheckoutPage() {
   const [orderResult, setOrderResult] = useState<{ orderNumbers: string[] } | null>(null);
   const [error, setError] = useState("");
 
-  // Prefill from the customer's own BP master data (SAP customer master),
-  // still freely editable — the customer can override any of these before
-  // submitting.
+  // Prefill from the customer's own BP master data (SAP customer master).
+  // Name is display-only (the server takes it from SAP); phone/email stay editable.
   useEffect(() => {
     fetch("/api/auth/me")
       .then((res) => (res.ok ? res.json() : null))
@@ -183,7 +182,6 @@ export default function CheckoutPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          customerName,
           billToCode,
           shipToCode,
           contactPhone,
@@ -321,8 +319,8 @@ export default function CheckoutPage() {
                 <label className="input-label" htmlFor="customerName">
                   {t("checkout.customerName")} *
                 </label>
-                <input type="text" className="input" id="customerName" value={customerName}
-                  onChange={(e) => setCustomerName(e.target.value)} required />
+                <input type="text" className="input" id="customerName" value={customerName} readOnly
+                  style={{ background: "var(--bg-secondary)", cursor: "not-allowed" }} />
               </div>
 
               {([
@@ -345,9 +343,6 @@ export default function CheckoutPage() {
                   )}
                 </div>
               ))}
-              <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)", marginTop: "-0.5rem", lineHeight: 1.4 }}>
-                {t("checkout.addressChangeHint")}
-              </div>
 
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
                 <div className="input-group">

@@ -23,9 +23,10 @@ export async function POST(request: NextRequest) {
     const companyId = getCompanyId();
 
     // Check the linked SAP customer's Enable toggle (admin > SAP Customers)
+    let sapCustomerName: string | null = null;
     if (user.sapCardCode) {
-      const customer = await queryOne<{ is_enabled: number }>(
-        "SELECT is_enabled FROM customers WHERE company_id = ? AND sap_card_code = ? LIMIT 1",
+      const customer = await queryOne<{ is_enabled: number; card_name: string | null }>(
+        "SELECT is_enabled, card_name FROM customers WHERE company_id = ? AND sap_card_code = ? LIMIT 1",
         [companyId, user.sapCardCode]
       );
       if (customer && !customer.is_enabled) {
@@ -34,11 +35,11 @@ export async function POST(request: NextRequest) {
           { status: 403 }
         );
       }
+      sapCustomerName = customer?.card_name ?? null;
     }
 
     const body = await request.json();
-    const { customerName, billToCode, shipToCode, contactPhone, contactEmail, remark, lines, language } = body as {
-      customerName: string;
+    const { billToCode, shipToCode, contactPhone, contactEmail, remark, lines, language } = body as {
       billToCode: string;
       shipToCode: string;
       contactPhone: string;
@@ -49,9 +50,9 @@ export async function POST(request: NextRequest) {
     };
 
     // Validate required fields
-    if (!customerName || !contactPhone || !lines || lines.length === 0) {
+    if (!contactPhone || !lines || lines.length === 0) {
       return NextResponse.json(
-        { error: "Missing required fields: customerName, contactPhone, lines" },
+        { error: "Missing required fields: contactPhone, lines" },
         { status: 400 }
       );
     }
@@ -73,7 +74,9 @@ export async function POST(request: NextRequest) {
     const createdOrders = await createOrdersFromLines(
       {
         companyId, userId: user.id, sapCardCode: user.sapCardCode || null,
-        customerName, deliveryAddress: shipTo.address, contactPhone, contactEmail: contactEmail || null,
+        // From SAP, never from the browser — must match the customer master.
+        customerName: sapCustomerName || user.sapCardName || user.fullName,
+        deliveryAddress: shipTo.address, contactPhone, contactEmail: contactEmail || null,
         remark: remark || null, language: language === "en" ? "en" : "vi",
         billToCode: billTo.name, billingAddress: billTo.address, shipToCode: shipTo.name,
       },
