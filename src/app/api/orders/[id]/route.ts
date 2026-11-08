@@ -26,7 +26,7 @@ export async function GET(
   const companyId = getCompanyId();
 
   const order = await queryOne(
-    `SELECT id, order_number, customer_name, delivery_address, contact_phone, contact_email,
+    `SELECT id, order_number, customer_name, delivery_address, billing_address, contact_phone, contact_email,
             subtotal, discount_total, grand_total, remark, status, sap_doc_entry, sap_doc_num, created_at
      FROM orders WHERE company_id = ? AND id = ? AND user_id = ?`,
     [companyId, orderId, user.id]
@@ -90,10 +90,6 @@ export async function PATCH(
   const updates: string[] = [];
   const values: string[] = [];
 
-  if (typeof body.deliveryAddress === "string") {
-    updates.push("delivery_address = ?");
-    values.push(body.deliveryAddress.trim());
-  }
   if (typeof body.contactPhone === "string") {
     updates.push("contact_phone = ?");
     values.push(body.contactPhone.trim());

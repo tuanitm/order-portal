@@ -13,6 +13,7 @@ interface OrderDetail {
   order_number: string;
   customer_name: string | null;
   delivery_address: string | null;
+  billing_address: string | null;
   contact_phone: string | null;
   contact_email: string | null;
   subtotal: string;
@@ -180,7 +181,7 @@ export default function OrderDetailPage({
   // Editing own delivery info (address/phone/remark) — only while the
   // order hasn't been pushed to SAP (see the PATCH route).
   const [isEditingInfo, setIsEditingInfo] = useState(false);
-  const [infoDraft, setInfoDraft] = useState({ deliveryAddress: "", contactPhone: "", remark: "" });
+  const [infoDraft, setInfoDraft] = useState({ contactPhone: "", remark: "" });
   const [isSavingInfo, setIsSavingInfo] = useState(false);
   const [infoError, setInfoError] = useState("");
 
@@ -230,7 +231,6 @@ export default function OrderDetailPage({
   const startEditInfo = () => {
     if (!order) return;
     setInfoDraft({
-      deliveryAddress: order.delivery_address || "",
       contactPhone: order.contact_phone || "",
       remark: order.remark || "",
     });
@@ -385,15 +385,7 @@ export default function OrderDetailPage({
                       onChange={(e) => setInfoDraft({ ...infoDraft, contactPhone: e.target.value })}
                     />
                   </div>
-                  <div>
-                    <div style={{ fontSize: "0.75rem", color: "var(--text-tertiary)", marginBottom: "0.25rem" }}>{t("checkout.deliveryAddress")}</div>
-                    <input
-                      className="input"
-                      style={{ width: "100%" }}
-                      value={infoDraft.deliveryAddress}
-                      onChange={(e) => setInfoDraft({ ...infoDraft, deliveryAddress: e.target.value })}
-                    />
-                  </div>
+                  <div style={{ fontSize: "0.75rem", color: "var(--text-tertiary)" }}>{t("checkout.addressChangeHint")}</div>
                   <div>
                     <div style={{ fontSize: "0.75rem", color: "var(--text-tertiary)", marginBottom: "0.25rem" }}>{t("checkout.remark")}</div>
                     <textarea
@@ -428,6 +420,12 @@ export default function OrderDetailPage({
                 <div style={{ fontSize: "0.75rem", color: "var(--text-tertiary)", marginBottom: "0.125rem" }}>{t("checkout.contactEmail")}</div>
                 <div style={{ fontWeight: 600 }}>{order.contact_email || "—"}</div>
               </div>
+              {order.billing_address && (
+                <div style={{ gridColumn: "1 / -1" }}>
+                  <div style={{ fontSize: "0.75rem", color: "var(--text-tertiary)", marginBottom: "0.125rem" }}>{t("checkout.billingAddress")}</div>
+                  <div style={{ fontWeight: 600 }}>{order.billing_address}</div>
+                </div>
+              )}
               <div style={{ gridColumn: "1 / -1" }}>
                 <div style={{ fontSize: "0.75rem", color: "var(--text-tertiary)", marginBottom: "0.125rem" }}>{t("checkout.deliveryAddress")}</div>
                 <div style={{ fontWeight: 600 }}>{order.delivery_address || "—"}</div>

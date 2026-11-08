@@ -59,7 +59,7 @@ export async function queryHana<T = Record<string, unknown>>(sql: string): Promi
   });
 }
 
-/** The configured schema name (e.g. "IMV260806") — queries must qualify table names with it: `"SCHEMA"."@TABLE"`. */
+/** The configured schema name (e.g. "IMV261104") — queries must qualify table names with it: `"SCHEMA"."@TABLE"`. */
 export function getHanaSchema(): string {
   return getConnectionParams().schema;
 }

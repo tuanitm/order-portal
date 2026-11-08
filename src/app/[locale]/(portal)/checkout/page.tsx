@@ -40,13 +40,24 @@ interface OrderLine {
   brandName?: string | null;
 }
 
+interface CustomerAddress { name: string; address: string | null }
+interface AddressBook {
+  billTo: CustomerAddress[];
+  shipTo: CustomerAddress[];
+  billToDefault: string | null;
+  shipToDefault: string | null;
+}
+
 export default function CheckoutPage() {
   const t = useTranslations();
   const locale = useLocale();
   const { items, subtotal, discountTotal, grandTotal, clearCart } = useCart();
 
   const [customerName, setCustomerName] = useState("");
-  const [deliveryAddress, setDeliveryAddress] = useState("");
+  // The customer's SAP addresses — picked from a list, never typed (see POST /api/orders).
+  const [addressBook, setAddressBook] = useState<AddressBook | null>(null);
+  const [billToCode, setBillToCode] = useState("");
+  const [shipToCode, setShipToCode] = useState("");
   const [contactPhone, setContactPhone] = useState("");
   const [contactEmail, setContactEmail] = useState("");
   const [remark, setRemark] = useState("");
@@ -64,7 +75,6 @@ export default function CheckoutPage() {
         const user = data?.user;
         if (!user) return;
         if (user.sapCardName || user.fullName) setCustomerName(user.sapCardName || user.fullName);
-        if (user.address) setDeliveryAddress(user.address);
         if (user.email) setContactEmail(user.email);
         // BP master phone first; if the BP has none, fall back to the portal user's own phone.
         if (user.bpPhone || user.phone) setContactPhone(user.bpPhone || user.phone);
@@ -72,6 +82,17 @@ export default function CheckoutPage() {
       .catch(() => {
         // Not fatal — the customer can just fill the form in manually.
       });
+
+    fetch("/api/orders/addresses")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((book: AddressBook | null) => {
+        if (!book) return;
+        setAddressBook(book);
+        const pick = (list: CustomerAddress[], def: string | null) => (list.find((a) => a.name === def) ?? list[0])?.name ?? "";
+        setBillToCode(pick(book.billTo, book.billToDefault));
+        setShipToCode(pick(book.shipTo, book.shipToDefault));
+      })
+      .catch(() => undefined);
   }, []);
 
   // "Buy item / give item, line by line" — a buy-give promo's free quantity
@@ -163,7 +184,8 @@ export default function CheckoutPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           customerName,
-          deliveryAddress,
+          billToCode,
+          shipToCode,
           contactPhone,
           contactEmail,
           remark,
@@ -303,13 +325,28 @@ export default function CheckoutPage() {
                   onChange={(e) => setCustomerName(e.target.value)} required />
               </div>
 
-              <div className="input-group">
-                <label className="input-label" htmlFor="deliveryAddress">
-                  {t("checkout.deliveryAddress")} *
-                </label>
-                <textarea className="input" id="deliveryAddress" value={deliveryAddress}
-                  onChange={(e) => setDeliveryAddress(e.target.value)} required
-                  rows={3} style={{ resize: "vertical" }} />
+              {([
+                { id: "billToCode", label: t("checkout.billingAddress"), list: addressBook?.billTo ?? [], value: billToCode, set: setBillToCode },
+                { id: "shipToCode", label: t("checkout.deliveryAddress"), list: addressBook?.shipTo ?? [], value: shipToCode, set: setShipToCode },
+              ]).map((f) => (
+                <div className="input-group" key={f.id}>
+                  <label className="input-label" htmlFor={f.id}>
+                    {f.label} *
+                  </label>
+                  <select className="input" id={f.id} value={f.value} required disabled={f.list.length === 0}
+                    onChange={(e) => f.set(e.target.value)}>
+                    {f.list.length === 0 && <option value="">{t("checkout.noAddress")}</option>}
+                    {f.list.map((a) => <option key={a.name} value={a.name}>{a.address || a.name}</option>)}
+                  </select>
+                  {f.list.find((a) => a.name === f.value)?.address && (
+                    <div style={{ fontSize: "0.75rem", color: "var(--text-tertiary)", marginTop: "0.25rem", lineHeight: 1.4, whiteSpace: "pre-wrap" }}>
+                      {f.list.find((a) => a.name === f.value)?.address}
+                    </div>
+                  )}
+                </div>
+              ))}
+              <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)", marginTop: "-0.5rem", lineHeight: 1.4 }}>
+                {t("checkout.addressChangeHint")}
               </div>
 
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>

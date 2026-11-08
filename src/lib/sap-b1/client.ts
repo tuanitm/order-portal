@@ -296,6 +296,8 @@ export interface SapSalesOrderDraft {
   ShipToCode?: string;
   /** Sales Supervisor (value list: user table U_MDM_CD_SEL04). */
   U_CusSEL04?: string;
+  /** Header status UDF — real Sales Orders are created as "I", then updated to "C"; not sent on Drafts. */
+  U_DataStatus?: string;
   DocumentLines: {
     ItemCode: string;
     /** Only set for the synthetic Contract/Promotion Discount lines (see
@@ -1106,6 +1108,15 @@ export class SapB1Client {
   async createSalesOrder(draft: SapSalesOrderDraft): Promise<SapDocumentResponse> {
     await this.ensureSession();
     return this.request<SapDocumentResponse>('POST', '/Orders', draft);
+  }
+
+  /**
+   * Set U_DataStatus on an existing Sales Order. PATCH changes only this
+   * field; a Service Layer PUT replaces the whole document.
+   */
+  async updateSalesOrderDataStatus(docEntry: number, dataStatus: string): Promise<void> {
+    await this.ensureSession();
+    await this.request('PATCH', `/Orders(${docEntry})`, { U_DataStatus: dataStatus });
   }
 
   /**

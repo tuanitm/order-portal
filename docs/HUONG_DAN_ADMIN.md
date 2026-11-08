@@ -1,388 +1,314 @@
-# Hướng dẫn sử dụng – Phần Quản trị (Admin)
+# Hướng dẫn sử dụng – Dành cho Người dùng Quản trị
 
-**Cổng Đặt Hàng / Ordering Portal – IMV**
+**Cổng Đặt Hàng – IMV**
 
-Tài liệu dành cho nhân viên quản trị vận hành cổng đặt hàng: duyệt khách hàng, đồng bộ dữ liệu từ SAP B1, quản lý giá – chiết khấu – khuyến mãi và xử lý đơn hàng.
+Tài liệu dành cho nhân viên quản trị: duyệt khách hàng, tạo và xử lý đơn hàng, đẩy đơn lên SAP Business One, xem tồn kho, quản lý dữ liệu đồng bộ từ SAP và phân quyền.
 
-> Giao diện quản trị hiển thị bằng **tiếng Anh**. Tài liệu này giữ nguyên tên menu, nút bấm tiếng Anh (in **đậm**) và giải thích bằng tiếng Việt.
+Địa chỉ truy cập: **https://order.imv.com.vn/vi/admin**
+
+> Giao diện quản trị hiển thị bằng **tiếng Anh**. Tài liệu giữ nguyên tên menu, nút bấm tiếng Anh (in **đậm**) và giải thích bằng tiếng Việt.
 
 ---
 
 ## Mục lục
 
 1. [Tổng quan hệ thống](#1-tổng-quan-hệ-thống)
-2. [Đăng nhập quản trị](#2-đăng-nhập-quản-trị)
-3. [Quy trình vận hành khuyến nghị](#3-quy-trình-vận-hành-khuyến-nghị)
-4. [Dashboard và Quick sync](#4-dashboard-và-quick-sync)
-5. [Customers Approval – Duyệt khách hàng](#5-customers-approval--duyệt-khách-hàng)
-6. [SAP Customers](#6-sap-customers)
-7. [Customer Groups – Nhóm khách hàng](#7-customer-groups--nhóm-khách-hàng)
-8. [Catalog Visibility – Ẩn/hiện hàng hóa theo khách hàng](#8-catalog-visibility--ẩnhiện-hàng-hóa-theo-khách-hàng)
-9. [Items – Sản phẩm](#9-items--sản-phẩm)
-10. [Item Groups – Nhóm hàng](#10-item-groups--nhóm-hàng)
-11. [Price Lists – Bảng giá](#11-price-lists--bảng-giá)
-12. [Contract Discounts – Chiết khấu hợp đồng](#12-contract-discounts--chiết-khấu-hợp-đồng)
-13. [Promotion Discounts – Khuyến mãi](#13-promotion-discounts--khuyến-mãi)
-14. [Orders – Xử lý đơn hàng](#14-orders--xử-lý-đơn-hàng)
-15. [Admin Users và Admin Roles – Phân quyền](#15-admin-users-và-admin-roles--phân-quyền)
-16. [Cách hệ thống tính giá cho khách hàng](#16-cách-hệ-thống-tính-giá-cho-khách-hàng)
-17. [Vận hành, cập nhật file, đồng bộ tự động](#17-vận-hành-cập-nhật-file-đồng-bộ-tự-động)
-18. [Sự cố thường gặp](#18-sự-cố-thường-gặp)
+2. [Đăng nhập, tài khoản và menu](#2-đăng-nhập-tài-khoản-và-menu)
+3. [Thiết lập lần đầu và công việc hằng ngày](#3-thiết-lập-lần-đầu-và-công-việc-hằng-ngày)
+4. [Dashboard và đồng bộ nhanh](#4-dashboard-và-đồng-bộ-nhanh)
+5. [Duyệt khách hàng – Customer Approval](#5-duyệt-khách-hàng--customer-approval)
+6. [Danh sách đơn hàng và tạo đơn thay khách – Self create](#6-danh-sách-đơn-hàng-và-tạo-đơn-thay-khách--self-create)
+7. [Xử lý một đơn hàng và đẩy lên SAP](#7-xử-lý-một-đơn-hàng-và-đẩy-lên-sap)
+8. [Tồn kho – Inventory](#8-tồn-kho--inventory)
+9. [Dữ liệu gốc – Master Data](#9-dữ-liệu-gốc--master-data)
+10. [Giá, chiết khấu và khuyến mãi](#10-giá-chiết-khấu-và-khuyến-mãi)
+11. [Cài đặt – Settings](#11-cài-đặt--settings)
+12. [Sự cố thường gặp](#12-sự-cố-thường-gặp)
+13. [Ghi chú vận hành cho bộ phận IT](#13-ghi-chú-vận-hành-cho-bộ-phận-it)
 
 ---
 
 ## 1. Tổng quan hệ thống
 
-| Luồng | Diễn biến |
+Cổng Đặt Hàng là nơi khách hàng (đại lý, nhà phân phối) tự đặt hàng, và nơi nhân viên quản trị kiểm tra rồi đẩy đơn vào **SAP Business One**. Nhân viên cũng có thể **tạo đơn thay khách hàng**, giúp tiết kiệm giấy phép người dùng SAP.
+
+| Bước | Diễn biến |
 |---|---|
-| **Dữ liệu chủ** (khách hàng, sản phẩm, bảng giá, chiết khấu, khuyến mãi) | SAP B1 → *đồng bộ* → Cơ sở dữ liệu MySQL của cổng (bản sao dữ liệu SAP, tài khoản, đơn hàng) → Cửa hàng của khách hàng (giá, khuyến mãi, giỏ hàng, đặt hàng) |
-| **Đơn hàng** | Khách hàng gửi đơn → lưu vào MySQL → Admin kiểm tra → **Confirm & Push to SAP** → Draft Sales Order trong SAP B1 |
+| 1. Tạo đơn | Khách đặt trên cổng, hoặc admin tạo đơn thay khách (**Self create**) |
+| 2. Chờ xác nhận | Đơn lưu trên cổng với trạng thái **Submitted** |
+| 3. Kiểm tra | Admin kiểm tra tồn kho, điều chỉnh số lượng xác nhận, trao đổi với khách |
+| 4. Đẩy lên SAP | **Confirm & Push to SAP** tạo Draft hoặc Sales Order trong SAP |
+| 5. Theo dõi | Số chứng từ, số SO trong SAP và trạng thái đơn |
 
-- Dữ liệu chủ (khách hàng, sản phẩm, bảng giá, chiết khấu, khuyến mãi) **lấy từ SAP** và được lưu bản sao trong MySQL. Khách hàng luôn xem dữ liệu bản sao này, nên cần **đồng bộ lại** khi SAP thay đổi.
-- Khi khách hàng đặt hàng, đơn được **lưu vào MySQL trước**. Admin kiểm tra rồi bấm **Confirm & Push to SAP** để tạo **Draft Sales Order** trong SAP.
-- Múi giờ hệ thống: **giờ Việt Nam (UTC+7)**.
-
----
-
-## 2. Đăng nhập quản trị
-
-1. Mở địa chỉ: `https://order.imv.com.vn/vi/admin` (hoặc `/en/admin`).
-2. Nhập **Email quản trị** và **Mật khẩu**, bấm **Đăng nhập**.
-3. Có hai loại tài khoản:
-   - **Super-admin** (khai báo trong `config.json` / file `.env`): luôn có toàn quyền.
-   - **Admin user** do Super-admin tạo tại menu **Admin Users**, chỉ thấy các menu được gán quyền.
-4. Phiên đăng nhập có hiệu lực **8 giờ**. Hết hạn cần đăng nhập lại.
-5. Cuối thanh menu bên trái có email đang đăng nhập và liên kết **← Cổng đặt hàng** để quay về trang khách hàng.
-
-Menu bên trái gồm: Dashboard, Customers Approval, SAP Customers, Customer Groups, Catalog Visibility, Items, Item Groups, Price Lists, Contract Discounts, Promotion Discounts, Orders, Admin Users, Admin Roles. Menu nào bạn không được cấp quyền sẽ không hiển thị.
+- **Dữ liệu lấy từ SAP:** khách hàng (kèm địa chỉ và Sales Supervisor), nhóm khách hàng, nhóm hàng, sản phẩm, kho, tồn kho, bảng giá, chiết khấu kỳ, chiết khấu hợp đồng, khuyến mãi. Dữ liệu được đồng bộ theo lịch hoặc khi bấm nút đồng bộ.
+- **Múi giờ:** giờ Việt Nam (UTC+7).
 
 ---
 
-## 3. Quy trình vận hành khuyến nghị
+## 2. Đăng nhập, tài khoản và menu
+
+1. Mở **https://order.imv.com.vn/vi/admin**, nhập email quản trị và mật khẩu, bấm **Đăng nhập**.
+2. Phiên đăng nhập có hiệu lực **8 giờ**.
+3. Đổi mật khẩu của mình tại **Settings → My Profile**.
+
+| Loại tài khoản | Quyền |
+|---|---|
+| **Root** (Super Admin) | Toàn quyền: thấy mọi khách hàng, mọi kho trong danh sách kho của công ty và các mục chỉ dành cho Root |
+| **Admin user** | Chỉ thấy các menu được vai trò (Role) cho phép; chỉ thấy khách hàng thuộc nhóm khách được gán, nhóm hàng được gán và **kho được gán** (xem mục 11.4) |
+
+**Bản đồ menu**
+
+| Nhóm menu | Mục | Dùng để |
+|---|---|---|
+| Dashboard | Dashboard | Số liệu tổng quan, đồng bộ nhanh |
+| Customer Approval | Customer Approval | Duyệt, từ chối, tạo khách hàng trong SAP |
+| Orders | Orders | Tạo, xử lý, đẩy đơn lên SAP |
+| Inventory | Inventory | Tồn kho trực tiếp từ SAP, kèm % hạn sử dụng còn lại |
+| Master Data | Customer Groups, SAP Customers, Item Groups, Items, Warehouses | Dữ liệu gốc đồng bộ từ SAP |
+| Price & Discount | Price Lists, Contract Discount, Promotion Discount | Bảng giá, chiết khấu, khuyến mãi |
+| Settings | My Profile, Catalog Visibility | Đổi mật khẩu; ẩn/hiện hàng và kho cho khách hàng |
+| Settings (chỉ Root) | SAP Sync Config, Reset the Id, Admin Roles, Admin Users, Audit Logs | Lịch đồng bộ, cách đẩy đơn, bảo trì, phân quyền, nhật ký |
+
+> **Biểu tượng chuông** ở góc phải trên cùng báo tin nhắn mới của khách trong các đơn hàng. Bấm vào để mở thẳng đơn đó.
+
+---
+
+## 3. Thiết lập lần đầu và công việc hằng ngày
 
 ### 3.1. Thiết lập lần đầu (làm theo thứ tự)
 
-| Bước | Việc cần làm | Menu |
-|---|---|---|
-| 1 | Nhập **nhóm khách hàng** từ SAP (quyết định khách hàng nào được đồng bộ) | Customer Groups |
-| 2 | Nhập **nhóm hàng** từ SAP (quyết định sản phẩm nào được đồng bộ) | Item Groups |
-| 3 | Đồng bộ **bảng giá**, đánh dấu 1 bảng **Base** và các bảng **Channel** | Price Lists |
-| 4 | Đồng bộ **khách hàng SAP** | SAP Customers |
-| 5 | Đồng bộ **sản phẩm** | Items |
-| 6 | Đồng bộ **chiết khấu hợp đồng** | Contract Discounts |
-| 7 | Nhập **khuyến mãi** | Promotion Discounts |
-| 8 | Tạo tài khoản admin và phân quyền (nếu cần) | Admin Users / Admin Roles |
+1. **Customer Groups** → **Sync from SAP (HANA)**, bật **Active** cho các nhóm khách cần bán.
+2. **Item Groups** → đồng bộ, bật **Active** cho các nhóm hàng cần bán, bấm **Save Changes**.
+3. **Price Lists** → đồng bộ, đánh dấu đúng một bảng **Base** và các bảng **Channel**.
+4. **SAP Customers** → **Sync from SAP** (lấy cả địa chỉ và Sales Supervisor).
+5. **Items** → **Sync from SAP**.
+6. **Warehouses** → đồng bộ kho và tồn kho, đánh dấu kho **Included**.
+7. **Contract Discount** và **Promotion Discount** → đồng bộ.
+8. **Admin Roles**, **Admin Users** → tạo vai trò, tài khoản; gán nhóm khách, nhóm hàng và kho.
+9. **SAP Sync Config** → đặt lịch đồng bộ tự động và cách đẩy đơn.
 
 ### 3.2. Công việc hằng ngày
 
-1. Vào **Customers Approval** → duyệt hoặc từ chối khách hàng đăng ký mới.
-2. Vào **Orders** → kiểm tra đơn mới (trạng thái **Submitted**) → **Confirm & Push to SAP**.
-3. Khi SAP có thay đổi giá / khuyến mãi / sản phẩm → bấm nút đồng bộ tương ứng (hoặc chờ đồng bộ tự động lúc 03:00, xem [mục 17](#17-vận-hành-cập-nhật-file-đồng-bộ-tự-động)).
+- **Customer Approval:** duyệt khách hàng mới.
+- **Orders:** xử lý đơn **Submitted**, trả lời tin nhắn, đẩy đơn lên SAP; tạo đơn thay khách khi cần.
+- **Đồng bộ:** khi SAP thay đổi giá, khuyến mãi hoặc sản phẩm, bấm đồng bộ hoặc chờ lịch tự động.
 
 ---
 
-## 4. Dashboard và Quick sync
+## 4. Dashboard và đồng bộ nhanh
 
-**Dashboard** hiển thị các ô thống kê, bấm vào ô để đến trang tương ứng:
+Dashboard hiển thị các ô số liệu (bấm vào để mở trang tương ứng): khách chờ duyệt, khách đã duyệt, cặp nhóm hàng được bán, số sản phẩm đã đồng bộ, số bảng giá, số đơn hàng.
 
-- **Pending customer requests** – số khách hàng đang chờ duyệt.
-- **Approved customers** – số khách hàng đã duyệt.
-- **Sellable category pairs** – số cặp nhóm hàng được phép bán.
-- **Synced items** – số sản phẩm đã đồng bộ.
-- **Price lists** – số bảng giá.
-- **Orders** – tổng số đơn hàng.
+Khung **Quick sync** có các nút đồng bộ theo yêu cầu: **Sync SAP customers**, **Sync items from SAP**, **Sync price lists from SAP**, **Sync period discounts from SAP**, **Sync contract discounts from SAP**. Nếu lỗi, nội dung lỗi SAP trả về hiện ngay cạnh nút.
 
-Khung **Quick sync** có các nút đồng bộ theo yêu cầu:
+> **Chỉ đồng bộ chương trình đang hiệu lực:** chiết khấu hợp đồng và khuyến mãi chỉ lấy các chương trình **có hiệu lực hôm nay**. Chương trình bắt đầu từ ngày mai sẽ xuất hiện sau lần đồng bộ đầu tiên vào ngày bắt đầu.
 
-| Nút | Tác dụng |
+---
+
+## 5. Duyệt khách hàng – Customer Approval
+
+Khách tự đăng ký trên cổng ở trạng thái **Pending**. Bộ lọc: **Pending**, **Approved**, **Rejected**, **All**.
+
+### 5.1. Khách đã có trong SAP (tìm thấy MST)
+
+1. Kiểm tra **BP Code / BP Name / Group**: đối tác SAP khách đã liên kết. Đây là căn cứ tính giá, chiết khấu, khuyến mãi.
+2. Bấm **✓ Approve**. Hệ thống liên kết tài khoản với khách SAP và gửi email báo cho khách.
+
+### 5.2. Khách mới (chưa có trong SAP)
+
+1. Bấm **Create in SAP & Approve**.
+2. Kiểm tra và hoàn thiện: **Name**, **MST**, **Customer Group 3**, **Price List**, **Billing Address** (bắt buộc), **Shipping Address** (để trống = giống địa chỉ xuất hóa đơn), người liên hệ, điện thoại, email, tiền tệ, ghi chú.
+3. Bấm **Create & Approve**: hệ thống tạo Business Partner trong SAP rồi duyệt tài khoản.
+
+### 5.3. Các thao tác khác
+
+- **✕ Reject:** nhập lý do (bắt buộc). Khách thấy lý do khi đăng nhập.
+- **↻ Resync SAP:** đọc lại bảng giá và nhóm khách của riêng khách đó sau khi SAP thay đổi.
+
+---
+
+## 6. Danh sách đơn hàng và tạo đơn thay khách – Self create
+
+### 6.1. Danh sách đơn
+
+- **Lọc theo:** thương hiệu, khách hàng (mã hoặc tên), **Doc No** (mã đơn trên cổng hoặc SAP) và trạng thái.
+- **Các cột:** Brand, Order #, Cust Code, Cust Name, Total, SAP Doc #, SAP SO #, Status, Created.
+- **Mã đơn** có dạng `SO-{Mã khách}-{yymmdd}-{3 số}`, ví dụ `SO-GTSO0701-261027-771`.
+
+### 6.2. Tạo đơn thay khách hàng – nút ＋ Self create
+
+Nút nằm sau ô tìm **Doc No**. Dùng để nhập đơn cho khách hàng hoặc nhà phân phối không tự đặt trên cổng. Giá và khuyến mãi trong hộp thoại **giống hệt** giá khách thấy trên cổng.
+
+```
++- Create sales order 
+| Customer  [ma / ten / MST  v]     Warehouse [1001 v]  Supervisor [   v]
+| Bill to   [GTSO0701_001 v]         Ship to   [GTSO0701_001 v]
++------------------------------------------------------------------------
+| [+ Add item: go ma hoac ten, Enter]
+| Code  Name (2 dong...) Avail Qty UoM  Base STD% CT% PM%  Unit  Total
+|       [% GT260100024 - 30% v]   [Qua: Buy 1 get 1 - D72306101 v]
+|  L Gift ...                  24  Cai   0                        0
++------------------------------------------------------------------------
+| Remark [..............]          Subtotal / Discount / Total
+|                                           [Cancel]  [Create order]
++------------------------------------------------------------------------
+```
+
+1. **Customer:** gõ mã, tên hoặc MST rồi chọn. Chỉ hiện khách thuộc nhóm khách được gán cho bạn; khách bị khóa hiện nhưng không chọn được. Bên dưới cho biết bảng giá, nhóm khách và khách có tài khoản cổng hay không.
+2. **Bill to / Ship to:** tự chọn địa chỉ mặc định trong SAP; có thể đổi sang địa chỉ khác của khách. Địa chỉ đầy đủ hiện ngay dưới ô chọn.
+3. **Warehouse:** chỉ các **kho được gán cho bạn**. Đổi kho sẽ cập nhật lại Avail Qty và giá.
+4. **Sales supervisor:** tự chọn theo mặc định của khách trong SAP (nếu có), có thể đổi.
+5. **Thêm hàng:** gõ mã hoặc tên, **Enter** thêm mặt hàng đang chọn và chuyển con trỏ vào ô **Qty**; Enter trong ô Qty quay lại ô tìm hàng. Thêm lại cùng mặt hàng sẽ tăng số lượng.
+6. **Khuyến mãi:** nhãn 🏷 (chiết khấu %) và 🎁 (tặng hàng) nằm dưới tên hàng. Khi có nhiều chương trình, bấm vào nhãn để chọn; danh sách hiện tên đầy đủ của từng chương trình. Dòng quà tặng tự tính, hiện thụt vào, giá 0.
+7. **Tên hàng dài** hiện tối đa 2 dòng; rê chuột để xem đầy đủ hoặc bấm vào tên để mở rộng.
+8. Nhập **Remark** (gửi lên SAP thành Comments), xem Subtotal / Discount / Total, bấm **Create order**.
+
+> **Kiểm tra trước khi tạo:** số lượng vượt Avail Qty hiện màu đỏ và hệ thống hỏi xác nhận khi tạo. Đơn có hàng nhiều thương hiệu được **tách thành nhiều đơn**, mỗi đơn một thương hiệu (nút đổi thành *Create N orders*). Esc hoặc bấm ra ngoài sẽ hỏi trước khi bỏ đơn đang nhập.
+
+Sau khi tạo, hộp thoại hiện liên kết tới đơn mới (trạng thái **Submitted**). Đơn đi theo quy trình duyệt bình thường ở mục 7. Nếu khách có tài khoản cổng, khách cũng thấy đơn trong *Đơn hàng của tôi*.
+
+---
+
+## 7. Xử lý một đơn hàng và đẩy lên SAP
+
+### 7.1. Thông tin trên trang đơn
+
+- **Đầu đơn:** địa chỉ giao (Ship to), xuất hóa đơn (Bill to), điện thoại, Sales supervisor, ghi chú, người tạo (với đơn Self create).
+- **Dòng hàng:** Item Code, Item Name, **Avail Qty**, Qty, **Cfm Qty**, UoM, Base Price, STD / CT / PM Disc %, Unit Price, Line Total. Dòng quà tặng giá 0.
+- **Messages:** trao đổi với khách ngay trong đơn.
+
+### 7.2. Các bước xử lý
+
+1. Chọn **Warehouse** (chỉ các kho được gán cho bạn) và bấm **Get Stock** để lấy tồn kho trực tiếp từ SAP. Avail Qty xanh = đủ hàng, đỏ = thiếu.
+2. Nếu thiếu hàng, sửa **Cfm Qty** (số lượng xác nhận). Quà tặng tự tính lại theo tỷ lệ chương trình. **Line Total, Discount và Total** của đơn được tính lại theo Cfm Qty.
+3. Dòng có Cfm Qty khác Qty cần khách **Đồng ý / Từ chối** trên trang đơn của họ. Dòng khách từ chối không được đẩy lên SAP và tính là 0.
+4. Bấm **Confirm & Push to SAP**. Ngay trước khi đẩy, hệ thống kiểm tra lại tồn kho thực tế và tự giảm Cfm Qty nếu kho không đủ.
+5. Thành công: đơn nhận **SAP Doc #** và đổi trạng thái theo **Post SO Mode** (Draft → **SAP Draft Created**; Sales Order → **Approved**). Nếu lỗi, nội dung lỗi SAP hiện cạnh nút.
+6. Cập nhật trạng thái theo tiến độ bằng ô chọn cạnh nhãn trạng thái; mỗi lần đổi được ghi lại kèm thời gian.
+
+### 7.3. Dữ liệu gửi lên SAP
+
+| Trường | Giá trị |
 |---|---|
-| **Sync SAP customers** | Cập nhật danh sách khách hàng từ SAP |
-| **Sync items from SAP** | Cập nhật sản phẩm, giá, ảnh từ SAP |
-| **Sync price lists from SAP** | Cập nhật bảng giá |
-| **Sync contract discounts from SAP** | Cập nhật chiết khấu hợp đồng |
-| **Sync promotion discounts from SAP** | Nhập khuyến mãi (xem [mục 13](#13-promotion-discounts--khuyến-mãi)) |
+| Khách hàng, kho, ghi chú | Mã khách (CardCode), kho đã chọn trên mỗi dòng, Remark → Comments |
+| PayToCode / ShipToCode | Địa chỉ chọn khi Self create (đơn từ cổng dùng mặc định của khách) |
+| U_CusSEL04 | Sales Supervisor (khi có chọn) |
+| Dòng hàng: Dscription, U_INVDesc | Tên hàng trong SAP; U_INVDesc giống Dscription |
+| Dòng quà tặng: U_INVDesc | Tên hàng + *- HÀNG KHUYẾN MÃI KHÔNG THU TIỀN* |
+| Dòng quà tặng: U_CTKM, U_CTKM_NAME | Mã và tên chương trình tặng hàng đã chọn |
+| Dòng CK…98 / CK…99 | Chiết khấu hợp đồng / chiết khấu khuyến mãi (CK…99 có U_CTKM) |
 
-Lưu ý: **Customer Groups** và **Item Groups** đồng bộ trực tiếp từ SAP HANA ở trang riêng của mỗi mục (xem [mục 7](#7-customer-groups--nhóm-khách-hàng) và [mục 10](#10-item-groups--nhóm-hàng)) — không còn qua file Excel.
+### 7.4. Nhân bản và hủy đơn
 
-Sau khi bấm nút, nếu lỗi hệ thống hiển thị **mã lỗi và nội dung SAP trả về** ngay cạnh nút để bạn biết nguyên nhân.
+- **⧉ Duplicate:** mở hộp thoại tạo đơn, điền sẵn khách, địa chỉ, kho, supervisor, ghi chú và các mặt hàng của đơn hiện tại, với giá **hôm nay**. Sửa nếu cần rồi bấm **Create order**. Những gì không sao chép được nguyên vẹn (hết khuyến mãi, hết hàng…) được liệt kê ở cuối hộp thoại.
+- **Cancel Order:** hủy đơn (và bản nháp SAP nếu có). Không hủy được khi đơn đã là Sales Order chính thức trong SAP.
 
----
+### 7.5. Trạng thái đơn
 
-## 5. Customers Approval – Duyệt khách hàng
-
-Khách hàng tự đăng ký trên cổng sẽ ở trạng thái **Pending** cho đến khi admin xử lý.
-
-**Bộ lọc:** **Pending**, **Approved**, **Rejected**, **All**.
-
-**Các cột:** Customer Name, Email, Phone, Tax Code (MST), BP Code, BP Name, Group, Registered At, Status, Actions.
-
-- **BP Code / BP Name / Group**: mã và tên đối tác trong SAP mà khách hàng đã liên kết khi đăng ký bằng MST. Đây là căn cứ để tính **bảng giá, chiết khấu và khuyến mãi** cho khách.
-
-**Duyệt khách hàng**
-1. Kiểm tra thông tin, đặc biệt **BP Code** có đúng đối tác không.
-2. Bấm **✓ Approve** → xác nhận.
-3. Hệ thống: chuyển trạng thái sang **Approved**, liên kết tài khoản (email) vào bản ghi khách hàng SAP và **gửi email thông báo** cho khách.
-
-**Từ chối**
-1. Bấm **✕ Reject**.
-2. Nhập **lý do từ chối** (bắt buộc) → **Confirm Reject**.
-3. Khách sẽ thấy thông báo bị từ chối kèm lý do khi đăng nhập.
-
-**↻ Resync SAP** (hiện với khách đã có BP Code): đọc lại thông tin đối tác từ SAP (bảng giá, nhóm khách hàng) cho riêng khách đó. Dùng khi SAP vừa đổi bảng giá hoặc nhóm của khách.
-
-> Nếu khách không có BP Code (không nhập MST hoặc không tìm thấy trong SAP), họ vẫn duyệt được nhưng **không có giá theo bảng giá riêng và không thể đẩy đơn lên SAP**. Cần bổ sung liên kết trước khi xác nhận đơn.
-
----
-
-## 6. SAP Customers
-
-Danh sách khách hàng lấy từ SAP (chỉ các nhóm khách hàng đang **Active** trong [Customer Groups](#7-customer-groups--nhóm-khách-hàng)).
-
-- **Sync from SAP**: đồng bộ lại danh sách.
-- Ô tìm kiếm: theo tên, **Card Code** hoặc **MST**.
-- **Nhấp đúp** vào tiêu đề cột để sắp xếp.
-- Các cột: Card Code, Name, MST, Group, Price List, Phone, Account (email tài khoản cổng đã liên kết), **Enable**.
-
-**Khóa / mở khóa khách hàng:** bỏ tick cột **Enable** để chặn khách đăng nhập và đặt hàng. Khách bị khóa sẽ thấy thông báo:
-
-> *This account was blocked, please contact Admin 0908404678 to enable account again.*
-
-Tick lại **Enable** để mở khóa.
-
----
-
-## 7. Customer Groups – Nhóm khách hàng
-
-Nhóm khách hàng có **3 cấp** (Level 1 → 3). Trang này vừa để quản lý nhóm, vừa **quyết định phạm vi đồng bộ**: chỉ khách hàng thuộc các cặp (CusGrp01, CusGrp02) được liệt kê mới được kéo về.
-
-**Cập nhật danh sách nhóm**
-- **Sync from SAP (HANA)**: đồng bộ trực tiếp tên nhóm từ SAP HANA — cách duy nhất để cập nhật tự động.
-- **Add Customer Group Manually**: chọn **Level**, nhập **Code** (bắt buộc), **Parent Code** (không bắt buộc), **Name** → thêm.
-- Mỗi dòng có thể sửa (**Save** / **Cancel**).
-
-**Cột Active – bật/tắt nhóm**
-- Tắt **Active** → dừng đồng bộ khách hàng thuộc nhóm đó.
-- Nhóm khách hàng **lan truyền hai chiều**:
-  - Tắt nhóm cha → tất cả nhóm con bị tắt, ghi chú **(parent off)**.
-  - Bật lại nhóm cha → các nhóm con cũng được bật lại.
-
----
-
-## 8. Catalog Visibility – Ẩn/hiện hàng hóa theo khách hàng
-
-Mặc định **mọi khách hàng thấy mọi sản phẩm**. Trang này cho phép **ẩn** (hoặc hiện) một nhóm hàng đối với một nhóm khách hàng.
-
-**Thêm quy tắc (Add Visibility Rule)**
-1. Chọn **Customer Group**.
-2. Chọn **Item Group**.
-3. Chọn **Visibility**: **✓ Visible** hoặc **✕ Hidden**.
-4. Thêm quy tắc. Bấm vào biểu tượng trạng thái trong danh sách để đảo ẩn/hiện, hoặc xóa quy tắc (hỏi xác nhận).
-
-**Nguyên tắc**
-- Quy tắc **kế thừa xuống dưới**: áp dụng cho nhóm khách hàng đó cùng mọi nhóm con, và cho nhóm hàng đó cùng mọi nhóm hàng con và sản phẩm bên dưới.
-- Chỉ **ẩn**, không cấp thêm quyền: nếu không có quy tắc nào → khách vẫn thấy tất cả.
-- Hiện chỉ điều khiển được **nhóm hàng cấp 1 đến 3**.
-
-**Per-customer Override – ngoại lệ cho từng khách**
-- Nhập **ID người dùng** của khách (lấy ở trang Customers) → **Look up** → chỉnh → **Save overrides**.
-- Ngoại lệ theo từng khách **luôn thắng** quy tắc theo nhóm.
-
----
-
-## 9. Items – Sản phẩm
-
-Danh sách sản phẩm đã đồng bộ từ SAP.
-
-- **Sync from SAP**: đồng bộ sản phẩm (có thể mất khoảng một phút).
-- Tìm theo tên hoặc mã; **nhấp đúp** tiêu đề cột để sắp xếp.
-- Các cột: **Item Code**, **Name**, **Item Group** (hiển thị chuỗi nhóm, ví dụ `D1 / D11 / D111`), **Base Price**, **Visible**.
-- **Visible**: công tắc ẩn/hiện **từng sản phẩm** trên cửa hàng, không ảnh hưởng nhóm hàng. Lựa chọn này **được giữ nguyên qua các lần đồng bộ**.
-
-**Ảnh sản phẩm:** ảnh lấy từ trường **`U_ImageURL`** trong SAP Item Master (một đường dẫn đầy đủ `https://...`). Sau khi đồng bộ, ảnh hiển thị trên thẻ sản phẩm; sản phẩm chưa có ảnh hiển thị biểu tượng 📦.
-
-**Điều kiện để một sản phẩm được đồng bộ:** thuộc nhóm hàng đang **Active** (xem mục 10) và còn hiệu lực (Valid) trong SAP. Sản phẩm không còn thuộc phạm vi sẽ bị đánh dấu không hoạt động, **không bị xóa**.
-
----
-
-## 10. Item Groups – Nhóm hàng
-
-Nhóm hàng có **6 cấp** (Level 1 → 6). Cấp 2 đóng vai trò "cổng bán hàng": chỉ sản phẩm thuộc các cặp (ItemCat01, ItemCat02) được liệt kê mới được đồng bộ.
-
-**Cập nhật danh sách nhóm**
-- **Import from SAP_Item_Group**: nhập từ file `SAP_Item_Group.xlsx`. Import lại sau khi cập nhật file.
-- **Add Item Group Manually**: chọn **Level**, nhập **Code**, **Parent Code**, **Name**.
-
-**Bật/tắt nhóm hàng (cột Active)**
-- Tắt **Active** → không đồng bộ sản phẩm thuộc nhóm; sản phẩm đã có được đánh dấu **không hoạt động** (không xóa).
-- Quy tắc cha – con:
-  - Nhóm cha **tắt** → nhóm con tự động bị tắt, ghi chú **(parent off)**.
-  - Nhóm cha **bật lại** → nhóm con **không tự bật lại**; phải bật từng nhóm con (khác với Customer Groups).
-- **Chọn nhiều rồi lưu một lần**: thao tác bật/tắt chỉ ở dạng **chờ lưu** (đánh dấu *Staged*). Sau khi chọn xong, bấm **Save Changes** để áp dụng tất cả.
-- **Select All / Select None** (bên phải tiêu đề mỗi cấp): chọn / bỏ chọn nhanh toàn bộ nhóm ở cấp đó và mọi nhóm bên dưới.
-
----
-
-## 11. Price Lists – Bảng giá
-
-- **Sync from SAP**: đồng bộ các bảng giá và giá từng sản phẩm.
-- Tick đúng **một** bảng là **Base** – bảng giá gốc, dùng để hiển thị **giá gạch ngang**.
-- Tick các bảng là **Channel** – bảng giá theo kênh, được gán cho khách hàng. Khách thuộc bảng nào thì thấy giá của bảng đó.
-- Nút **Show active only / Show all synced price lists** để lọc các bảng đã đánh dấu.
-- Phần **Price List Details** xem giá từng sản phẩm của một bảng giá: **Base Price List** (bảng giá nguồn mà SAP dùng để suy ra giá), **Factor** (hệ số), **Base Price** và **Price** (= Base Price × Factor, do SAP tính sẵn).
-
----
-
-## 12. Contract Discounts – Chiết khấu hợp đồng
-
-Hiển thị các **thỏa thuận chiết khấu** từ SAP (CBD): một khách hàng (cụ thể hoặc theo nhóm khách hàng cấp 1–3) được giảm **%** cho sản phẩm (cụ thể hoặc theo nhóm hàng cấp 1–6).
-
-- **Sync agreements from SAP**: đồng bộ các thỏa thuận.
-- Bộ lọc: theo mã khách hàng (CardCode hoặc mã nhóm), **Valid date** (ngày hiệu lực).
-- Các cột: Doc #, Customer Target, Item Target, Discount %, Valid, Status.
-- Phần **Resolved Prices (SpecialPrices)**: nhập **SAP card code** → **Search** để xem giá cụ thể SAP đã tính cho khách; **Sync this customer** để đồng bộ riêng khách đó.
-
----
-
-## 13. Promotion Discounts – Khuyến mãi
-
-Hiển thị khuyến mãi từ chương trình SAP Promotion Program. Mỗi dòng gắn một chương trình với **đối tượng khách hàng** (BP hoặc nhóm BP) và **hàng bán** (sản phẩm hoặc nhóm hàng), kèm **giảm %** hoặc **tặng hàng**.
-
-- **Sync promotion discounts from SAP (HANA)**: đồng bộ trực tiếp từ SAP HANA (không còn qua file Excel) — đây là cách duy nhất để cập nhật dữ liệu khuyến mãi.
-- Bộ lọc: tìm theo **Promotion Code / Name**; **BP code or name**; **item code or name**; **Disc Type** (**Discount Pct** hoặc **Free Item**); **Active only**; **Valid date**.
-
-**Ý nghĩa các cột**
-
-| Cột | Ý nghĩa |
+| Admin thấy | Khách thấy |
 |---|---|
-| Promotion | Mã / tên chương trình |
-| BP Target | Đối tượng áp dụng: một mã BP hoặc một nhóm BP |
-| Disc Type | **Discount** (giảm %) hoặc **Free Item** (mua tặng) |
-| Selling Item | Sản phẩm hoặc nhóm hàng được khuyến mãi |
-| Discount | % giảm |
-| BuyQty | Số lượng mua để được tặng |
-| Free/Bonus Item | Hàng tặng |
-| GiveQty | Số lượng tặng |
-| Valid | Thời gian hiệu lực |
-| Status | Đang hiệu lực hay không |
-
-Loại đối tượng của mỗi dòng được xác định bởi hai cột kỹ thuật: `bp_type` (`2` = mã BP cụ thể, `CG1`–`CG3` = nhóm khách hàng cấp 1–3) và `it_type` (`4` = mã sản phẩm cụ thể, `IC1`–`IC6` = nhóm hàng cấp 1–6). Dòng không có đối tượng khách hàng thì **áp dụng cho mọi khách hàng**.
-
----
-
-## 14. Orders – Xử lý đơn hàng
-
-### 14.1. Danh sách đơn
-
-- Bộ lọc trạng thái: **All, Submitted, Processing, SAP Draft Created, Approved, Completed, Rejected**.
-- Các cột: **Order #**, **Customer**, **Total**, **SAP Doc #**, **Status**, **Created**.
-- Mã đơn có dạng `SO-{Mã BP}-{yymmdd}-{3 số ngẫu nhiên}`, ví dụ `SO-GTSO0701-260919-684`.
-
-### 14.2. Chi tiết đơn và đẩy lên SAP
-
-Bấm vào đơn để xem: khách hàng, địa chỉ, điện thoại, ghi chú và các dòng hàng (**Item, Quantity, Base Unit Price, Unit Price, Discount %, Line Total**), cùng phần **Subtotal, Discount, Total**. Mọi số tiền được làm tròn đến đơn vị đồng.
-
-Dòng hàng tặng (khuyến mãi mua – tặng) có đơn giá **0**.
-
-**Quy trình xử lý**
-1. Đơn mới có trạng thái **Submitted** (khách chờ xác nhận).
-2. Kiểm tra nội dung. Nếu thấy cảnh báo *"This customer has no linked SAP BP code"* thì cần bổ sung BP Code trước.
-3. Bấm **Confirm & Push to SAP**. Hệ thống tạo **Draft Sales Order** trong SAP và chuyển đơn sang **SAP Draft Created**, hiển thị **SAP Doc #**.
-4. Khi đã lên SAP, tiếp tục cập nhật trạng thái theo tiến độ thực tế.
-
-> **Lưu ý:** Khi đẩy lên SAP, hệ thống chỉ gửi **mã hàng, số lượng và đơn giá gốc (Base Unit Price)**. **Không gửi %chiết khấu và đơn giá sau chiết khấu** – SAP B1 tự xử lý cấu trúc giá theo cấu hình của SAP.
-
-Nếu đẩy lỗi, thông báo hiển thị mã lỗi và nội dung SAP trả về bên cạnh nút để xử lý.
-
-### 14.3. Đổi trạng thái đơn
-
-Dùng danh sách chọn cạnh nhãn trạng thái để đổi thủ công.
-
-| Admin thấy | Khách hàng thấy (tiếng Việt) |
-|---|---|
-| Draft | Nháp |
 | Submitted | Chờ xác nhận |
 | Processing | Đang xử lý |
 | SAP Draft Created | Đã đẩy lên SAP |
 | Approved | Đã xác nhận |
-| Rejected | Từ chối |
 | Completed | Hoàn thành |
-
-Mỗi lần đổi trạng thái được **ghi kèm thời gian** vào lịch sử. Khách hàng thấy lịch sử này khi bấm vào nhãn trạng thái trong **Đơn hàng của tôi**.
-
----
-
-## 15. Admin Users và Admin Roles – Phân quyền
-
-### Admin Roles
-- Mở form tạo vai trò, nhập **Role name**, **Description** (không bắt buộc), bấm chọn các mục menu mà vai trò được phép truy cập → **Create role**.
-- Với vai trò đã có, bấm vào từng mục quyền trong danh sách để bật/tắt quyền đó.
-- Quyền được cấp theo **cả mục menu** (không chia nhỏ theo từng hành động).
-- Có thể xóa vai trò (hỏi xác nhận).
-
-### Admin Users
-- **Admin Users** liệt kê các tài khoản bổ sung, ngoài Super-admin khai báo trong cấu hình.
-- Tạo mới: nhập **Full name, Email, Password**, chọn **Role** → **Create admin user**. Cả bốn trường đều bắt buộc.
-- Cột **Active**: bật/tắt tài khoản. Có thể **Delete** (hỏi xác nhận).
+| Rejected | Từ chối |
+| Cancelled | Bạn đã hủy |
 
 ---
 
-## 16. Cách hệ thống tính giá cho khách hàng
+## 8. Tồn kho – Inventory
 
-Giá mỗi khách thấy được tính theo thứ tự, mỗi bước **tính tiếp trên kết quả bước trước**:
+Tồn kho đọc trực tiếp từ SAP: **OnHand**, **Committed** (đơn bán đang mở + yêu cầu chuyển kho + lệnh sản xuất) và **Available**.
 
-1. **Giá gốc trước chiết khấu**: giá của **bảng giá (Channel)** gán cho khách; nếu không có thì dùng **giá cơ bản của sản phẩm**. Đây là **giá gạch ngang** hiển thị cho khách.
-2. **Chiết khấu hợp đồng** (Contract Discounts).
-3. **Chiết khấu khuyến mãi** (Promotion Discounts).
+- **Chọn kho:** ô **🏭 All warehouses** cho phép chọn một hoặc nhiều kho; mặc định chọn tất cả kho của bạn (Root: tất cả kho của công ty). Luôn phải có ít nhất một kho được chọn.
+- **Cột Warehouse:** mỗi mặt hàng hiện một dòng cho mỗi kho; rê chuột để xem tên kho.
+- **Cột Shelf life %** (trước OnHand): % hạn sử dụng còn lại của **lô thấp nhất**. Đỏ dưới 33%, cam dưới 66%, xanh từ 66% trở lên. Số trong ngoặc là số lô; rê chuột để xem từng lô và số lượng. *—* = không có lô ghi ngày.
+- Tìm theo mã hoặc tên hàng; mỗi trang 50 dòng.
 
-**Quy tắc khớp đối tượng**
-
-| | Có thể khớp theo |
-|---|---|
-| Khách hàng | Mã BP, hoặc nhóm khách hàng cấp 1, 2, 3 |
-| Sản phẩm | Mã sản phẩm, hoặc nhóm hàng cấp 1 đến 6 |
-
-- Đối tượng **càng cụ thể càng được ưu tiên**: mã BP hơn nhóm cấp 3, hơn cấp 2, hơn cấp 1; mã sản phẩm hơn nhóm cấp 6, … hơn cấp 1.
-- Chỉ áp dụng chương trình **còn hiệu lực** (trong khoảng ngày bắt đầu – kết thúc).
-- Áp dụng cho nhóm cha thì **mọi nhóm con và sản phẩm bên dưới cũng được áp dụng** (ví dụ khuyến mãi cho nhóm BP `GTSO` áp dụng cho mọi BP thuộc `GTSO`).
-- Giá cuối cùng hiển thị trên cửa hàng được **làm tròn đến đơn vị đồng**.
-- Khuyến mãi **mua – tặng** hiển thị thành một dòng riêng dưới giá của sản phẩm.
+> **Tốc độ:** chọn tất cả kho có thể mất khoảng 10 giây. Chọn ít kho hơn để xem nhanh hơn.
 
 ---
 
-## 17. Vận hành, cập nhật file, đồng bộ tự động
+## 9. Dữ liệu gốc – Master Data
 
-### Đồng bộ tự động hằng ngày
-Hệ thống có tác vụ đồng bộ chạy **lúc 03:00** mỗi ngày (khách hàng, sản phẩm, bảng giá, chiết khấu hợp đồng). Khi chạy bằng Docker, bật bằng:
-
-```bash
-docker compose --profile sync up -d
-```
-
-Chạy ngay một lần: `docker compose run --rm daily-sync node scripts/daily-sync.mjs`.
-
-Bước **Promotions** trong tác vụ tự động đồng bộ trực tiếp từ SAP HANA (không còn phụ thuộc file Excel) — xem [mục 13](#13-promotion-discounts--khuyến-mãi).
-
-### Các file dữ liệu cần cập nhật thủ công
-Nằm ở thư mục gốc của ứng dụng: `SAP_Customer_Group.xlsx`, `SAP_Item_Group.xlsx`, `itemgroup.json`, `custgroup.json`. Sau khi thay file, vào trang tương ứng bấm **Import**. Khi chạy trong Docker, các file này được đóng gói vào ảnh (image) lúc build, nên sau khi thay file cần chạy lại `docker compose up -d --build`.
-
-### Cấu hình
-- `config.json`: thông tin kết nối MySQL, SAP, email, tài khoản Super-admin và `admin.companyPrefix` (tiền tố hiển thị trước tên cổng, ví dụ **IMV**).
-- `.env`: mật khẩu (đã mã hóa).
-- Không chia sẻ các file này ra ngoài.
+- **Customer Groups:** nhóm khách 3 cấp. Chỉ khách thuộc nhóm **Active** mới được đồng bộ. Tắt nhóm cha thì nhóm con tắt theo; bật lại nhóm cha thì nhóm con bật lại.
+- **SAP Customers:** danh sách khách hàng từ SAP; tìm theo tên, Card Code, MST. Đồng bộ cũng lấy **địa chỉ xuất hóa đơn / giao hàng**, địa chỉ mặc định và **Sales Supervisor** dùng trong Self create. Bỏ tích **Enable** để khóa khách (không đăng nhập, không đặt hàng); tích lại để mở.
+- **Item Groups:** nhóm hàng 6 cấp. Bật/tắt **Active** chỉ là thay đổi chờ lưu; bấm **Save Changes** để áp dụng. Bật lại nhóm cha thì phải bật từng nhóm con.
+- **Items:** sản phẩm đã đồng bộ. Công tắc **Visible** ẩn/hiện từng sản phẩm, giữ nguyên qua các lần đồng bộ. Ảnh lấy từ trường `U_ImageURL` trong SAP.
+- **Warehouses:** đồng bộ kho và tồn kho. Đánh dấu **Included** các kho được tính tồn cho khách. **Check Item Stock** xem tồn một mã hàng theo từng kho, kèm % hạn sử dụng.
 
 ---
 
-## 18. Sự cố thường gặp
+## 10. Giá, chiết khấu và khuyến mãi
+
+- **Price Lists:** đánh dấu đúng một bảng **Base** và các bảng **Channel** (bảng giá theo kênh gán cho khách).
+- **Contract Discount:** thỏa thuận chiết khấu % theo khách / nhóm khách và sản phẩm / nhóm hàng. Chỉ thỏa thuận **có hiệu lực hôm nay** được đồng bộ.
+- **Promotion Discount:** chương trình khuyến mãi từ SAP: **Discount** (giảm %) hoặc **Free Item** (mua X tặng Y). Chỉ chương trình **có hiệu lực hôm nay** được đồng bộ.
+
+**Cách tính giá cho khách**
+
+1. **Giá kênh:** giá trong bảng Channel của khách (hoặc giá cơ bản).
+2. **Base Price** = Giá kênh − chiết khấu kỳ (STD Disc %).
+3. **Unit Price** = Base Price × (1 − (CT Disc % + PM Disc %) / 100), làm tròn đến đồng.
+
+Khi khớp chương trình, mục cụ thể hơn được ưu tiên (mã khách hơn nhóm khách; mã hàng hơn nhóm hàng). Khi một sản phẩm có nhiều chương trình cùng lúc, khách (hoặc admin trong Self create) được chọn chương trình, và lựa chọn đó được giữ khi đẩy lên SAP.
+
+---
+
+## 11. Cài đặt – Settings
+
+### 11.1. Catalog Visibility
+
+- **Quy tắc ẩn/hiện:** mặc định khách thấy mọi sản phẩm. Thêm quy tắc (Customer Group + Item Group + **Visible** / **Hidden**) để ẩn một nhóm hàng với một nhóm khách; quy tắc áp dụng xuống mọi nhóm con.
+- **Warehouse Visibility:** gán kho cho từng nhóm khách cấp 2. Khách chỉ thấy tồn kho của các kho này. Đây là quy tắc **chỉ dành cho khách hàng**; kho của admin được gán riêng ở Admin Users.
+
+### 11.2. SAP Sync Config (chỉ Root)
+
+- **Post SO Mode:** **Draft** (mặc định, tạo bản nháp, người dùng SAP duyệt thành Sales Order) hoặc **Sales Order** (tạo thẳng Sales Order, đơn chuyển ngay sang Approved).
+- **SAP Sync Schedule:** bật đồng bộ tự động mỗi N giờ, bấm **Save**; **Run now** chạy ngay; **Last run** cho biết kết quả lần gần nhất. Lịch mới có hiệu lực sau khi khởi động lại máy chủ.
+
+### 11.3. Reset the Id (chỉ Root)
+
+Đánh số lại cột **id** của các bảng dữ liệu đồng bộ và bảng nhóm (về 1..N), giữ nguyên liên kết cha–con. Mỗi bảng hiện số dòng, id lớn nhất và % dải id đã dùng. Không chạy được khi có đồng bộ đang chạy trên bảng đó. Mọi lần chạy được ghi vào Audit Logs.
+
+> Sau khi reset **Customer Groups** hoặc **Item Groups**, các admin khác nên tải lại các trang quản trị đang mở có chỉnh sửa nhóm.
+
+### 11.4. Admin Roles và Admin Users (chỉ Root)
+
+- **Admin Roles:** tạo vai trò và chọn các mục menu được phép.
+- **Admin Users:** tạo tài khoản (họ tên, email, mật khẩu, vai trò), bật/tắt **Active**, sửa, xóa. Các cột phạm vi (nhập mã cách nhau dấu phẩy, bấm **Save**):
+  - **Department**, **Owner Code:** phòng ban và nhân viên SAP ghi lên đơn khi đẩy.
+  - **Customer Groups**, **Item Groups:** khách hàng và hàng hóa admin được thấy và quản lý (gán nhóm cha = gán cả nhóm con).
+  - **Warehouse:** kho admin được dùng ở Inventory, Self create, chọn kho, kiểm tra tồn và đẩy đơn. Chỉ nhận mã kho trong danh sách kho của công ty. Root luôn có tất cả kho; admin chưa được gán kho thì không thấy kho nào.
+
+### 11.5. Audit Logs (chỉ Root)
+
+Nhật ký thao tác của admin và khách: thời gian, người làm, hành động, đối tượng, chi tiết, địa chỉ IP. Lọc theo loại hành động, loại người dùng và khoảng ngày.
+
+---
+
+## 12. Sự cố thường gặp
 
 | Hiện tượng | Nguyên nhân thường gặp | Cách xử lý |
 |---|---|---|
-| Khách không thấy sản phẩm | Nhóm hàng đang **Inactive**; sản phẩm bị tắt **Visible**; bị **Catalog Visibility** ẩn | Kiểm tra Item Groups, Items, Catalog Visibility |
-| Khách không thấy khuyến mãi hoặc giá sai | Chưa đồng bộ; khách chưa có BP Code; khuyến mãi hết hạn; bảng giá chưa gán | **↻ Resync SAP** cho khách; kiểm tra Promotion Discounts và Price Lists; đồng bộ lại |
-| Bấm **Confirm & Push to SAP** báo lỗi | Khách không có BP Code; SAP từ chối dữ liệu | Đọc nội dung lỗi hiển thị cạnh nút; bổ sung BP Code |
-| Khách báo tài khoản bị khóa | Đã bỏ tick **Enable** ở SAP Customers | Tick lại **Enable** |
-| Khách không đăng nhập được, báo chờ duyệt | Chưa duyệt | Duyệt ở Customers Approval |
-| Đồng bộ báo lỗi kết nối SAP | Mất mạng tới SAP hoặc tài khoản SAP thiếu quyền | Xem nội dung lỗi; kiểm tra mạng và tài khoản SAP |
-| Đồng bộ sản phẩm nhưng ảnh trống | Trường `U_ImageURL` trong SAP chưa có giá trị, hoặc SAP chưa nhận trường này | Điền `U_ImageURL` cho sản phẩm; đồng bộ lại |
-| Mất phiên đăng nhập liên tục | Hết 8 giờ, hoặc cookie bị chặn | Đăng nhập lại |
+| Khách không thấy sản phẩm | Nhóm hàng tắt Active; sản phẩm tắt Visible; bị Catalog Visibility ẩn; hết hàng ở kho của khách | Kiểm tra Item Groups, Items, Catalog Visibility, Warehouses |
+| Khách thấy sai giá hoặc thiếu khuyến mãi | Chưa đồng bộ; khách thiếu BP Code; chương trình chưa tới ngày hoặc đã hết hạn | **↻ Resync SAP** cho khách; đồng bộ Price Lists, Contract / Promotion Discount |
+| Không thấy kho trong Self create, Inventory hoặc trang đơn | Kho chưa được gán cho admin | Root gán kho ở Admin Users → Warehouse |
+| Confirm & Push báo lỗi | Khách thiếu BP Code; còn dòng chờ khách xác nhận; SAP từ chối dữ liệu | Đọc lỗi cạnh nút; xử lý dòng Pending; bổ sung BP Code |
+| Người dùng SAP khác không thấy đơn đã đẩy | Phân quyền Owner trong SAP B1 | Kiểm tra Owner Code của admin và quyền xem chứng từ trong SAP |
+| Khách không nhận được email | Cấu hình email (SMTP) sai hoặc mật khẩu ứng dụng hết hiệu lực | Báo bộ phận IT kiểm tra cấu hình email |
+| Ảnh sản phẩm trống | Trường `U_ImageURL` trong SAP chưa có giá trị | Điền `U_ImageURL`, đồng bộ lại Items |
+| Lịch đồng bộ mới không chạy | Máy chủ chưa khởi động lại | Khởi động lại máy chủ, xem **Last run** |
+| Inventory báo lỗi SAP | Mất kết nối SAP / HANA hoặc thiếu quyền | Đọc nội dung lỗi, báo bộ phận IT |
 
-**Liên hệ hỗ trợ khách hàng bị khóa:** 0908404678.
+**Liên hệ mở khóa tài khoản khách hàng:** 0908404678.
+
+---
+
+## 13. Ghi chú vận hành cho bộ phận IT
+
+- **Cấu hình:** `config.json` (kết nối MySQL, SAP, HANA, email; danh sách `masterdata`: nhóm khách, nhóm hàng, bảng giá, kho của công ty) và `.env` (mật khẩu đã mã hóa). Không chia sẻ các file này ra ngoài.
+- **Chạy bằng Docker:** `docker compose up -d --build` để cập nhật phiên bản. Cổng mặc định 5005; HTTPS qua `docker compose --profile proxy up -d`.
+- **Cơ sở dữ liệu:** các thay đổi cấu trúc nằm trong `schema.sql` (kèm câu lệnh migration cho cơ sở dữ liệu đang chạy).
+- **Sau khi đổi mật khẩu email hoặc lịch đồng bộ:** khởi động lại ứng dụng.

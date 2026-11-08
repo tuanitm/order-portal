@@ -24,8 +24,8 @@ from docx.shared import Cm, Pt, RGBColor
 
 DOCS = Path(__file__).resolve().parent
 GUIDES = [
-    ("HUONG_DAN_ADMIN", "Hướng dẫn sử dụng – Quản trị (Admin)"),
-    ("HUONG_DAN_KHACH_HANG", "Hướng dẫn sử dụng – Đối tác / Nhà phân phối"),
+    ("HUONG_DAN_ADMIN", "Hướng dẫn sử dụng – Người dùng Quản trị"),
+    ("HUONG_DAN_KHACH_HANG", "Hướng dẫn sử dụng – Khách hàng"),
 ]
 BRAND = "1E9A92"        # headings, links accents
 BRAND_TINT = "E6F6F5"   # table header / quote background

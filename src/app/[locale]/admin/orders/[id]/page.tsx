@@ -552,6 +552,7 @@ export default function AdminOrderDetailPage() {
                     label="Confirm & Push to SAP"
                     loadingLabel="Pushing to SAP..."
                     onDone={(data) => {
+                      if (data.dataStatusWarning) alert(String(data.dataStatusWarning));
                       // The server re-checks live stock right before pushing
                       // and caps any line that no longer has enough — flag it
                       // clearly rather than letting it pass silently in the

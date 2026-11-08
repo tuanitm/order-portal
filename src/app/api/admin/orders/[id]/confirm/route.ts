@@ -35,6 +35,9 @@ interface OrderLineRow {
   id: number;
   sap_item_code: string;
   item_name: string;
+  /** The buy-X-get-Y program the customer chose for this buy line (set at checkout / Self create). */
+  giveaway_promotion_code: string | null;
+  giveaway_promotion_name: string | null;
   /** The SAP item master name (OITM.ItemName) — what SAP puts in the line's Dscription. */
   sap_item_name: string;
   quantity: number;
@@ -79,6 +82,7 @@ interface GiveawayPromotionRow {
   it_type: string | null;
   selling_item_code: string | null;
   giving_item_code: string | null;
+  promotion_code: string | null;
   promotion_name: string | null;
 }
 
@@ -232,7 +236,8 @@ export async function POST(
   const orderNumber = order.order_number;
 
   const allLines = await query<OrderLineRow[]>(
-    `SELECT ol.id, ol.sap_item_code, ol.item_name, COALESCE(NULLIF(i.item_name_vi, ''), ol.item_name) AS sap_item_name, ol.quantity, ol.confirm_qty, ol.customer_confirm_status, ol.base_unit_price,
+    `SELECT ol.id, ol.sap_item_code, ol.item_name, COALESCE(NULLIF(i.item_name_vi, ''), ol.item_name) AS sap_item_name,
+            ol.giveaway_promotion_code, ol.giveaway_promotion_name, ol.quantity, ol.confirm_qty, ol.customer_confirm_status, ol.base_unit_price,
             ol.is_gift_line, ol.source_line_id, ol.promo_buy_qty, ol.promo_give_qty, i.brand_code, i.vat_group, i.item_tax_class,
             i.item_cat01, i.item_cat02, i.item_cat03, i.item_cat04, i.item_cat05, i.item_cat06
      FROM order_lines ol
@@ -385,7 +390,7 @@ export async function POST(
   // already comes from order_lines.promo_buy_qty/promo_give_qty/
   // source_line_id, set at checkout; this is purely for that one display field).
   const giveawayPromotionCandidates = itemCodeList.length === 0 ? [] : await query<GiveawayPromotionRow[]>(
-    `SELECT bp_type, bp_code, it_type, selling_item_code, giving_item_code, promotion_name
+    `SELECT bp_type, bp_code, it_type, selling_item_code, giving_item_code, promotion_code, promotion_name
      FROM promotion_discount
      WHERE company_id = ?
        AND giving_item_code IS NOT NULL
@@ -448,16 +453,16 @@ export async function POST(
   /** The giveaway promotion's own name tying a gift line to its buy line —
    * see giveawayPromotionCandidates' own comment for why this is the only
    * thing looked up here (the gift linkage itself is already known). */
-  function bestGiveawayPromotionName(buyLine: OrderLineRow, giftItemCode: string): string | null {
-    let best: { score: number; name: string | null } | null = null;
+  function bestGiveawayPromotion(buyLine: OrderLineRow, giftItemCode: string): { code: string | null; name: string | null } | null {
+    let best: { score: number; code: string | null; name: string | null } | null = null;
     for (const row of giveawayPromotionCandidates) {
       if (row.giving_item_code !== giftItemCode) continue;
       if (!promoMatchesBp(row, custCode, grp01, grp02, grp03)) continue;
       if (!promoMatchesItem(row, buyLine)) continue;
       const score = promoBpScore(row.bp_type) + promoItemScore(row.it_type);
-      if (!best || score > best.score) best = { score, name: row.promotion_name };
+      if (!best || score > best.score) best = { score, code: row.promotion_code, name: row.promotion_name };
     }
-    return best?.name ?? null;
+    return best ? { code: best.code, name: best.name } : null;
   }
 
   // Final safety cap: re-check LIVE available qty (same computation as
@@ -762,14 +767,16 @@ export async function POST(
   // One free/gift item line (buy-X-get-Y) — the linkage to its buy line
   // (source_line_id) already exists from checkout; this only adds the PM
   // bookkeeping fields and looks up the giveaway promotion's own NAME for
-  // U_CTKM_NAME (U_CTKM itself is NEVER set on a gift line, only on the
-  // Promotion Discount line — per the admin's own spec). Unlike discount
+  // U_CTKM / U_CTKM_NAME (the gift program's code and name). Unlike discount
   // lines, a gift line's VatGroup/U_ItemTaxClass/U_ReqSLFrom-To come from
   // the FREE ITEM's own master data, not the buy line's.
   function buildGiftLine(l: typeof lines[number]) {
     const buyLine = l.source_line_id ? lines.find((x) => x.id === l.source_line_id) : undefined;
     const meta = buyLine ? lineMetaById.get(buyLine.id) : undefined;
-    const ctkmName = buyLine ? bestGiveawayPromotionName(buyLine, l.sap_item_code) : null;
+    // The program the customer chose (saved on the buy line), else today's best match.
+    const best = buyLine && !buyLine.giveaway_promotion_code ? bestGiveawayPromotion(buyLine, l.sap_item_code) : null;
+    const ctkmCode = buyLine?.giveaway_promotion_code || best?.code || null;
+    const ctkmName = buyLine?.giveaway_promotion_name || best?.name || null;
     return {
       ItemCode: l.sap_item_code,
       Quantity: l.confirm_qty,
@@ -799,6 +806,7 @@ export async function POST(
       U_SortField: meta && buyLine ? `${sortFieldPrefix(meta.index, buyLine.sap_item_code)}_31` : undefined,
       U_PM_Type: "31",
       U_PM_HavingSetupPrrt: "N",
+      U_CTKM: ctkmCode || undefined,
       U_CTKM_NAME: ctkmName || undefined,
       U_PM_FreeQty: l.confirm_qty,
       U_PM_DiscPercent: 0,
@@ -887,11 +895,14 @@ export async function POST(
     U_InvAddress: businessPartner?.Address?.slice(0, 200) || undefined,
     U_InvTaxNo: businessPartner?.FederalTaxID || undefined,
     U_InvName: businessPartner?.CardName || undefined,
-    // Chosen in the admin "Self create" dialog; unset on storefront orders,
-    // where SAP fills the customer's own defaults.
+    // Chosen at checkout or in the admin "Self create" dialog; unset on older
+    // orders, where SAP fills the customer's own defaults.
     PayToCode: order.bill_to_code || undefined,
     ShipToCode: order.ship_to_code || undefined,
     U_CusSEL04: order.supervisor_code || undefined,
+    // Real Sales Orders only, never a Draft: created as I (In-Progress), then
+    // set to C (Completed) by a separate update once the order exists — see below.
+    ...(postSoMode === "sales_order" ? { U_DataStatus: "I" } : {}),
     // DocumentsOwner (SAP B1's "Owner" authorization field) / U_OwnerName —
     // see resolveOrderOwner. Only set when fillOwner is enabled in config;
     // omitted entirely when disabled so all SAP users can see every order.
@@ -944,7 +955,18 @@ export async function POST(
   // U_DocNo is filled by SAP's SBO_SP_TransactionNotification trigger during
   // the INSERT, so it should already be present on a GET right after create.
   let sapSoNumber: string | null = null;
+  // Set when the follow-up U_DataStatus update fails. The Sales Order already
+  // exists by then, so this is reported, never treated as a failed push
+  // (a retry of the push would create a duplicate order).
+  let dataStatusWarning: string | null = null;
   if (postSoMode === "sales_order") {
+    try {
+      await sap.updateSalesOrderDataStatus(sapResult.DocEntry, "C");
+    } catch (err) {
+      console.error(`[Admin] SO ${sapResult.DocNum} created but U_DataStatus could not be set to C:`, err);
+      dataStatusWarning = `Sales Order ${sapResult.DocNum} was created, but U_DataStatus could not be set to C — it is still I. Please update it in SAP. (${err instanceof Error ? err.message : String(err)})`;
+    }
+
     try {
       const soStatus = await sap.getSalesOrderStatus(sapResult.DocEntry, orderNumber);
       sapSoNumber = soStatus?.U_DocNo || null;
@@ -966,7 +988,7 @@ export async function POST(
     action: "order_confirm", entityType: "order", entityId: orderId,
     details: {
       orderNumber, warehouseCode, postSoMode,
-      sapDocEntry: sapResult.DocEntry, sapDocNum: sapResult.DocNum, sapSoNumber,
+      sapDocEntry: sapResult.DocEntry, sapDocNum: sapResult.DocNum, sapSoNumber, dataStatusWarning,
     },
     request,
   });
@@ -976,6 +998,7 @@ export async function POST(
     sapDocEntry: sapResult.DocEntry,
     sapDocNum: sapResult.DocNum,
     sapSoNumber,
+    dataStatusWarning,
     // Any line the live pre-confirm check capped below its last saved
     // Confirm Qty — empty on the common path where nothing changed.
     adjustments,

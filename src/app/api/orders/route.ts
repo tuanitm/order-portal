@@ -4,6 +4,7 @@ import { createOrdersFromLines, type OrderLineInput } from "@/lib/orderCreate";
 import { getCompanyId } from "@/lib/config";
 import { getSessionUser } from "@/lib/auth/session";
 import { logAuditEvent } from "@/lib/auditLog";
+import { getCustomerAddressBook } from "@/lib/customerAddresses";
 
 /**
  * POST /api/orders — the storefront checkout. Creates one order PER BRAND
@@ -36,9 +37,10 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
-    const { customerName, deliveryAddress, contactPhone, contactEmail, remark, lines, language } = body as {
+    const { customerName, billToCode, shipToCode, contactPhone, contactEmail, remark, lines, language } = body as {
       customerName: string;
-      deliveryAddress: string;
+      billToCode: string;
+      shipToCode: string;
       contactPhone: string;
       contactEmail: string;
       remark: string;
@@ -54,11 +56,26 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Only the customer's own SAP addresses are accepted — the address text
+    // is taken from there, never from the browser.
+    const addressBook = await getCustomerAddressBook(user.sapCardCode);
+    const billTo = addressBook.billTo.find((a) => a.name === billToCode);
+    const shipTo = addressBook.shipTo.find((a) => a.name === shipToCode);
+    if (!billTo || !shipTo) {
+      return NextResponse.json(
+        { error: language === "en"
+            ? "Please select a billing and a delivery address from your list. If none is available, contact our staff."
+            : "Vui lòng chọn địa chỉ hóa đơn và địa chỉ giao hàng trong danh sách. Nếu chưa có địa chỉ, vui lòng liên hệ nhân viên phụ trách." },
+        { status: 400 }
+      );
+    }
+
     const createdOrders = await createOrdersFromLines(
       {
         companyId, userId: user.id, sapCardCode: user.sapCardCode || null,
-        customerName, deliveryAddress: deliveryAddress || null, contactPhone, contactEmail: contactEmail || null,
+        customerName, deliveryAddress: shipTo.address, contactPhone, contactEmail: contactEmail || null,
         remark: remark || null, language: language === "en" ? "en" : "vi",
+        billToCode: billTo.name, billingAddress: billTo.address, shipToCode: shipTo.name,
       },
       lines
     );

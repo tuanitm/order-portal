@@ -256,6 +256,18 @@ export async function POST(
       ]
     );
 
+    // Same names as the BPAddresses sent to SAP above, so checkout can offer
+    // them before the next SAP Customers sync.
+    await query(`UPDATE customers SET bill_to_default = 'Bill To', ship_to_default = 'Ship To' WHERE company_id = ? AND sap_card_code = ?`, [companyId, cardCode]);
+    for (const [type, name, address] of [["bill_to", "Bill To", billingAddress], ["ship_to", "Ship To", shippingAddress]] as const) {
+      await query(
+        `INSERT INTO customer_addresses (company_id, sap_card_code, address_type, address_name, full_address, last_synced)
+         VALUES (?, ?, ?, ?, ?, NOW())
+         ON DUPLICATE KEY UPDATE full_address = VALUES(full_address), last_synced = NOW()`,
+        [companyId, cardCode, type, name, address || null]
+      );
+    }
+
     if (email) {
       try {
         await sendApprovalEmail(email, customer.full_name, customer.language || "vi");
