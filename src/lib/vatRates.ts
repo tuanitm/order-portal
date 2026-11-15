@@ -48,3 +48,30 @@ export async function getVatRates(): Promise<Map<string, number>> {
   }
   return cache;
 }
+
+/**
+ * VAT per order (orderId → amount): each line's Line Total x its item's VAT
+ * rate, rounded per line — the same rule as the order detail pages, so the
+ * totals agree. Lines with an unknown rate add nothing.
+ */
+export async function getOrderVatTotals(companyId: string, orderIds: number[]): Promise<Map<number, number>> {
+  const result = new Map<number, number>();
+  if (orderIds.length === 0) return result;
+  const { query } = await import("@/lib/db/connection");
+  const [rates, lines] = await Promise.all([
+    getVatRates(),
+    query<{ order_id: number; line_total: string; vat_group: string | null }[]>(
+      `SELECT ol.order_id, ol.line_total, i.vat_group
+         FROM order_lines ol
+         LEFT JOIN items i ON i.company_id = ol.company_id AND i.sap_item_code = ol.sap_item_code
+        WHERE ol.company_id = ? AND ol.order_id IN (${orderIds.map(() => "?").join(",")})`,
+      [companyId, ...orderIds]
+    ),
+  ]);
+  for (const l of lines) {
+    const rate = l.vat_group ? rates.get(l.vat_group) : undefined;
+    if (rate === undefined) continue;
+    result.set(l.order_id, (result.get(l.order_id) ?? 0) + Math.round((Number(l.line_total) * rate) / 100));
+  }
+  return result;
+}

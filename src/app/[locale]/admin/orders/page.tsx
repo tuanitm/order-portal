@@ -173,7 +173,10 @@ export default function AdminOrdersPage() {
                   {orders.map((o) => (
                     <tr key={o.id} style={{ cursor: "pointer" }} onClick={() => (window.location.href = `/${locale}/admin/orders/${o.id}`)}>
                       <td style={{ ...styles.td, fontSize: "0.75rem", fontWeight: 600 }}>{o.brand || <em style={{ color: "var(--text-tertiary, #94A3B8)" }}>—</em>}</td>
-                      <td style={{ ...styles.td, fontFamily: "monospace", fontWeight: 600 }}>{o.order_number}</td>
+                      <td style={{
+                        ...styles.td, fontFamily: "monospace", fontWeight: 600,
+                        ...(o.status === "cancelled" ? { textDecoration: "line-through", color: "var(--text-tertiary, #94A3B8)" } : {}),
+                      }}>{o.order_number}</td>
                       <td style={styles.td}>{o.sap_card_code || "—"}</td>
                       <td style={styles.td}>{o.sap_card_name || o.customer_name || o.customer_email || "—"}</td>
                       <td style={styles.td}>{formatPrice(o.grand_total)}</td>

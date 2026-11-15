@@ -5,6 +5,7 @@ import { getCompanyId } from "@/lib/config";
 import { getSessionUser } from "@/lib/auth/session";
 import { logAuditEvent } from "@/lib/auditLog";
 import { getCustomerAddressBook } from "@/lib/customerAddresses";
+import { getOrderVatTotals } from "@/lib/vatRates";
 
 /**
  * POST /api/orders — the storefront checkout. Creates one order PER BRAND
@@ -130,7 +131,7 @@ export async function GET(request: NextRequest) {
     );
     const total = totalRows[0]?.cnt ?? 0;
 
-    const orders = await query(
+    const rows = await query<{ id: number; grand_total: string }[]>(
       `SELECT o.id, o.order_number, o.customer_name, o.subtotal, o.discount_total, o.grand_total,
               o.status, o.sap_doc_entry, o.sap_doc_num, o.created_at,
               (SELECT COUNT(*) FROM order_lines ol WHERE ol.company_id = o.company_id AND ol.order_id = o.id) AS line_count
@@ -139,6 +140,10 @@ export async function GET(request: NextRequest) {
        LIMIT ? OFFSET ?`,
       [companyId, user.id, limit, offset]
     );
+
+    // Customers see totals including VAT (same figure as the order detail page).
+    const vatByOrder = await getOrderVatTotals(companyId, rows.map((o) => o.id));
+    const orders = rows.map((o) => ({ ...o, grand_total_with_tax: Number(o.grand_total) + (vatByOrder.get(o.id) ?? 0) }));
 
     return NextResponse.json({
       orders,

@@ -12,6 +12,8 @@ interface OrderSummary {
   order_number: string;
   customer_name: string | null;
   grand_total: string;
+  /** Total including VAT — what the customer pays (see GET /api/orders). */
+  grand_total_with_tax: number;
   status: string;
   created_at: string;
   line_count: number;
@@ -91,6 +93,7 @@ export default function OrdersPage() {
                     <div style={{
                       fontWeight: 700, fontSize: "var(--text-base)",
                       marginBottom: "0.25rem",
+                      ...(order.status === "cancelled" ? { textDecoration: "line-through", color: "var(--text-tertiary)" } : {}),
                     }}>
                       {order.order_number}
                     </div>
@@ -108,7 +111,7 @@ export default function OrdersPage() {
                       color: "var(--color-primary-dark)",
                       marginBottom: "0.25rem",
                     }}>
-                      {formatPrice(Number(order.grand_total))}
+                      {formatPrice(order.grand_total_with_tax ?? Number(order.grand_total))}
                     </div>
                     <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", justifyContent: "flex-end", flexWrap: "wrap", marginBottom: "0.5rem" }}>
                       <OrderStatusBadge orderId={order.id} status={order.status} clickable={false} />
