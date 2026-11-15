@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { query, queryOne } from "@/lib/db/connection";
 import { getCompanyId } from "@/lib/config";
 import { getSessionUser } from "@/lib/auth/session";
+import { getVatRates } from "@/lib/vatRates";
 
 /**
  * GET /api/orders/[id] — a single order's detail, for the customer who
@@ -35,12 +36,34 @@ export async function GET(
     return NextResponse.json({ error: "Order not found" }, { status: 404 });
   }
 
-  const lines = await query(
-    `SELECT id, sap_item_code, item_name, quantity, uom, unit_price, discount_percent, line_total,
-            confirm_qty, customer_confirm_status
-     FROM order_lines WHERE company_id = ? AND order_id = ?`,
+  const rawLines = await query<{ sap_item_code: string; line_total: string; vat_group: string | null }[]>(
+    `SELECT ol.id, ol.sap_item_code, ol.item_name, ol.quantity, ol.uom, ol.unit_price, ol.discount_percent, ol.line_total,
+            ol.confirm_qty, ol.customer_confirm_status, i.vat_group
+     FROM order_lines ol
+     LEFT JOIN items i ON i.company_id = ol.company_id AND i.sap_item_code = ol.sap_item_code
+     WHERE ol.company_id = ? AND ol.order_id = ?`,
     [companyId, orderId]
   );
+
+  // VAT: Line Total is before tax (the SAP Sales Order adds VAT from each
+  // line's VAT group), so tax = Line Total x the item's VAT rate, rounded per
+  // line to whole VND. vat_rate is null when the rate isn't known.
+  const vatRates = await getVatRates();
+  const lines = rawLines.map((l) => {
+    const rate = l.vat_group ? vatRates.get(l.vat_group) ?? null : null;
+    return { ...l, vat_rate: rate, vat_amount: rate === null ? null : Math.round((Number(l.line_total) * rate) / 100) };
+  });
+  const vatByRate = new Map<number, number>();
+  for (const l of lines) {
+    if (l.vat_rate !== null && l.vat_amount !== null) vatByRate.set(l.vat_rate, (vatByRate.get(l.vat_rate) ?? 0) + l.vat_amount);
+  }
+  const vatTotal = [...vatByRate.values()].reduce((s, v) => s + v, 0);
+  const tax = {
+    complete: lines.every((l) => l.vat_rate !== null || Number(l.line_total) === 0),
+    byRate: [...vatByRate.entries()].sort((a, b) => a[0] - b[0]).map(([rate, amount]) => ({ rate, amount })),
+    total: vatTotal,
+    grandTotalWithTax: Number((order as { grand_total: string }).grand_total) + vatTotal,
+  };
 
   const history = await query<{ status: string; created_at: string }[]>(
     `SELECT status, created_at FROM order_status_history WHERE company_id = ? AND order_id = ? ORDER BY created_at DESC, id DESC`,
@@ -53,6 +76,7 @@ export async function GET(
   return NextResponse.json({
     order,
     lines,
+    tax,
     history: history.length > 0 ? history : [{ status: o.status, created_at: o.created_at }],
   });
 }

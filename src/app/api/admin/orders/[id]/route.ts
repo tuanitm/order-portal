@@ -4,6 +4,7 @@ import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { recordOrderStatus, notifyCustomerOfStatusChange } from "@/lib/orderHistory";
 import { isOrderInAdminScope } from "@/lib/adminScope";
+import { getVatRates } from "@/lib/vatRates";
 
 // 'cancelled' is deliberately excluded — cancelling can mean deleting the
 // order's SAP Draft Sales Order too, so it only ever goes through the
@@ -42,14 +43,19 @@ export async function GET(
   // snapshotted at order time, unlike item_name) — joined to cost_centers
   // (dimension 1) for a readable name, falling back to the raw code if the
   // cost center sync hasn't run or no longer has it.
-  const lines = await query(
-    `SELECT ol.*, i.brand_code, COALESCE(cc.ocr_name, i.brand_code) AS brand_name
+  const rawLines = await query<{ vat_group: string | null }[]>(
+    `SELECT ol.*, i.brand_code, COALESCE(cc.ocr_name, i.brand_code) AS brand_name, i.vat_group
      FROM order_lines ol
      LEFT JOIN items i ON i.company_id = ol.company_id AND i.sap_item_code = ol.sap_item_code
      LEFT JOIN cost_centers cc ON cc.company_id = ol.company_id AND cc.ocr_code = i.brand_code AND cc.dimension = 1
      WHERE ol.company_id = ? AND ol.order_id = ?`,
     [companyId, orderId]
   );
+
+  // VAT % from the item's SAP VAT group (null = unknown). The page computes the
+  // amounts itself from line_total, so they follow Cfm Qty edits immediately.
+  const vatRates = await getVatRates();
+  const lines = rawLines.map((l) => ({ ...l, vat_rate: l.vat_group ? vatRates.get(l.vat_group) ?? null : null }));
 
   return NextResponse.json({ order, lines });
 }

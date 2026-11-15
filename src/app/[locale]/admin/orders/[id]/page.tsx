@@ -55,6 +55,14 @@ interface OrderLine {
   promotion_name: string | null;
   giveaway_promotion_code: string | null;
   giveaway_promotion_name: string | null;
+  /** SAP VAT group of the item (e.g. S08) and its rate in % — null when unknown. */
+  vat_group: string | null;
+  vat_rate: number | null;
+}
+
+/** VAT on a line: Line Total (before tax) x rate, rounded to whole VND — same rule as the storefront order page. */
+function lineVat(l: { line_total: string; vat_rate: number | null }): number | null {
+  return l.vat_rate === null ? null : Math.round((Number(l.line_total) * l.vat_rate) / 100);
 }
 interface Warehouse {
   code: string;
@@ -711,12 +719,13 @@ export default function AdminOrderDetailPage() {
                   <th style={styles.th}>PM Disc %</th>
                   <th style={styles.th}>Unit Price</th>
                   <th style={styles.th}>Line Total</th>
+                  <th style={styles.th}>VAT</th>
                 </tr>
               </thead>
               <tbody>
                 {lines.map((l) => (
                   <tr key={l.id} style={!!l.is_gift_line ? { background: "var(--color-success-light, #ECFDF5)" } : undefined}>
-                    <td style={{ ...styles.td, fontFamily: "monospace", fontSize: "0.75rem" }}>{l.sap_item_code}</td>
+                    <td style={{ ...styles.td, fontFamily: "monospace", fontSize: "0.75rem", fontWeight: 600 }}>{l.sap_item_code}</td>
                     <td style={styles.td}>
                       <div style={{ display: "flex", alignItems: "center", gap: "0.375rem" }}>
                         {!!l.is_gift_line && <span aria-hidden>🎁</span>}
@@ -792,6 +801,13 @@ export default function AdminOrderDetailPage() {
                     </td>
                     <td style={styles.td}>{formatPrice(l.unit_price)}</td>
                     <td style={styles.td}>{formatPrice(l.line_total)}</td>
+                    <td style={{ ...styles.td, whiteSpace: "nowrap" }} title={l.vat_group ? `VAT group ${l.vat_group}` : "No VAT group / rate"}>
+                      {l.vat_rate === null ? (
+                        <em style={{ color: "var(--text-tertiary, #94A3B8)" }}>—</em>
+                      ) : (
+                        <>{formatPrice(String(lineVat(l)))} ({l.vat_rate}%)</>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -800,7 +816,29 @@ export default function AdminOrderDetailPage() {
           <div style={{ padding: "1rem", textAlign: "right", fontSize: "0.875rem", borderTop: "1px solid var(--color-gray-200, #E2E8F0)" }}>
             <div>Subtotal: {formatPrice(order.subtotal)}</div>
             <div>Discount: -{formatPrice(order.discount_total)}</div>
-            <div style={{ fontWeight: 700, fontSize: "1rem", marginTop: "0.25rem" }}>Total: {formatPrice(order.grand_total)}</div>
+            {(() => {
+              const byRate = new Map<number, number>();
+              for (const l of lines) {
+                const vat = lineVat(l);
+                if (vat !== null && l.vat_rate !== null) byRate.set(l.vat_rate, (byRate.get(l.vat_rate) ?? 0) + vat);
+              }
+              const vatTotal = [...byRate.values()].reduce((s, v) => s + v, 0);
+              const incomplete = lines.some((l) => l.vat_rate === null && Number(l.line_total) !== 0);
+              return (
+                <>
+                  <div style={{ fontWeight: 600, marginTop: "0.25rem" }}>Total before VAT: {formatPrice(order.grand_total)}</div>
+                  {[...byRate.entries()].sort((a, b) => a[0] - b[0]).map(([rate, amount]) => (
+                    <div key={rate}>VAT ({rate}%): {formatPrice(String(amount))}</div>
+                  ))}
+                  <div style={{ fontWeight: 700, fontSize: "1rem", marginTop: "0.25rem" }}>
+                    Total incl. VAT: {formatPrice(String(Number(order.grand_total) + vatTotal))}
+                  </div>
+                  {incomplete && (
+                    <div style={{ fontSize: "0.75rem", color: "#B45309" }}>Some lines have no VAT rate — VAT total may be incomplete.</div>
+                  )}
+                </>
+              );
+            })()}
           </div>
         </div>
 

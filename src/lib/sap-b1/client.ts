@@ -1110,6 +1110,20 @@ export class SapB1Client {
     return this.request<SapDocumentResponse>('POST', '/Orders', draft);
   }
 
+  /** Every active output-tax (sales VAT) group, e.g. S08 = 8%, with its dated rate lines. */
+  async getOutputVatGroups(): Promise<{ Code: string; VatGroups_Lines?: { Effectivefrom?: string | null; Rate: number }[] }[]> {
+    await this.ensureSession();
+    type Group = { Code: string; Category?: string; Inactive?: string; VatGroups_Lines?: { Effectivefrom?: string | null; Rate: number }[] };
+    const all: Group[] = [];
+    for (let skip = 0; ; ) {
+      const page = await this.request<{ value: Group[] }>('GET', `/VatGroups?$select=Code,Category,Inactive,VatGroups_Lines&$skip=${skip}`);
+      if (!page.value?.length) break;
+      all.push(...page.value);
+      skip += page.value.length;
+    }
+    return all.filter((g) => g.Category === 'bovcOutputTax' && g.Inactive !== 'tYES');
+  }
+
   /**
    * Set U_DataStatus on an existing Sales Order. PATCH changes only this
    * field; a Service Layer PUT replaces the whole document.

@@ -35,6 +35,17 @@ interface OrderLine {
   line_total: string;
   confirm_qty: number;
   customer_confirm_status: "pending" | "accepted" | "rejected";
+  /** VAT % of the item's SAP VAT group, and the tax on Line Total; null when unknown. */
+  vat_rate: number | null;
+  vat_amount: number | null;
+}
+
+interface OrderTax {
+  /** False when some line's VAT rate couldn't be found — totals then cover the known lines only. */
+  complete: boolean;
+  byRate: { rate: number; amount: number }[];
+  total: number;
+  grandTotalWithTax: number;
 }
 
 interface OrderMessage {
@@ -175,6 +186,7 @@ export default function OrderDetailPage({
   const { id } = use(params);
   const [order, setOrder] = useState<OrderDetail | null>(null);
   const [lines, setLines] = useState<OrderLine[]>([]);
+  const [tax, setTax] = useState<OrderTax | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
 
@@ -206,6 +218,7 @@ export default function OrderDetailPage({
         if (data) {
           setOrder(data.order);
           setLines(data.lines || []);
+          setTax(data.tax || null);
         }
       })
       .catch((err) => {
@@ -462,6 +475,7 @@ export default function OrderDetailPage({
                     )}
                     <th style={{ padding: "0.625rem 1.25rem", textAlign: "right", fontWeight: 700, color: "var(--text-secondary)", fontSize: "0.75rem" }}>{t("cart.unitPrice")}</th>
                     <th style={{ padding: "0.625rem 1.25rem", textAlign: "right", fontWeight: 700, color: "var(--text-secondary)", fontSize: "0.75rem" }}>{t("cart.lineTotal")}</th>
+                    <th style={{ padding: "0.625rem 1.25rem", textAlign: "right", fontWeight: 700, color: "var(--text-secondary)", fontSize: "0.75rem" }}>{t("order.vat")}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -469,14 +483,14 @@ export default function OrderDetailPage({
                     const adjusted = line.confirm_qty !== line.quantity;
                     return (
                       <tr key={line.id} style={{ borderBottom: "1px solid var(--color-gray-200)" }}>
-                        <td style={{ padding: "0.625rem 1.25rem", fontFamily: "monospace", fontSize: "0.75rem", color: "var(--text-secondary)" }}>{line.sap_item_code}</td>
+                        <td style={{ padding: "0.625rem 1.25rem", fontFamily: "monospace", fontSize: "0.75rem", fontWeight: 600 }}>{line.sap_item_code}</td>
                         <td style={{ padding: "0.625rem 1.25rem", fontWeight: 600 }}>{line.item_name}</td>
-                        <td style={{ padding: "0.625rem 1.25rem", textAlign: "center" }}>{line.quantity} {line.uom}</td>
+                        <td style={{ padding: "0.625rem 1.25rem", textAlign: "center", whiteSpace: "nowrap" }}><span style={{ fontWeight: 600 }}>{line.quantity}</span> {line.uom}</td>
                         {hasAnyAdjustment && (
                           <td style={{ padding: "0.625rem 1.25rem", textAlign: "center" }}>
                             {adjusted ? (
                               <div>
-                                <div style={{ fontWeight: 700, color: line.customer_confirm_status === "rejected" ? "#DC2626" : "#D97706" }}>
+                                <div style={{ fontWeight: 700, whiteSpace: "nowrap", color: line.customer_confirm_status === "rejected" ? "#DC2626" : "#D97706" }}>
                                   {line.confirm_qty} {line.uom}
                                 </div>
                                 {line.customer_confirm_status === "pending" && isEditable ? (
@@ -519,6 +533,13 @@ export default function OrderDetailPage({
                         )}
                         <td style={{ padding: "0.625rem 1.25rem", textAlign: "right" }}>{formatPrice(Number(line.unit_price))}</td>
                         <td style={{ padding: "0.625rem 1.25rem", textAlign: "right", fontWeight: 700 }}>{formatPrice(Number(line.line_total))}</td>
+                        <td style={{ padding: "0.625rem 1.25rem", textAlign: "right", whiteSpace: "nowrap" }}>
+                          {line.vat_rate === null ? (
+                            <span style={{ color: "var(--text-tertiary)" }}>—</span>
+                          ) : (
+                            <span style={{ fontWeight: 600 }}>{formatPrice(line.vat_amount ?? 0)} ({line.vat_rate}%)</span>
+                          )}
+                        </td>
                       </tr>
                     );
                   })}
@@ -541,10 +562,32 @@ export default function OrderDetailPage({
                 <span style={{ fontWeight: 600, color: "#DC2626" }}>-{formatPrice(discountTotal)}</span>
               </div>
             )}
-            <div style={{ display: "flex", justifyContent: "space-between", width: "250px", paddingTop: "0.5rem", borderTop: "2px solid var(--color-gray-200)" }}>
-              <span style={{ fontWeight: 700, fontSize: "1rem" }}>{t("cart.total")}</span>
-              <span style={{ fontWeight: 800, fontSize: "1.125rem", color: "var(--color-primary-dark)" }}>{formatPrice(Number(order.grand_total))}</span>
-            </div>
+            {tax ? (
+              <>
+                <div style={{ display: "flex", justifyContent: "space-between", width: "300px", paddingTop: "0.5rem", borderTop: "1px solid var(--color-gray-200)" }}>
+                  <span style={{ color: "var(--text-secondary)" }}>{t("order.totalBeforeVat")}</span>
+                  <span style={{ fontWeight: 600 }}>{formatPrice(Number(order.grand_total))}</span>
+                </div>
+                {tax.byRate.map((r) => (
+                  <div key={r.rate} style={{ display: "flex", justifyContent: "space-between", width: "300px" }}>
+                    <span style={{ color: "var(--text-secondary)" }}>{t("order.vatAt", { rate: r.rate })}</span>
+                    <span style={{ fontWeight: 600 }}>{formatPrice(r.amount)}</span>
+                  </div>
+                ))}
+                <div style={{ display: "flex", justifyContent: "space-between", width: "300px", paddingTop: "0.5rem", borderTop: "2px solid var(--color-gray-200)" }}>
+                  <span style={{ fontWeight: 700, fontSize: "1rem" }}>{t("order.totalWithVat")}</span>
+                  <span style={{ fontWeight: 800, fontSize: "1.125rem", color: "var(--color-primary-dark)" }}>{formatPrice(tax.grandTotalWithTax)}</span>
+                </div>
+                {!tax.complete && (
+                  <div style={{ width: "300px", fontSize: "0.75rem", color: "var(--text-tertiary)" }}>{t("order.vatIncomplete")}</div>
+                )}
+              </>
+            ) : (
+              <div style={{ display: "flex", justifyContent: "space-between", width: "250px", paddingTop: "0.5rem", borderTop: "2px solid var(--color-gray-200)" }}>
+                <span style={{ fontWeight: 700, fontSize: "1rem" }}>{t("cart.total")}</span>
+                <span style={{ fontWeight: 800, fontSize: "1.125rem", color: "var(--color-primary-dark)" }}>{formatPrice(Number(order.grand_total))}</span>
+              </div>
+            )}
           </div>
         </div>
 
