@@ -27,6 +27,12 @@ interface OrderRow {
   bill_to_code: string | null;
   ship_to_code: string | null;
   supervisor_code: string | null;
+  /** Invoice UDFs (U_InvName / U_InvTaxNo / U_InvAddress / U_BPPhone) — see the SAP payload below. */
+  customer_name: string | null;
+  contact_phone: string | null;
+  billing_address: string | null;
+  bill_to_full_address: string | null;
+  customer_mst_code: string | null;
 }
 
 /** Appended to a free (gift) item's U_INVDesc on the SAP line. */
@@ -206,10 +212,14 @@ async function POSTHandler(
             COALESCE(u.sap_cus_grp01, c.cus_grp01) AS sap_cus_grp01,
             COALESCE(u.sap_cus_grp02, c.cus_grp02) AS sap_cus_grp02,
             COALESCE(u.sap_cus_grp03, c.cus_grp03) AS sap_cus_grp03,
-            o.bill_to_code, o.ship_to_code, o.supervisor_code
+            o.bill_to_code, o.ship_to_code, o.supervisor_code,
+            o.customer_name, o.contact_phone, o.billing_address,
+            ca.full_address AS bill_to_full_address, COALESCE(c.mst_code, u.mst_code) AS customer_mst_code
      FROM orders o
      LEFT JOIN users u ON u.company_id = o.company_id AND u.id = o.user_id
      LEFT JOIN customers c ON c.company_id = o.company_id AND c.sap_card_code = COALESCE(o.sap_card_code, u.sap_card_code)
+     LEFT JOIN customer_addresses ca ON ca.company_id = o.company_id AND ca.sap_card_code = COALESCE(o.sap_card_code, u.sap_card_code)
+                                    AND ca.address_type = 'bill_to' AND ca.address_name = o.bill_to_code
      WHERE o.company_id = ? AND o.id = ?`,
     [companyId, orderId]
   );
@@ -900,11 +910,18 @@ async function POSTHandler(
     U_GetPMStatus: promotionLines.length > 0 ? "Y" : undefined,
     U_InvEmail: businessPartner?.EmailAddress || undefined,
     U_BPPaymentMethod: "TM/CK",
-    // UDF is 200 chars max (confirmed via /UserFieldsMD) — truncate
-    // defensively rather than let an unusually long address get rejected.
-    U_InvAddress: businessPartner?.Address?.slice(0, 200) || undefined,
-    U_InvTaxNo: businessPartner?.FederalTaxID || undefined,
-    U_InvName: businessPartner?.CardName || undefined,
+    // Invoice fields from the ORDER's own data (falling back to the SAP BP
+    // master when the order has none). Sizes from /UserFieldsMD on ORDR:
+    // InvName 200, InvTaxNo 20, InvAddress 200, BPPhone 50 — truncated so an
+    // unusually long value never gets the whole document rejected.
+    //  - U_InvName: the order's customer name;
+    //  - U_InvTaxNo: the order customer's tax code (MST);
+    //  - U_InvAddress: the order's bill-to (invoice) address;
+    //  - U_BPPhone: the order's contact phone.
+    U_InvName: (order.customer_name?.trim() || businessPartner?.CardName || "").slice(0, 200) || undefined,
+    U_InvTaxNo: (order.customer_mst_code?.trim() || businessPartner?.FederalTaxID || "").slice(0, 20) || undefined,
+    U_InvAddress: (order.billing_address?.trim() || order.bill_to_full_address?.trim() || businessPartner?.Address || "").slice(0, 200) || undefined,
+    U_BPPhone: order.contact_phone?.trim().slice(0, 50) || undefined,
     // Chosen at checkout or in the admin "Self create" dialog; unset on older
     // orders, where SAP fills the customer's own defaults.
     PayToCode: order.bill_to_code || undefined,

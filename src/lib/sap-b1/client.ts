@@ -274,13 +274,14 @@ export interface SapSalesOrderDraft {
   // not something this client sets. See POST .../confirm.
   /** "Y" if this order has at least one Promotion Discount line (CK99999999), else unset. */
   U_GetPMStatus?: string;
-  /** The customer BusinessPartner's own EmailAddress/Address/FederalTaxID/CardName — see POST .../confirm. */
+  /** U_InvEmail: the BP's EmailAddress. U_InvName / U_InvTaxNo / U_InvAddress / U_BPPhone: from the order (customer name, MST, bill-to address, contact phone) — see POST .../confirm. */
   U_InvEmail?: string;
   /** Always the literal "TM/CK" — not looked up from anywhere. */
   U_BPPaymentMethod?: string;
   U_InvAddress?: string;
   U_InvTaxNo?: string;
   U_InvName?: string;
+  U_BPPhone?: string;
   /** Portal order number (e.g. SO-GTSO0701-261015-503) — stamped onto the SAP
    * Sales Order header so the portal reference is visible in SAP. */
   U_RelDocs?: string;
