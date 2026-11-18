@@ -37,6 +37,9 @@ COPY --from=builder --chown=nextjs:nodejs /app/public ./public
 # Customer Groups/Item Groups/Promotions all sync live from SAP HANA now,
 # no manual Excel/JSON files needed.
 COPY --chown=nextjs:nodejs scripts/daily-sync.mjs ./scripts/daily-sync.mjs
+# The HANA query behind Promotion Discount sync — read from the working
+# directory at runtime (src/lib/hana/sync.ts), not bundled into the build.
+COPY --from=builder --chown=nextjs:nodejs /app/promotion_program.sql ./promotion_program.sql
 
 # config.json, .env and scripts/.encryption_key hold secrets: they are NOT
 # baked into the image — docker-compose.yml mounts them read-only.
