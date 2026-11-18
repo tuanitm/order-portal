@@ -6,6 +6,7 @@ import { listOrderMessages, postOrderMessage, markOrderMessagesReadByAdmin } fro
 import { sendOrderMessageEmail } from "@/lib/email/sender";
 import { sendPushToUser } from "@/lib/webPush";
 import { isOrderInAdminScope } from "@/lib/adminScope";
+import { audited } from "@/lib/auditLog";
 
 interface OrderCustomerContact {
   order_number: string;
@@ -45,7 +46,7 @@ export async function GET(
   return NextResponse.json({ messages });
 }
 
-export async function POST(
+async function POSTHandler(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -77,7 +78,7 @@ export async function POST(
   // If full_name is somehow unset, leave sender_name null rather than
   // falling back to the email; the UI's own generic label covers that.
   const admin = await queryOne<{ full_name: string | null }>(
-    `SELECT full_name FROM admin_users WHERE company_id = ? AND id = ?`,
+    `SELECT full_name FROM users WHERE company_id = ? AND id = ?`,
     [companyId, guard.session.adminId]
   );
   await postOrderMessage(orderId, "admin", admin?.full_name || null, message);
@@ -110,3 +111,6 @@ export async function POST(
 
   return NextResponse.json({ success: true });
 }
+
+// Every call is written to the audit log (who, role, target, request, outcome).
+export const POST = audited({ action: "order_message", entityType: "order", entityParam: "id" }, POSTHandler);

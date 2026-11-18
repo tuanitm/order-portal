@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { queryOne, query } from "@/lib/db/connection";
 import { getCompanyId } from "@/lib/config";
+import { audited } from "@/lib/auditLog";
 
 interface SyncScheduleRow {
   company_id: string;
@@ -25,7 +26,7 @@ export async function GET(request: NextRequest) {
   return NextResponse.json({ schedule: row });
 }
 
-export async function PATCH(request: NextRequest) {
+async function PATCHHandler(request: NextRequest) {
   const guard = await requireAdminPermission(request, "settings");
   if (guard.response) return guard.response;
 
@@ -56,3 +57,6 @@ export async function PATCH(request: NextRequest) {
   );
   return NextResponse.json({ success: true, schedule: row });
 }
+
+// Every call is written to the audit log (who, role, target, request, outcome).
+export const PATCH = audited({ action: "sync_schedule_update", entityType: "setting" }, PATCHHandler);

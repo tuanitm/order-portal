@@ -3,10 +3,12 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { styles, btn, Badge, LoadingOrEmpty } from "../adminUi";
 import { useAdminSession } from "../layout";
+import { VN_TIME_ZONE } from "@/lib/vnTime";
 
 interface AuditLogRow {
   id: number;
   actor_type: "admin" | "customer";
+  actor_role: "super_admin" | "admin" | "sales" | "customer" | null;
   actor_id: number | null;
   actor_label: string | null;
   action: string;
@@ -30,7 +32,7 @@ const inputStyle: React.CSSProperties = {
 };
 
 function formatDateTime(iso: string): string {
-  return new Date(iso).toLocaleString("en-GB", {
+  return new Date(iso).toLocaleString("en-GB", { timeZone: VN_TIME_ZONE,
     year: "numeric", month: "2-digit", day: "2-digit",
     hour: "2-digit", minute: "2-digit", second: "2-digit",
   });
@@ -40,6 +42,9 @@ function formatDateTime(iso: string): string {
 function formatAction(action: string): string {
   return action.split("_").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
 }
+
+const ROLE_LABEL: Record<string, string> = { super_admin: "Root / Super Admin", admin: "Admin", sales: "Sales", customer: "Customer" };
+const ROLE_TONE: Record<string, "error" | "success" | "warning" | "neutral"> = { super_admin: "error", admin: "success", sales: "warning", customer: "neutral" };
 
 function isFailureAction(action: string): boolean {
   return /failed|reject|delete|cancel/.test(action);
@@ -73,7 +78,7 @@ export default function AuditLogsPage() {
   const load = useCallback(async (p: number, at: string, a: string, s: string, df: string, dt: string) => {
     setIsLoading(true);
     const params = new URLSearchParams({ page: String(p), limit: String(limit) });
-    if (at) params.set("actorType", at);
+    if (at) params.set("actorRole", at);
     if (a) params.set("action", a);
     if (s) params.set("search", s);
     if (df) params.set("dateFrom", df);
@@ -141,16 +146,19 @@ export default function AuditLogsPage() {
           <div>
             <h1 style={styles.title}>Audit Logs</h1>
             <p style={styles.subtitle}>
-              Login/logout (success and failure) and key business actions for both admin and customer
-              accounts — read-only, append-only trail. Super Admin only.
+              Every action by Root, Admin, Sales and Customer users — log-in (and failed log-in), log-out, password
+              changes, orders (place, edit, Cfm Qty, confirm/post to SAP, cancel, messages), master data edits and SAP
+              syncs, success and failure. Read-only, append-only. Super Admin only.
             </p>
           </div>
         </div>
 
         <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", marginBottom: "1rem" }}>
           <select style={inputStyle} value={actorType} onChange={(e) => setActorType(e.target.value)}>
-            <option value="">All actor types</option>
+            <option value="">All user types</option>
+            <option value="super_admin">Root / Super Admin</option>
             <option value="admin">Admin</option>
+            <option value="sales">Sales</option>
             <option value="customer">Customer</option>
           </select>
           <select style={inputStyle} value={action} onChange={(e) => setAction(e.target.value)}>
@@ -160,7 +168,7 @@ export default function AuditLogsPage() {
             ))}
           </select>
           <input
-            type="text" style={inputStyle} placeholder="Search by email/name..."
+            type="text" style={inputStyle} placeholder="Search user ID / email / order id..."
             value={search} onChange={(e) => setSearch(e.target.value)}
           />
           <input
@@ -189,7 +197,8 @@ export default function AuditLogsPage() {
                 <thead>
                   <tr>
                     <th style={styles.th}>Time</th>
-                    <th style={styles.th}>Actor</th>
+                    <th style={styles.th}>User</th>
+                    <th style={styles.th}>User type</th>
                     <th style={styles.th}>Action</th>
                     <th style={styles.th}>Entity</th>
                     <th style={styles.th}>IP Address</th>
@@ -202,9 +211,12 @@ export default function AuditLogsPage() {
                       <td style={{ ...styles.td, whiteSpace: "nowrap", fontSize: "0.75rem" }}>{formatDateTime(log.created_at)}</td>
                       <td style={styles.td}>
                         <div>{log.actor_label || <em style={{ color: "var(--text-tertiary, #94A3B8)" }}>unknown</em>}</div>
-                        <div style={{ fontSize: "0.7rem", color: "var(--text-tertiary, #94A3B8)" }}>
-                          {log.actor_type}{log.actor_id ? ` #${log.actor_id}` : ""}
-                        </div>
+                        {log.actor_id ? <div style={{ fontSize: "0.7rem", color: "var(--text-tertiary, #94A3B8)" }}>#{log.actor_id}</div> : null}
+                      </td>
+                      <td style={styles.td}>
+                        {log.actor_role
+                          ? <Badge label={ROLE_LABEL[log.actor_role] ?? log.actor_role} tone={ROLE_TONE[log.actor_role] ?? "neutral"} />
+                          : <span style={{ fontSize: "0.75rem", color: "var(--text-tertiary, #94A3B8)" }}>{log.actor_type}</span>}
                       </td>
                       <td style={styles.td}>
                         <Badge label={formatAction(log.action)} tone={isFailureAction(log.action) ? "error" : "success"} />

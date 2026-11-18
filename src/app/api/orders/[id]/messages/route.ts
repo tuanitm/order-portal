@@ -3,6 +3,7 @@ import { queryOne } from "@/lib/db/connection";
 import { getCompanyId } from "@/lib/config";
 import { getSessionUser } from "@/lib/auth/session";
 import { listOrderMessages, postOrderMessage, markOrderMessagesRead } from "@/lib/orderMessages";
+import { audited } from "@/lib/auditLog";
 
 /**
  * GET/POST /api/orders/[id]/messages — the customer side of an order's
@@ -38,7 +39,7 @@ export async function GET(
   return NextResponse.json({ messages });
 }
 
-export async function POST(
+async function POSTHandler(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -53,3 +54,6 @@ export async function POST(
   await postOrderMessage(result.orderId, "customer", result.userFullName, message);
   return NextResponse.json({ success: true });
 }
+
+// Every call is written to the audit log (who, role, target, request, outcome).
+export const POST = audited({ action: "order_message", entityType: "order", entityParam: "id" }, POSTHandler);

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSessionUser } from "@/lib/auth/session";
 import { getBasePriceListNum } from "@/lib/sap-b1/sync";
 import { getVisibleWarehousesForCustomerGroup } from "@/lib/warehouseVisibility";
+import { getCustomerRoleScope, customerItemScopeClauses, customerStockWarehouses } from "@/lib/customerRoleScope";
 import { query } from "@/lib/db/connection";
 import { getCompanyId } from "@/lib/config";
 import {
@@ -51,10 +52,15 @@ export async function POST(request: NextRequest) {
     const hiddenCategories = user?.approvalStatus === "approved"
       ? await resolveHiddenItemCategories(user.sapCusGrp01, user.sapCusGrp02, user.sapCusGrp03)
       : [];
-    const { clauses: hiddenClauses, params: hiddenParams } = buildHiddenCategoryClauses(hiddenCategories);
+    const hidden = buildHiddenCategoryClauses(hiddenCategories);
+    // The customer's role: Brands / Product Groups limit the items (none set = no limit).
+    const roleScope = await getCustomerRoleScope(user?.id);
+    const roleItems = await customerItemScopeClauses(roleScope);
+    const hiddenClauses = [...hidden.clauses, ...roleItems.clauses];
+    const hiddenParams: (string | number | null)[] = [...hidden.params, ...roleItems.params];
 
     const visibleWarehouses = await getVisibleWarehousesForCustomerGroup(cusGrp02);
-    const stockWarehouseCodes = visibleWarehouses.map((w) => w.code);
+    const stockWarehouseCodes = customerStockWarehouses(roleScope, visibleWarehouses.map((w) => w.code));
 
     const ctx: PricingContext = {
       sapCardCode: sapCardCode ?? "",

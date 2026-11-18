@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { syncSpecialDiscountsForChannel } from "@/lib/sap-b1/sync";
+import { audited } from "@/lib/auditLog";
 
 /**
  * POST /api/admin/price-lists/[num]/special-discounts/sync — pull SAP
@@ -9,7 +10,7 @@ import { syncSpecialDiscountsForChannel } from "@/lib/sap-b1/sync";
  * `special_discount`. One SAP round trip per customer — can take a while
  * for a large channel.
  */
-export async function POST(
+async function POSTHandler(
   request: NextRequest,
   { params }: { params: Promise<{ num: string }> }
 ) {
@@ -33,3 +34,6 @@ export async function POST(
     );
   }
 }
+
+// Every call is written to the audit log (who, role, target, request, outcome).
+export const POST = audited({ action: "sync_special_discounts", entityType: "price_list", entityParam: "num" }, POSTHandler);

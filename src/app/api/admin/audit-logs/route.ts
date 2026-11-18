@@ -15,8 +15,9 @@ export async function GET(request: NextRequest) {
 
   const { searchParams } = new URL(request.url);
   const actorType = searchParams.get("actorType") || ""; // "admin" | "customer"
+  const actorRole = searchParams.get("actorRole") || ""; // "super_admin" | "admin" | "sales" | "customer"
   const action = searchParams.get("action") || ""; // exact match
-  const search = searchParams.get("search") || ""; // partial match on actor_label
+  const search = searchParams.get("search") || ""; // partial match on actor_label or the target id
   const dateFrom = searchParams.get("dateFrom") || "";
   const dateTo = searchParams.get("dateTo") || "";
   const page = Math.max(1, parseInt(searchParams.get("page") || "1", 10) || 1);
@@ -31,13 +32,17 @@ export async function GET(request: NextRequest) {
     whereClauses.push("actor_type = ?");
     params.push(actorType);
   }
+  if (["super_admin", "admin", "sales", "customer"].includes(actorRole)) {
+    whereClauses.push("actor_role = ?");
+    params.push(actorRole);
+  }
   if (action) {
     whereClauses.push("action = ?");
     params.push(action);
   }
   if (search) {
-    whereClauses.push("actor_label LIKE ?");
-    params.push(`%${search}%`);
+    whereClauses.push("(actor_label LIKE ? OR entity_id LIKE ?)");
+    params.push(`%${search}%`, `%${search}%`);
   }
   if (dateFrom) {
     whereClauses.push("created_at >= ?");
@@ -52,11 +57,11 @@ export async function GET(request: NextRequest) {
 
   const [logs, totalRows, actionRows] = await Promise.all([
     query<{
-      id: number; actor_type: "admin" | "customer"; actor_id: number | null; actor_label: string | null;
+      id: number; actor_type: "admin" | "customer"; actor_role: string | null; actor_id: number | null; actor_label: string | null;
       action: string; entity_type: string | null; entity_id: string | null;
       details: Record<string, unknown> | null; ip_address: string | null; user_agent: string | null; created_at: string;
     }[]>(
-      `SELECT id, actor_type, actor_id, actor_label, action, entity_type, entity_id, details, ip_address, user_agent, created_at
+      `SELECT id, actor_type, actor_role, actor_id, actor_label, action, entity_type, entity_id, details, ip_address, user_agent, created_at
        FROM audit_logs WHERE ${whereSql} ORDER BY id DESC LIMIT ? OFFSET ?`,
       [...params, limit, offset]
     ),

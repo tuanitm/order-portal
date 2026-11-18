@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { query, queryOne } from "@/lib/db/connection";
 import { getCompanyId } from "@/lib/config";
 import { getAdminSession } from "@/lib/auth/adminSession";
+import { audited } from "@/lib/auditLog";
 
 /**
  * GET/PATCH /api/admin/me/owner-code — self-service Owner Code for the
@@ -20,13 +21,13 @@ export async function GET(request: NextRequest) {
   }
 
   const row = await queryOne<{ owner_code: string | null }>(
-    `SELECT owner_code FROM admin_users WHERE company_id = ? AND id = ?`,
+    `SELECT owner_code FROM users WHERE company_id = ? AND id = ?`,
     [getCompanyId(), session.adminId]
   );
   return NextResponse.json({ ownerCode: row?.owner_code ?? null });
 }
 
-export async function PATCH(request: NextRequest) {
+async function PATCHHandler(request: NextRequest) {
   const session = await getAdminSession(request);
   if (!session || !session.adminId) {
     return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
@@ -42,8 +43,11 @@ export async function PATCH(request: NextRequest) {
   }
 
   await query(
-    `UPDATE admin_users SET owner_code = ? WHERE company_id = ? AND id = ?`,
+    `UPDATE users SET owner_code = ? WHERE company_id = ? AND id = ?`,
     [ownerCode || null, getCompanyId(), session.adminId]
   );
   return NextResponse.json({ success: true });
 }
+
+// Every call is written to the audit log (who, role, target, request, outcome).
+export const PATCH = audited({ action: "profile_owner_code_update", entityType: "user" }, PATCHHandler);

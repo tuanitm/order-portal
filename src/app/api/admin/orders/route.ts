@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { query } from "@/lib/db/connection";
 import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
-import { getOrderAllowedCustomerGroupCodes, orderGroupScopeClause } from "@/lib/adminScope";
+import { getOrderAllowedCustomerGroupCodes, orderGroupScopeClause, getAllowedBrandCodes } from "@/lib/adminScope";
 
 /**
  * GET /api/admin/orders — list orders, optional status filter.
@@ -32,6 +32,14 @@ export async function GET(request: NextRequest) {
   const scope = orderGroupScopeClause(allowedGroups);
   whereClauses.push(scope.sql);
   params.push(...scope.params);
+  // …and to the role's Brands (an order is one brand — see the checkout brand split).
+  const brands = getAllowedBrandCodes(guard.session);
+  if (brands !== null) {
+    const list = [...brands];
+    whereClauses.push(list.length === 0 ? "1=0" : `EXISTS (SELECT 1 FROM order_lines bl JOIN items bi ON bi.company_id = bl.company_id AND bi.sap_item_code = bl.sap_item_code
+      WHERE bl.company_id = o.company_id AND bl.order_id = o.id AND bl.is_gift_line = 0 AND bi.brand_code IN (${list.map(() => "?").join(",")}))`);
+    params.push(...list);
+  }
 
   if (status) {
     whereClauses.push("o.status = ?");

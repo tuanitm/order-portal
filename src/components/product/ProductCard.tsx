@@ -105,6 +105,9 @@ export default function ProductCard({ product, giveawayOverride }: ProductCardPr
       promoGiveQty: selectedGiveaway?.giveQty ?? product.promoGiveQty,
       promoGiveItemCode: selectedGiveaway?.giveItemCode ?? product.promoGiveItemCode,
       promoGiveItemName: selectedGiveaway?.giveItemName ?? product.promoGiveItemName,
+      extraGift: selectedGiveaway?.extra
+        ? { code: selectedGiveaway.extra.code, name: selectedGiveaway.extra.name, buyQty: selectedGiveaway.extra.buyQty, giveQty: selectedGiveaway.extra.giveQty }
+        : undefined,
       periodDiscPct: product.periodDiscPct,
       contractDiscPct: product.contractDiscPct,
       promoDiscPct: effectivePromoPct,
@@ -264,10 +267,14 @@ export default function ProductCard({ product, giveawayOverride }: ProductCardPr
             from the orange percent-discount badge above, so both benefits
             are legible at a glance without being confused for one another. */}
         {product.hasBuyGivePromo && selectedGiveaway && (
-          <div className="product-card__gift">
-            <span aria-hidden>🎁</span>
-            <span>
-              {selectedGiveaway.giveItemCode === product.sapItemCode
+          <div className="product-card__gift" style={{ flexDirection: "column", gap: "0.125rem" }}>
+            {/* One 🎁 per free item, so the customer sees how many gifts they get.
+                Promotion "case c": the bought item's own free qty first, then the other free item. */}
+            {[
+              ...(selectedGiveaway.extra
+                ? [t("product.buyGetSamePromo", { buyQty: selectedGiveaway.extra.buyQty, giveQty: selectedGiveaway.extra.giveQty })]
+                : []),
+              selectedGiveaway.giveItemCode === product.sapItemCode
                 ? t("product.buyGetSamePromo", {
                     buyQty: selectedGiveaway.buyQty ?? 1,
                     giveQty: selectedGiveaway.giveQty ?? 1,
@@ -276,8 +283,13 @@ export default function ProductCard({ product, giveawayOverride }: ProductCardPr
                     buyQty: selectedGiveaway.buyQty ?? 1,
                     giveQty: selectedGiveaway.giveQty ?? 1,
                     giveItem: selectedGiveaway.giveItemName || selectedGiveaway.giveItemCode || "",
-                  })}
-            </span>
+                  }),
+            ].map((text, i) => (
+              <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: "var(--space-1)" }}>
+                <span aria-hidden>🎁</span>
+                <span>{text}</span>
+              </div>
+            ))}
           </div>
         )}
 

@@ -1,3 +1,4 @@
+import { sortOrderLines } from "@/lib/orderLineSort";
 import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "crypto";
 import { query, queryOne } from "@/lib/db/connection";
@@ -9,7 +10,7 @@ import { getLiveAvailabilityForOrder } from "@/lib/orderStock";
 import { getBasePriceListNum } from "@/lib/sap-b1/sync";
 import { isOrderInAdminScope } from "@/lib/adminScope";
 import { getAdminWarehouseCodes } from "@/lib/adminWarehouses";
-import { logAuditEvent } from "@/lib/auditLog";
+import { audited, logAuditEvent } from "@/lib/auditLog";
 import { recalculateOrderTotals } from "@/lib/orderTotals";
 
 interface OrderRow {
@@ -173,7 +174,7 @@ const MULTI_BRAND_FALLBACK_CODE = "TODO_SET_ME"; // TODO: awaiting the real code
  * that was actually verified to have stock, not whatever SAP would have
  * defaulted to on its own.
  */
-export async function POST(
+async function POSTHandler(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -235,7 +236,7 @@ export async function POST(
   // here instead of writing `order.order_number` (and `!`-asserting) everywhere.
   const orderNumber = order.order_number;
 
-  const allLines = await query<OrderLineRow[]>(
+  const allLines = sortOrderLines(await query<OrderLineRow[]>(
     `SELECT ol.id, ol.sap_item_code, ol.item_name, COALESCE(NULLIF(i.item_name_vi, ''), ol.item_name) AS sap_item_name,
             ol.giveaway_promotion_code, ol.giveaway_promotion_name, ol.quantity, ol.confirm_qty, ol.customer_confirm_status, ol.base_unit_price,
             ol.is_gift_line, ol.source_line_id, ol.promo_buy_qty, ol.promo_give_qty, i.brand_code, i.vat_group, i.item_tax_class,
@@ -244,7 +245,7 @@ export async function POST(
      LEFT JOIN items i ON i.company_id = ol.company_id AND i.sap_item_code = ol.sap_item_code
      WHERE ol.company_id = ? AND ol.order_id = ?`,
     [companyId, orderId]
-  );
+  ));
   if (allLines.length === 0) {
     return NextResponse.json({ error: "Order has no lines" }, { status: 400 });
   }
@@ -315,7 +316,7 @@ export async function POST(
   // `sap` exists) follows the same "set it on Admin Users, or it's skipped
   // cleanly" rule.
   const admin = await queryOne<{ department_code: string | null; owner_code: string | null }>(
-    `SELECT department_code, owner_code FROM admin_users WHERE company_id = ? AND id = ?`,
+    `SELECT department_code, owner_code FROM users WHERE company_id = ? AND id = ?`,
     [companyId, guard.session.adminId]
   );
   const departmentCode = admin?.department_code || undefined;
@@ -531,12 +532,15 @@ export async function POST(
   // if the buy line itself got capped in pass 1. Reconcile by taking the
   // stricter of (a) the ratio applied to this buy line's now-capped
   // confirm_qty and (b) whatever pass 1 already capped the gift line to.
+  // A buy line can have two gift lines (promotion "case c"); each uses its own
+  // ratio when stored on the gift line, else the buy line's.
   for (const buyLine of cappedLines) {
-    if (!buyLine.promo_buy_qty || !buyLine.promo_give_qty) continue;
-    const giftLine = cappedLines.find((l) => l.source_line_id === buyLine.id);
-    if (!giftLine) continue;
+    for (const giftLine of cappedLines.filter((l) => l.is_gift_line && l.source_line_id === buyLine.id)) {
+    const buyQty = Number(giftLine.promo_buy_qty || buyLine.promo_buy_qty);
+    const giveQty = Number(giftLine.promo_give_qty || buyLine.promo_give_qty);
+    if (!buyQty || !giveQty) continue;
 
-    const ratioBased = Math.floor(buyLine.confirm_qty / buyLine.promo_buy_qty) * buyLine.promo_give_qty;
+    const ratioBased = Math.floor(buyLine.confirm_qty / buyQty) * giveQty;
     const finalGiftQty = Math.max(0, Math.min(giftLine.confirm_qty, ratioBased));
     if (finalGiftQty !== giftLine.confirm_qty) {
       adjustments.push({ sapItemCode: giftLine.sap_item_code, from: giftLine.confirm_qty, to: finalGiftQty });
@@ -546,6 +550,7 @@ export async function POST(
         `UPDATE order_lines SET confirm_qty = ?, customer_confirm_status = ? WHERE company_id = ? AND id = ?`,
         [finalGiftQty, giftLine.customer_confirm_status, companyId, giftLine.id]
       );
+    }
     }
   }
 
@@ -773,10 +778,15 @@ export async function POST(
   function buildGiftLine(l: typeof lines[number]) {
     const buyLine = l.source_line_id ? lines.find((x) => x.id === l.source_line_id) : undefined;
     const meta = buyLine ? lineMetaById.get(buyLine.id) : undefined;
-    // The program the customer chose (saved on the buy line), else today's best match.
-    const best = buyLine && !buyLine.giveaway_promotion_code ? bestGiveawayPromotion(buyLine, l.sap_item_code) : null;
-    const ctkmCode = buyLine?.giveaway_promotion_code || best?.code || null;
-    const ctkmName = buyLine?.giveaway_promotion_name || best?.name || null;
+    // The gift's program: saved on the gift line itself (newer orders), else the
+    // one chosen on the buy line, else today's best match.
+    const savedCode = l.giveaway_promotion_code || buyLine?.giveaway_promotion_code;
+    const best = buyLine && !savedCode ? bestGiveawayPromotion(buyLine, l.sap_item_code) : null;
+    const ctkmCode = savedCode || best?.code || null;
+    const ctkmName = (l.giveaway_promotion_code ? l.giveaway_promotion_name : buyLine?.giveaway_promotion_name) || best?.name || null;
+    // _31 for a buy line's first gift, _32 for a second one (promotion "case c":
+    // the bought item's own free qty first — lines come from sortOrderLines).
+    const giftIndex = buyLine ? lines.filter((x) => x.is_gift_line && x.source_line_id === buyLine.id).findIndex((x) => x.id === l.id) : 0;
     return {
       ItemCode: l.sap_item_code,
       Quantity: l.confirm_qty,
@@ -803,7 +813,7 @@ export async function POST(
       ItemDescription: l.sap_item_name,
       // U_INVDesc is 254 chars max — trim the name, never the suffix.
       U_INVDesc: `${l.sap_item_name.slice(0, 254 - FREE_ITEM_SUFFIX.length)}${FREE_ITEM_SUFFIX}`,
-      U_SortField: meta && buyLine ? `${sortFieldPrefix(meta.index, buyLine.sap_item_code)}_31` : undefined,
+      U_SortField: meta && buyLine ? `${sortFieldPrefix(meta.index, buyLine.sap_item_code)}_${31 + Math.max(0, giftIndex)}` : undefined,
       U_PM_Type: "31",
       U_PM_HavingSetupPrrt: "N",
       U_CTKM: ctkmCode || undefined,
@@ -1008,3 +1018,6 @@ export async function POST(
     rejectedItems: rejectedLines.map((l) => l.sap_item_code),
   });
 }
+
+// Failed calls are written to the audit log too (successes log their own detailed entry above).
+export const POST = audited({ action: "order_confirm", entityType: "order", entityParam: "id", failuresOnly: true }, POSTHandler);

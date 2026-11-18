@@ -4,6 +4,7 @@ import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { cascadeDeactivateDescendants } from "@/lib/itemCategories";
 import { getAllowedItemGroupCodes } from "@/lib/adminScope";
+import { audited } from "@/lib/auditLog";
 
 /**
  * PATCH /api/admin/item-groups/[id] — name a category, toggle whether it's
@@ -17,7 +18,7 @@ import { getAllowedItemGroupCodes } from "@/lib/adminScope";
  * item groups (and descendants) — see getAllowedItemGroupCodes.
  * Body: { name?: string, isSellable?: boolean, isActive?: boolean }
  */
-export async function PATCH(
+async function PATCHHandler(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -64,3 +65,6 @@ export async function PATCH(
 
   return NextResponse.json({ success: true });
 }
+
+// Every call is written to the audit log (who, role, target, request, outcome).
+export const PATCH = audited({ action: "item_group_update", entityType: "item_group", entityParam: "id" }, PATCHHandler);

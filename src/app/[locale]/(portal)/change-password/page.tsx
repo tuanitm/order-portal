@@ -39,6 +39,11 @@ export default function ChangePasswordPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to change password");
+      // After a forced change ("change password at next login") go on to the store.
+      if (new URLSearchParams(window.location.search).has("forced")) {
+        window.location.replace(`/${window.location.pathname.split("/")[1]}`);
+        return;
+      }
       setSuccess(true);
       setCurrentPassword("");
       setNewPassword("");

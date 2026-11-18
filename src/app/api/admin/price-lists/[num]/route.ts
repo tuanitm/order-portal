@@ -3,6 +3,7 @@ import { getPool, query } from "@/lib/db/connection";
 import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { getBasePriceListNum } from "@/lib/sap-b1/sync";
+import { audited } from "@/lib/auditLog";
 
 /**
  * GET /api/admin/price-lists/[num] — item-level pricing for one price list,
@@ -126,7 +127,7 @@ export async function GET(
  * Body: { isBase?: boolean, isChannel?: boolean }
  * Setting isBase=true clears it on every other list (only one base allowed).
  */
-export async function PATCH(
+async function PATCHHandler(
   request: NextRequest,
   { params }: { params: Promise<{ num: string }> }
 ) {
@@ -178,3 +179,6 @@ export async function PATCH(
     conn.release();
   }
 }
+
+// Every call is written to the audit log (who, role, target, request, outcome).
+export const PATCH = audited({ action: "price_list_update", entityType: "price_list", entityParam: "num" }, PATCHHandler);

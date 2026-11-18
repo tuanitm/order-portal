@@ -18,7 +18,9 @@ export async function POST(request: NextRequest) {
 
 export async function GET(request: NextRequest) {
   const session = await getAdminSession(request);
-  const response = NextResponse.redirect(new URL("/vi/admin", request.url));
+  // Back to the very first page (identify), in the user's language.
+  const locale = request.nextUrl.searchParams.get("locale") === "en" ? "en" : "vi";
+  const response = NextResponse.redirect(new URL(`/${locale}/identify`, request.url));
   response.cookies.set("admin-token", "", {
     httpOnly: true,
     expires: new Date(0),

@@ -11,9 +11,13 @@ interface GiftLineRow {
   sap_item_code: string;
   quantity: number;
   confirm_qty: number;
+  promo_buy_qty: number | null;
+  promo_give_qty: number | null;
 }
 
 export interface GiftQtyAdjustment {
+  /** The gift line that changed. */
+  lineId: number;
   sapItemCode: string;
   from: number;
   to: number;
@@ -34,33 +38,41 @@ export interface GiftQtyAdjustment {
  * the recalculated gift qty happens to still equal its original ordered
  * quantity, pending otherwise).
  *
- * A no-op (returns null) if `buyLineId` isn't actually a buy line with an
- * attached gift (promo_buy_qty unset) or has no linked gift line.
+ * A buy line can have more than one gift line (promotion "case c": a
+ * different free item plus the bought item itself). Each gift line uses its
+ * own promo_buy_qty/promo_give_qty when set, else the buy line's (older
+ * orders stored the ratio on the buy line only). Returns the gift lines that
+ * changed — empty when there's nothing to recalculate.
  */
 export async function recalculateLinkedGiftQty(
   buyLineId: number,
   newBuyConfirmQty: number
-): Promise<GiftQtyAdjustment | null> {
+): Promise<GiftQtyAdjustment[]> {
   const companyId = getCompanyId();
   const buyLine = await queryOne<BuyLineRow>(
     `SELECT promo_buy_qty, promo_give_qty FROM order_lines WHERE company_id = ? AND id = ?`,
     [companyId, buyLineId]
   );
-  if (!buyLine || !buyLine.promo_buy_qty || !buyLine.promo_give_qty) return null;
+  if (!buyLine) return [];
 
-  const giftLine = await queryOne<GiftLineRow>(
-    `SELECT id, sap_item_code, quantity, confirm_qty FROM order_lines WHERE company_id = ? AND source_line_id = ?`,
+  const giftLines = await query<GiftLineRow[]>(
+    `SELECT id, sap_item_code, quantity, confirm_qty, promo_buy_qty, promo_give_qty
+       FROM order_lines WHERE company_id = ? AND source_line_id = ? AND is_gift_line = TRUE`,
     [companyId, buyLineId]
   );
-  if (!giftLine) return null;
 
-  const newGiftConfirmQty = Math.max(0, Math.floor(newBuyConfirmQty / buyLine.promo_buy_qty) * buyLine.promo_give_qty);
-  if (newGiftConfirmQty === giftLine.confirm_qty) return null;
-
-  await query(
-    `UPDATE order_lines SET confirm_qty = ?, customer_confirm_status = ? WHERE company_id = ? AND id = ?`,
-    [newGiftConfirmQty, newGiftConfirmQty === giftLine.quantity ? "accepted" : "pending", companyId, giftLine.id]
-  );
-
-  return { sapItemCode: giftLine.sap_item_code, from: giftLine.confirm_qty, to: newGiftConfirmQty };
+  const changes: GiftQtyAdjustment[] = [];
+  for (const g of giftLines) {
+    const buyQty = Number(g.promo_buy_qty || buyLine.promo_buy_qty);
+    const giveQty = Number(g.promo_give_qty || buyLine.promo_give_qty);
+    if (!buyQty || !giveQty) continue;
+    const to = Math.max(0, Math.floor(newBuyConfirmQty / buyQty) * giveQty);
+    if (to === g.confirm_qty) continue;
+    await query(
+      `UPDATE order_lines SET confirm_qty = ?, customer_confirm_status = ? WHERE company_id = ? AND id = ?`,
+      [to, to === g.quantity ? "accepted" : "pending", companyId, g.id]
+    );
+    changes.push({ lineId: g.id, sapItemCode: g.sap_item_code, from: g.confirm_qty, to });
+  }
+  return changes;
 }

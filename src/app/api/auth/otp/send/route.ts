@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { storeOtp, canSendOtp } from "@/lib/auth/otp";
 import { sendOtpEmail } from "@/lib/email/sender";
+import { logAuditEvent } from "@/lib/auditLog";
+import { queryOne } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 
 /**
  * POST /api/auth/otp/send — Send OTP to email
@@ -61,6 +64,16 @@ export async function POST(request: NextRequest) {
         },
         { status: 500 }
       );
+    }
+
+    if (purpose === "forgot-password") {
+      const account = await queryOne<{ id: number; userid: string | null }>(
+        "SELECT id, userid FROM users WHERE company_id = ? AND LOWER(email) = LOWER(?) LIMIT 1", [getCompanyId(), email]
+      );
+      await logAuditEvent({
+        actorType: "customer", actorId: account?.id ?? null, actorLabel: account?.userid || email,
+        action: "password_reset_requested", entityType: "user", entityId: account?.id ?? null, request,
+      });
     }
 
     return NextResponse.json({

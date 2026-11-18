@@ -1,4 +1,5 @@
 import { getSapClient } from "@/lib/sap-b1/client";
+import { vnToday } from "@/lib/vnTime";
 
 /**
  * SAP output-tax (VAT) rates by VAT group code, e.g. S08 → 8, S10 → 10 —
@@ -21,7 +22,7 @@ async function refresh(): Promise<void> {
   try {
     const sap = getSapClient();
     const groups = await sap.getOutputVatGroups();
-    const today = new Date().toISOString().slice(0, 10);
+    const today = vnToday(); // VAT rate changes take effect on the Vietnam date
     const next = new Map<string, number>();
     for (const g of groups) {
       // The rate in force today: the latest line whose Effectivefrom has passed.

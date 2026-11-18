@@ -67,6 +67,9 @@ export default function ReorderButton({ orderId }: { orderId: number }) {
           promoGiveQty: product.promoGiveQty,
           promoGiveItemCode: product.promoGiveItemCode,
           promoGiveItemName: product.promoGiveItemName,
+          extraGift: product.giveawayOptions?.[0]?.extra
+            ? { code: product.giveawayOptions[0].extra.code, name: product.giveawayOptions[0].extra.name, buyQty: product.giveawayOptions[0].extra.buyQty, giveQty: product.giveawayOptions[0].extra.giveQty }
+            : undefined,
           periodDiscPct: product.periodDiscPct,
           contractDiscPct: product.contractDiscPct,
           promoDiscPct: product.promoDiscPct,

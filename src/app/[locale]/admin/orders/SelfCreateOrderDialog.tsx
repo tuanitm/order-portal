@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback, type CSSProperties, type KeyboardEvent } from "react";
 import { styles, btn, Badge } from "../adminUi";
+import { useStaffBase } from "../layout";
 import type { ProductWithPricing } from "@/types/product";
 
 /**
@@ -75,7 +76,10 @@ function priceLine(line: Line) {
   const unit = Math.max(0, p.basePrice * (1 - (p.contractDiscPct + promoPct) / 100));
   const giveaway = p.giveawayOptions.find((o) => giveawayKeyOf(o) === line.giveawayKey) ?? p.giveawayOptions[0];
   const freeQty = giveaway && giveaway.buyQty && giveaway.giveQty ? Math.floor(line.qty / giveaway.buyQty) * giveaway.giveQty : 0;
-  return { promoPct, unit, total: unit * line.qty, base: p.basePrice * line.qty, giveaway, freeQty };
+  // Promotion "case c": the same program also gives the bought item itself.
+  const extra = giveaway?.extra;
+  const extraQty = extra && extra.buyQty && extra.giveQty ? Math.floor(line.qty / extra.buyQty) * extra.giveQty : 0;
+  return { promoPct, unit, total: unit * line.qty, base: p.basePrice * line.qty, giveaway, freeQty, extraQty };
 }
 
 const label: CSSProperties = { fontSize: "0.6875rem", fontWeight: 700, color: "var(--text-secondary, #64748B)", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: "0.25rem", display: "block" };
@@ -212,6 +216,9 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
   /** Pre-fill from an existing order (Duplicate); everything stays editable. */
   initial?: DuplicateSource;
 }) {
+  // /admin or /sales — links to the new order stay in the current area.
+  const staffBase = useStaffBase();
+
   // ── Header ──
   const [customerQuery, setCustomerQuery] = useState("");
   const [customerResults, setCustomerResults] = useState<CustomerRow[]>([]);
@@ -538,7 +545,7 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
             <h3 style={{ fontSize: "1.125rem", fontWeight: 800 }}>{created.length > 1 ? `${created.length} orders created (one per brand)` : "Order created"}</h3>
             <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", minWidth: 360 }}>
               {created.map((o) => (
-                <a key={o.orderId} href={`/${locale}/admin/orders/${o.orderId}`} style={{ ...styles.cardPadded, marginBottom: 0, padding: "0.75rem 1rem", display: "flex", justifyContent: "space-between", textDecoration: "none", color: "inherit" }}>
+                <a key={o.orderId} href={`${staffBase || `/${locale}/admin`}/orders/${o.orderId}`} style={{ ...styles.cardPadded, marginBottom: 0, padding: "0.75rem 1rem", display: "flex", justifyContent: "space-between", textDecoration: "none", color: "inherit" }}>
                   <span style={{ fontFamily: "monospace", fontWeight: 700 }}>{o.orderNumber}</span>
                   <span>{money(o.grandTotal)} →</span>
                 </a>
@@ -745,7 +752,7 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
                     </tr>
                   </thead>
                   <tbody>
-                    {priced.map(({ line, promoPct, unit, total: lineTotal, giveaway, freeQty }) => {
+                    {priced.map(({ line, promoPct, unit, total: lineTotal, giveaway, freeQty, extraQty }) => {
                       const p = line.product;
                       const over = p.availableQty != null && line.qty > (p.availableQty ?? 0);
                       const giftSame = giveaway && giveaway.giveItemCode === p.sapItemCode;
@@ -805,6 +812,30 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
                             <button onClick={() => removeLine(p.sapItemCode)} aria-label={`Remove ${p.sapItemCode}`} title="Remove" style={{ ...btn("secondary"), padding: "0.25rem 0.5rem" }}>🗑</button>
                           </td>
                         </tr>,
+                        extraQty > 0 ? (
+                          <tr key={`${p.sapItemCode}-gift-same`} style={{ background: "rgba(16,185,129,0.06)" }}>
+                            <td style={{ ...td, fontFamily: "monospace", paddingLeft: "1rem", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", color: "var(--text-secondary, #64748B)" }} title={p.sapItemCode}>└ {p.sapItemCode}</td>
+                            <td style={td}>
+                              <div style={{ display: "flex", gap: 6, alignItems: "flex-start", minWidth: 0 }}>
+                                <Badge label="Gift" tone="success" />
+                                <ClampedName
+                                  text={itemName(p)}
+                                  expanded={expandedNames.has(`${p.sapItemCode}-gift-same`)}
+                                  onToggle={() => toggleName(`${p.sapItemCode}-gift-same`)}
+                                  style={{ minWidth: 0, flex: 1 }}
+                                />
+                              </div>
+                            </td>
+                            <td style={num_}></td>
+                            <td style={num_}>{num(extraQty)}</td>
+                            <td style={td}>{p.uom}</td>
+                            <td style={num_}>0₫</td>
+                            <td style={num_}></td><td style={num_}></td><td style={num_}></td>
+                            <td style={num_}>0₫</td>
+                            <td style={num_}>0₫</td>
+                            <td style={td}></td>
+                          </tr>
+                        ) : null,
                         freeQty > 0 && giveaway ? (
                           <tr key={`${p.sapItemCode}-gift`} style={{ background: "rgba(16,185,129,0.06)" }}>
                             <td style={{ ...td, fontFamily: "monospace", paddingLeft: "1rem", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", color: "var(--text-secondary, #64748B)" }} title={giveaway.giveItemCode}>└ {giveaway.giveItemCode}</td>

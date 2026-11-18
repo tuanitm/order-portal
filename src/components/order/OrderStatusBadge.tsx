@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useTranslations, useLocale } from "next-intl";
+import { VN_TIME_ZONE } from "@/lib/vnTime";
 
 interface HistoryEntry {
   status: string;
@@ -65,7 +66,7 @@ function buildRoadmap(history: HistoryEntry[]): RoadmapStep[] {
 }
 
 function formatDateTime(dateString: string, locale: string): string {
-  return new Date(dateString).toLocaleString(locale === "vi" ? "vi-VN" : "en-US", {
+  return new Date(dateString).toLocaleString(locale === "vi" ? "vi-VN" : "en-US", { timeZone: VN_TIME_ZONE,
     year: "numeric", month: "2-digit", day: "2-digit",
     hour: "2-digit", minute: "2-digit", second: "2-digit",
   });

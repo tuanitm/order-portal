@@ -20,9 +20,19 @@
 -- (migrate_company_id.js) if a never-migrated database ever turns up.
 
 -- Users & Authentication
+-- One table for every account — staff (Super Admin / Admin / Sales) and
+-- customers. role_id -> admin_roles (its kind decides /admin, /sales or the
+-- storefront at login; functions and data permissions come from the role).
+-- userid and email are both unique sign-in names; a Customer-role user orders
+-- for sap_card_code. must_change_password forces a password change at the
+-- next login. department_code / owner_code are staff-only (SO OcrCode2 and
+-- SAP Owner). legacy_admin_user_id = the admin_users row it was copied from
+-- (scripts/migrate_unified_users.mjs; admin_users stays for other companies).
 CREATE TABLE IF NOT EXISTS users (
   id INT AUTO_INCREMENT PRIMARY KEY,
   company_id VARCHAR(50) NOT NULL,
+  userid VARCHAR(100) NULL,
+  role_id INT NULL,
   email VARCHAR(255),
   phone VARCHAR(20),
   password_hash VARCHAR(255) NOT NULL,
@@ -64,8 +74,14 @@ CREATE TABLE IF NOT EXISTS users (
   approved_at TIMESTAMP NULL,
   approved_by VARCHAR(255) NULL,
   rejection_reason TEXT NULL,
+  must_change_password BOOLEAN NOT NULL DEFAULT FALSE,
+  department_code VARCHAR(20) NULL,
+  owner_code VARCHAR(50) NULL,
+  legacy_admin_user_id INT NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_company_userid (company_id, userid),
+  INDEX idx_role (role_id),
   UNIQUE KEY uk_company_email (company_id, email),
   UNIQUE KEY uk_company_phone (company_id, phone),
   INDEX idx_company (company_id),
@@ -743,8 +759,17 @@ CREATE TABLE IF NOT EXISTS admin_roles (
   id INT AUTO_INCREMENT PRIMARY KEY,
   company_id VARCHAR(50) NOT NULL,
   name VARCHAR(100) NOT NULL,
+  -- super_admin: everything; admin -> /admin, sales -> /sales (functions in
+  -- permissions, data limited to the code lists below — default deny);
+  -- customer -> storefront, no permissions/scope.
+  kind ENUM('super_admin','admin','sales','customer') NOT NULL DEFAULT 'admin',
   description VARCHAR(255),
   permissions JSON NOT NULL,
+  brands JSON NULL,           -- items.brand_code
+  channels JSON NULL,         -- level-1 customer groups (CusGrp01, e.g. GT, MT)
+  customer_groups JSON NULL,  -- any level; intersected with channels
+  item_groups JSON NULL,
+  warehouses JSON NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   UNIQUE KEY uk_company_name (company_id, name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
@@ -1028,6 +1053,8 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   id BIGINT AUTO_INCREMENT PRIMARY KEY,
   company_id VARCHAR(50) NOT NULL,
   actor_type ENUM('admin', 'customer') NOT NULL,
+  -- Role kind at the time: super_admin (Root) / admin / sales / customer.
+  actor_role VARCHAR(20) NULL,
   actor_id INT NULL,
   actor_label VARCHAR(255) NULL,
   action VARCHAR(100) NOT NULL,

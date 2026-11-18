@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getPool, query } from "@/lib/db/connection";
 import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
+import { audited } from "@/lib/auditLog";
 
 /**
  * GET /api/admin/catalog-visibility/warehouses — level-2 customer groups'
@@ -36,7 +37,7 @@ export async function GET(request: NextRequest) {
  * code is rejected with a clear error instead of silently dropped, so a
  * typo doesn't just vanish.
  */
-export async function PUT(request: NextRequest) {
+async function PUTHandler(request: NextRequest) {
   const guard = await requireAdminPermission(request, "catalog-visibility");
   if (guard.response) return guard.response;
 
@@ -93,3 +94,6 @@ export async function PUT(request: NextRequest) {
     conn.release();
   }
 }
+
+// Every call is written to the audit log (who, role, target, request, outcome).
+export const PUT = audited({ action: "catalog_warehouses_update", entityType: "catalog_visibility" }, PUTHandler);

@@ -6,7 +6,7 @@ import { getSapClient } from "@/lib/sap-b1/client";
 import { recordOrderStatus, notifyCustomerOfStatusChange } from "@/lib/orderHistory";
 import { postOrderMessage } from "@/lib/orderMessages";
 import { isOrderInAdminScope } from "@/lib/adminScope";
-import { logAuditEvent } from "@/lib/auditLog";
+import { audited, logAuditEvent } from "@/lib/auditLog";
 
 const TERMINAL_STATUSES = ["cancelled", "completed", "rejected"];
 
@@ -30,7 +30,7 @@ interface OrderRow {
  * aborts WITHOUT marking the order cancelled, so the portal's status never
  * drifts from what's actually true in SAP.
  */
-export async function POST(
+async function POSTHandler(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -79,7 +79,7 @@ export async function POST(
   await notifyCustomerOfStatusChange(orderId, "cancelled");
 
   const admin = await queryOne<{ full_name: string | null }>(
-    `SELECT full_name FROM admin_users WHERE company_id = ? AND id = ?`,
+    `SELECT full_name FROM users WHERE company_id = ? AND id = ?`,
     [companyId, guard.session.adminId]
   );
   await postOrderMessage(orderId, "admin", admin?.full_name || null, "Cancelled this order.");
@@ -93,3 +93,6 @@ export async function POST(
 
   return NextResponse.json({ success: true });
 }
+
+// Failed calls are written to the audit log too (successes log their own detailed entry above).
+export const POST = audited({ action: "order_cancel", entityType: "order", entityParam: "id", failuresOnly: true }, POSTHandler);

@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { styles, btn, SyncButton, Toggle, LoadingOrEmpty } from "../adminUi";
 import { useAdminSession } from "../layout";
+import { VN_TIME_ZONE } from "@/lib/vnTime";
 
 interface Warehouse {
   sap_warehouse_code: string;
@@ -147,7 +148,7 @@ export default function WarehousesPage() {
                         />
                       </td>
                       <td style={{ ...styles.td, color: "var(--text-tertiary, #94A3B8)", fontSize: "0.75rem" }}>
-                        {w.last_synced ? new Date(w.last_synced).toLocaleString() : "—"}
+                        {w.last_synced ? new Date(w.last_synced).toLocaleString(undefined, { timeZone: VN_TIME_ZONE }) : "—"}
                       </td>
                     </tr>
                   ))}

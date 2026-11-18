@@ -1,6 +1,6 @@
 import { query } from "@/lib/db/connection";
 import { getCompanyId } from "@/lib/config";
-import type { ProductWithPricing } from "@/types/product";
+import type { ProductWithPricing, GiftRule, GiveawayOption } from "@/types/product";
 
 /**
  * The shared pricing core behind both GET /api/products (search/paginated
@@ -251,6 +251,33 @@ export function promotionMatchSql(alias: string): { bpSql: string; fromSql: stri
   };
 }
 
+/**
+ * Promotion "case c": one program gives the bought item itself (e.g. buy 10
+ * → 1 free of the same item) AND a different free item (buy 1 → 1 D72305104).
+ * Both apply together, so each different-item option of that program carries
+ * the program's same-item gift as `extra`, and the same-item gift stops being
+ * a choice of its own. Programs with only one kind of gift are unchanged.
+ * Order is kept (best match first).
+ */
+export function withStackedSameItemGifts(sellingItemCode: string, options: GiftRule[]): GiveawayOption[] {
+  const sameItemByProgram = new Map<string, GiftRule>();
+  for (const o of options) {
+    if (o.giveItemCode === sellingItemCode && !sameItemByProgram.has(o.code ?? "")) sameItemByProgram.set(o.code ?? "", o);
+  }
+  const programsWithOtherGifts = new Set(options.filter((o) => o.giveItemCode !== sellingItemCode).map((o) => o.code ?? ""));
+  const result: GiveawayOption[] = [];
+  for (const o of options) {
+    const program = o.code ?? "";
+    if (o.giveItemCode === sellingItemCode) {
+      if (!programsWithOtherGifts.has(program)) result.push(o); // plain case a
+      continue;
+    }
+    const extra = sameItemByProgram.get(program);
+    result.push(extra ? { ...o, extra } : o);
+  }
+  return result;
+}
+
 export function mapRowToProductWithPricing(row: ProductRow): ProductWithPricing {
   const sapBasePrice = Number(row.base_price); // items.base_price (S01) — only used as the fallback when there's no channel price row at all
   const channelPrice = row.channel_price !== null ? Number(row.channel_price) : null;
@@ -281,6 +308,11 @@ export function mapRowToProductWithPricing(row: ProductRow): ProductWithPricing 
       .sort((a, b) => b.score - a.score || Number(b.giveQty) - Number(a.giveQty)),
     (o) => `${o.code ?? o.name ?? ""}::${o.giveCode}`
   );
+
+  const giveawayOptions = withStackedSameItemGifts(row.sap_item_code, giveawayOptionsSorted.map((o) => ({
+    code: o.code, name: o.name, buyQty: Number(o.buyQty),
+    giveItemCode: o.giveCode, giveItemName: o.giveName, giveQty: Number(o.giveQty),
+  })));
 
   const promoDiscPct = promoOptionsSorted[0] ? Number(promoOptionsSorted[0].pct) : 0;
 
@@ -337,16 +369,13 @@ export function mapRowToProductWithPricing(row: ProductRow): ProductWithPricing 
     // `code`/`name` (a legacy Excel-import-sourced row with no bp_type/
     // it_type-derived program identity) still shows up so the pct is visible.
     promotionOptions: promoOptionsSorted.map((o) => ({ code: o.code, name: o.name, pct: Number(o.pct) })),
-    hasBuyGivePromo: giveawayOptionsSorted.length > 0,
-    promoBuyQty: giveawayOptionsSorted[0] ? Number(giveawayOptionsSorted[0].buyQty) : undefined,
-    promoGiveItemCode: giveawayOptionsSorted[0]?.giveCode || undefined,
-    promoGiveItemName: giveawayOptionsSorted[0]?.giveName || undefined,
-    promoGiveQty: giveawayOptionsSorted[0] ? Number(giveawayOptionsSorted[0].giveQty) : undefined,
-    giveawayCode: giveawayOptionsSorted[0]?.code || undefined,
-    giveawayOptions: giveawayOptionsSorted.map((o) => ({
-      code: o.code, name: o.name, buyQty: Number(o.buyQty),
-      giveItemCode: o.giveCode, giveItemName: o.giveName, giveQty: Number(o.giveQty),
-    })),
+    hasBuyGivePromo: giveawayOptions.length > 0,
+    promoBuyQty: giveawayOptions[0]?.buyQty,
+    promoGiveItemCode: giveawayOptions[0]?.giveItemCode || undefined,
+    promoGiveItemName: giveawayOptions[0]?.giveItemName || undefined,
+    promoGiveQty: giveawayOptions[0]?.giveQty,
+    giveawayCode: giveawayOptions[0]?.code || undefined,
+    giveawayOptions,
     // null = stock tracking is off (or no stock row at all) for this customer's
     // resolved warehouse set — distinct from a real 0, which means "out of
     // stock" (though a 0-or-below item wouldn't reach this far: the stock

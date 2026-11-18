@@ -3,6 +3,8 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { query } from "@/lib/db/connection";
 import { getCompanyId } from "@/lib/config";
+import { queryOne } from "@/lib/db/connection";
+import { logAuditEvent } from "@/lib/auditLog";
 
 const JWT_SECRET = process.env.JWT_SECRET || "order-portal-secret-key-change-in-production";
 
@@ -53,6 +55,16 @@ export async function POST(request: NextRequest) {
       "UPDATE users SET password_hash = ? WHERE company_id = ? AND email = ? AND is_active = TRUE",
       [passwordHash, getCompanyId(), decoded.email]
     );
+    const account = await queryOne<{ id: number; userid: string | null }>(
+      "SELECT id, userid FROM users WHERE company_id = ? AND email = ? AND is_active = TRUE LIMIT 1",
+      [getCompanyId(), decoded.email]
+    );
+    if (account) {
+      await logAuditEvent({
+        actorType: "customer", actorId: account.id, actorLabel: account.userid || decoded.email,
+        action: "password_reset", entityType: "user", entityId: account.id, details: { via: "forgot-password OTP" }, request,
+      });
+    }
 
     return NextResponse.json({
       success: true,

@@ -2,9 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireAdminPermission } from '@/lib/auth/adminSession';
 import { syncOneOrderStatusFromSap } from '@/lib/orderStatusSync';
 import { isOrderInAdminScope } from '@/lib/adminScope';
+import { audited } from "@/lib/auditLog";
 
 /** POST /api/admin/orders/[id]/sync-status ? manual SAP status sync button */
-export async function POST(
+async function POSTHandler(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -28,3 +29,6 @@ export async function POST(
     );
   }
 }
+
+// Every call is written to the audit log (who, role, target, request, outcome).
+export const POST = audited({ action: "order_sync_status", entityType: "order", entityParam: "id" }, POSTHandler);

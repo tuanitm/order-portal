@@ -3,6 +3,7 @@ import bcrypt from "bcryptjs";
 import { query, queryOne } from "@/lib/db/connection";
 import { getCompanyId } from "@/lib/config";
 import { getSessionUser } from "@/lib/auth/session";
+import { audited } from "@/lib/auditLog";
 
 /**
  * POST /api/auth/me/password — self-service password change for the
@@ -10,7 +11,7 @@ import { getSessionUser } from "@/lib/auth/session";
  * Requires currentPassword to match — same pattern as the admin side's own
  * POST /api/admin/me/password.
  */
-export async function POST(request: NextRequest) {
+async function POSTHandler(request: NextRequest) {
   const user = await getSessionUser(request);
   if (!user) {
     return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
@@ -39,7 +40,10 @@ export async function POST(request: NextRequest) {
   }
 
   const newHash = await bcrypt.hash(newPassword, 12);
-  await query(`UPDATE users SET password_hash = ? WHERE company_id = ? AND id = ?`, [newHash, companyId, user.id]);
+  await query(`UPDATE users SET password_hash = ?, must_change_password = FALSE WHERE company_id = ? AND id = ?`, [newHash, companyId, user.id]);
 
   return NextResponse.json({ success: true });
 }
+
+// Every call is written to the audit log (who, role, target, request, outcome).
+export const POST = audited({ action: "password_change", entityType: "user" }, POSTHandler);

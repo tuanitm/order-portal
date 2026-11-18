@@ -37,6 +37,10 @@ function loadDbConfig(): PoolOptions {
     keepAliveInitialDelay: 0,
     charset: 'utf8mb4',
     timezone: DB_TIME_ZONE,
+    // DATE columns (validity dates, promotion begin/end...) come back as plain
+    // "YYYY-MM-DD" text. As JS Dates they'd be midnight GMT+7 = 17:00 the day
+    // before in UTC, and any "first 10 characters" display showed the previous day.
+    dateStrings: ['DATE'],
   };
 }
 

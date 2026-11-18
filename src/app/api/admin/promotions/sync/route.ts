@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { syncPromotionDiscountsFromHana } from "@/lib/hana/sync";
+import { audited } from "@/lib/auditLog";
 
 /**
  * POST /api/admin/promotions/sync — pull the current Promotion Discount
@@ -9,7 +10,7 @@ import { syncPromotionDiscountsFromHana } from "@/lib/hana/sync";
  * old SAP Service Layer SQLQueries attempt, which SAP B1's own "Query
  * Generator Authorization" blocks for these UDTs regardless of grants.
  */
-export async function POST(request: NextRequest) {
+async function POSTHandler(request: NextRequest) {
   const guard = await requireAdminPermission(request, "promotions");
   if (guard.response) return guard.response;
 
@@ -28,3 +29,6 @@ export async function POST(request: NextRequest) {
     );
   }
 }
+
+// Every call is written to the audit log (who, role, target, request, outcome).
+export const POST = audited({ action: "sync_promotions", entityType: "sync" }, POSTHandler);

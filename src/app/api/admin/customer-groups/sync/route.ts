@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { syncCustomerGroupsFromHana } from "@/lib/customerGroups";
+import { audited } from "@/lib/auditLog";
 
 /**
  * POST /api/admin/customer-groups/sync — pull the CustGrp01->02->03 name
@@ -9,7 +10,7 @@ import { syncCustomerGroupsFromHana } from "@/lib/customerGroups";
  * path for this table; the old manual SAP_Customer_Group.xlsx upload has
  * been removed.
  */
-export async function POST(request: NextRequest) {
+async function POSTHandler(request: NextRequest) {
   const guard = await requireAdminPermission(request, "customer-groups");
   if (guard.response) return guard.response;
   if (!guard.session.isSuperAdmin) {
@@ -27,3 +28,6 @@ export async function POST(request: NextRequest) {
     );
   }
 }
+
+// Every call is written to the audit log (who, role, target, request, outcome).
+export const POST = audited({ action: "sync_customer_groups", entityType: "sync" }, POSTHandler);

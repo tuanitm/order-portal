@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useTranslations, useLocale } from "next-intl";
+import { VN_TIME_ZONE } from "@/lib/vnTime";
 
 type ApprovalStatus = "pending" | "approved" | "rejected";
 
@@ -251,7 +252,7 @@ export default function AdminCustomersPage() {
 
   const formatDate = (dateStr: string) => {
     try {
-      return new Date(dateStr).toLocaleDateString(locale === "vi" ? "vi-VN" : "en-US", {
+      return new Date(dateStr).toLocaleDateString(locale === "vi" ? "vi-VN" : "en-US", { timeZone: VN_TIME_ZONE,
         year: "numeric", month: "short", day: "numeric",
         hour: "2-digit", minute: "2-digit",
       });

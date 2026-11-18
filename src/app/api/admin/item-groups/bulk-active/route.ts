@@ -4,6 +4,7 @@ import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { bulkSetItemGroupActive } from "@/lib/itemCategories";
 import { getAllowedItemGroupCodes } from "@/lib/adminScope";
+import { audited } from "@/lib/auditLog";
 
 /**
  * POST /api/admin/item-groups/bulk-active — apply several Active/Inactive
@@ -14,7 +15,7 @@ import { getAllowedItemGroupCodes } from "@/lib/adminScope";
  * failing the whole batch — Select All under a partly-out-of-scope level
  * should still apply to the rows the admin IS allowed to touch.
  */
-export async function POST(request: NextRequest) {
+async function POSTHandler(request: NextRequest) {
   const guard = await requireAdminPermission(request, "item-groups");
   if (guard.response) return guard.response;
   if (!guard.session.isSuperAdmin) {
@@ -52,3 +53,6 @@ export async function POST(request: NextRequest) {
   const result = await bulkSetItemGroupActive(changes);
   return NextResponse.json({ success: true, ...result });
 }
+
+// Every call is written to the audit log (who, role, target, request, outcome).
+export const POST = audited({ action: "item_group_bulk_active", entityType: "item_group" }, POSTHandler);

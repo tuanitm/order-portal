@@ -2,8 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { query, queryOne } from "@/lib/db/connection";
 import { getCompanyId } from "@/lib/config";
-import { logAuditEvent } from "@/lib/auditLog";
+import { audited, logAuditEvent } from "@/lib/auditLog";
 import { createOrdersFromLines } from "@/lib/orderCreate";
+import { getAllowedBrandCodes } from "@/lib/adminScope";
 import {
   getCustomerForAdmin,
   findCustomerLogin,
@@ -28,7 +29,7 @@ const MAX_LINES = 300;
  * Body: { customer, warehouse, billTo?, shipTo?, supervisor?, remark?,
  *         lines: [{ sapItemCode, quantity, promotionCode?, giveawayKey? }] }
  */
-export async function POST(request: NextRequest) {
+async function POSTHandler(request: NextRequest) {
   const guard = await requireAdminPermission(request, "orders");
   if (guard.response) return guard.response;
   const session = guard.session;
@@ -79,7 +80,7 @@ export async function POST(request: NextRequest) {
   if (supervisor && !supervisorRow) return NextResponse.json({ error: `Sales supervisor ${supervisor} not found` }, { status: 400 });
 
   try {
-    const products = await priceItemsForCustomer(customer, warehouse, { codes });
+    const products = await priceItemsForCustomer(customer, warehouse, { codes, brands: getAllowedBrandCodes(guard.session) });
     const { lines: orderLines, problems } = buildOrderLines(
       products,
       lines.map((l, i) => ({ ...l, sapItemCode: codes[i] }))
@@ -127,3 +128,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Failed to create the order" }, { status: 500 });
   }
 }
+
+// Failed calls are written to the audit log too (successes log their own detailed entry above).
+export const POST = audited({ action: "order_self_create", entityType: "order", failuresOnly: true }, POSTHandler);

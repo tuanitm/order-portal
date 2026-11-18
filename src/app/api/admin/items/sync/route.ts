@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { syncItems } from "@/lib/sap-b1/sync";
+import { audited } from "@/lib/auditLog";
 
 /**
  * POST /api/admin/items/sync — pull sellable items + channel price lists
  * from SAP B1 into the local MySQL cache. Run item-groups/sync and mark
  * groups sellable first if this returns itemsSynced: 0.
  */
-export async function POST(request: NextRequest) {
+async function POSTHandler(request: NextRequest) {
   const guard = await requireAdminPermission(request, "items");
   if (guard.response) return guard.response;
 
@@ -27,3 +28,6 @@ export async function POST(request: NextRequest) {
     );
   }
 }
+
+// Every call is written to the audit log (who, role, target, request, outcome).
+export const POST = audited({ action: "sync_items", entityType: "sync" }, POSTHandler);

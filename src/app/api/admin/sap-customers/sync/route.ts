@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { syncSapCustomers } from "@/lib/sap-b1/sync";
+import { audited } from "@/lib/auditLog";
 
 /**
  * POST /api/admin/sap-customers/sync — pull SAP customers into the local
  * cache, scoped to the (CusGrp01, CusGrp02) pairs in the `customer_groups`
  * table (see syncCustomerGroupsFromHana / the Customer Groups admin page).
  */
-export async function POST(request: NextRequest) {
+async function POSTHandler(request: NextRequest) {
   const guard = await requireAdminPermission(request, "sap-customers");
   if (guard.response) return guard.response;
 
@@ -26,3 +27,6 @@ export async function POST(request: NextRequest) {
     );
   }
 }
+
+// Every call is written to the audit log (who, role, target, request, outcome).
+export const POST = audited({ action: "sync_sap_customers", entityType: "sync" }, POSTHandler);

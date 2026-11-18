@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { syncPeriodDiscounts } from "@/lib/sap-b1/sync";
+import { audited } from "@/lib/auditLog";
 
 /**
  * POST /api/admin/price-lists/[num]/period-discounts/sync — pull this price
  * list's "period discounts" from SAP (SpecialPrices rows SAP itself scopes
  * to the whole list, CardCode = '*{num}') into `period_discount`.
  */
-export async function POST(
+async function POSTHandler(
   request: NextRequest,
   { params }: { params: Promise<{ num: string }> }
 ) {
@@ -31,3 +32,6 @@ export async function POST(
     );
   }
 }
+
+// Every call is written to the audit log (who, role, target, request, outcome).
+export const POST = audited({ action: "sync_period_discounts", entityType: "price_list", entityParam: "num" }, POSTHandler);

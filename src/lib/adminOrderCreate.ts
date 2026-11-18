@@ -136,7 +136,7 @@ export async function findCustomerLogin(cardCode: string): Promise<SelfCreateCus
 export async function priceItemsForCustomer(
   customer: SelfCreateCustomerRow,
   warehouseCode: string,
-  { search, codes, limit = 20 }: { search?: string; codes?: string[]; limit?: number }
+  { search, codes, limit = 20, brands = null }: { search?: string; codes?: string[]; limit?: number; brands?: Set<string> | null }
 ): Promise<ProductWithPricing[]> {
   const hidden = await resolveHiddenItemCategories(customer.cus_grp01, customer.cus_grp02, customer.cus_grp03);
   const { clauses, params } = buildHiddenCategoryClauses(hidden);
@@ -151,6 +151,12 @@ export async function priceItemsForCustomer(
   };
   const extraSql: string[] = [];
   const extraParams: string[] = [];
+  // The staff member's role Brands (null = Super Admin, all brands).
+  if (brands) {
+    if (brands.size === 0) return [];
+    extraSql.push(`i.brand_code IN (${[...brands].map(() => "?").join(",")})`);
+    extraParams.push(...brands);
+  }
   if (codes) {
     if (codes.length === 0) return [];
     extraSql.push(`i.sap_item_code IN (${codes.map(() => "?").join(",")})`);
@@ -239,6 +245,27 @@ export function buildOrderLines(
       giveawayName: freeQty > 0 ? giveaway?.name ?? undefined : undefined,
       ...(freeQty > 0 ? { promoBuyQty: giveaway!.buyQty, promoGiveQty: giveaway!.giveQty } : {}),
     });
+    // Promotion "case c": the same program also gives the bought item itself —
+    // listed first, before the other free item.
+    const extra = giveaway?.extra;
+    const extraQty = extra ? freeQtyFor(quantity, extra.buyQty, extra.giveQty) : 0;
+    if (extra && extraQty > 0) {
+      lines.push({
+        sapItemCode: p.sapItemCode,
+        itemName: name,
+        quantity: extraQty,
+        uom: p.uom || "PCS",
+        unitPrice: 0,
+        originalPrice: 0,
+        discountPercent: 0,
+        isGift: true,
+        sourceSapItemCode: p.sapItemCode,
+        promoBuyQty: extra.buyQty,
+        promoGiveQty: extra.giveQty,
+        giveawayCode: extra.code ?? undefined,
+        giveawayName: extra.name ?? undefined,
+      });
+    }
     if (freeQty > 0) {
       const sameItem = giveaway!.giveItemCode === p.sapItemCode;
       lines.push({
@@ -251,6 +278,10 @@ export function buildOrderLines(
         discountPercent: 0,
         isGift: true,
         sourceSapItemCode: p.sapItemCode,
+        promoBuyQty: giveaway!.buyQty,
+        promoGiveQty: giveaway!.giveQty,
+        giveawayCode: giveaway!.code ?? undefined,
+        giveawayName: giveaway!.name ?? undefined,
       });
     }
   }

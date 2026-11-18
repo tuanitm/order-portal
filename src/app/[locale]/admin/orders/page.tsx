@@ -4,6 +4,8 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useLocale } from "next-intl";
 import { styles, btn, Badge, LoadingOrEmpty, ORDER_STATUS_LABELS } from "../adminUi";
 import SelfCreateOrderDialog from "./SelfCreateOrderDialog";
+import { useStaffBase } from "../layout";
+import { VN_TIME_ZONE } from "@/lib/vnTime";
 
 interface Order {
   id: number;
@@ -43,6 +45,8 @@ const inputStyle: React.CSSProperties = {
 
 export default function AdminOrdersPage() {
   const locale = useLocale();
+  // /admin or /sales — this page is shared by both areas.
+  const staffBase = useStaffBase();
   const [orders, setOrders] = useState<Order[]>([]);
   const [total, setTotal] = useState(0);
   const [status, setStatus] = useState("");
@@ -171,7 +175,7 @@ export default function AdminOrdersPage() {
                 </thead>
                 <tbody>
                   {orders.map((o) => (
-                    <tr key={o.id} style={{ cursor: "pointer" }} onClick={() => (window.location.href = `/${locale}/admin/orders/${o.id}`)}>
+                    <tr key={o.id} style={{ cursor: "pointer" }} onClick={() => (window.location.href = `${staffBase}/orders/${o.id}`)}>
                       <td style={{ ...styles.td, fontSize: "0.75rem", fontWeight: 600 }}>{o.brand || <em style={{ color: "var(--text-tertiary, #94A3B8)" }}>—</em>}</td>
                       <td style={{
                         ...styles.td, fontFamily: "monospace", fontWeight: 600,
@@ -186,7 +190,7 @@ export default function AdminOrdersPage() {
                       </td>
                       <td style={styles.td}><Badge label={ORDER_STATUS_LABELS[o.status] || o.status} tone={STATUS_TONE[o.status] || "neutral"} /></td>
                       <td style={{ ...styles.td, fontSize: "0.75rem", color: "var(--text-tertiary, #94A3B8)" }}>
-                        {new Date(o.created_at).toLocaleString()}
+                        {new Date(o.created_at).toLocaleString(undefined, { timeZone: VN_TIME_ZONE })}
                       </td>
                     </tr>
                   ))}

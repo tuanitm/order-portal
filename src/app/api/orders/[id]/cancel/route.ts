@@ -4,7 +4,7 @@ import { getCompanyId } from "@/lib/config";
 import { getSessionUser } from "@/lib/auth/session";
 import { recordOrderStatus } from "@/lib/orderHistory";
 import { postOrderMessage } from "@/lib/orderMessages";
-import { logAuditEvent } from "@/lib/auditLog";
+import { audited, logAuditEvent } from "@/lib/auditLog";
 
 const TERMINAL_STATUSES = ["cancelled", "completed", "rejected"];
 
@@ -15,7 +15,7 @@ const TERMINAL_STATUSES = ["cancelled", "completed", "rejected"];
  * SAP yet, and not already in a terminal state. Logs the cancellation to
  * the message thread so the admin sees it without a separate notification.
  */
-export async function POST(
+async function POSTHandler(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -52,3 +52,6 @@ export async function POST(
 
   return NextResponse.json({ success: true });
 }
+
+// Failed calls are written to the audit log too (successes log their own detailed entry above).
+export const POST = audited({ action: "order_cancel", entityType: "order", entityParam: "id", failuresOnly: true }, POSTHandler);

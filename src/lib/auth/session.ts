@@ -18,6 +18,8 @@ export interface SessionUser {
   sapCusGrp03: string | null;
   language: "vi" | "en";
   approvalStatus: "pending" | "approved" | "rejected";
+  /** Set by an admin ("change password at next login"). */
+  mustChangePassword: boolean;
 }
 
 interface UserRow {
@@ -33,11 +35,14 @@ interface UserRow {
   sap_cus_grp03: string | null;
   language: "vi" | "en";
   approval_status: "pending" | "approved" | "rejected";
+  must_change_password: number;
 }
 
 /**
- * Resolve the currently logged-in user from the `auth-token` cookie.
- * Returns null if there is no valid session (never throws).
+ * Resolve the signed-in customer from the `auth-token` cookie. Only users
+ * whose role is of kind "customer" (or older rows with no role) — staff sign
+ * in through the admin-token cookie instead. Returns null if there is no
+ * valid session (never throws).
  */
 export async function getSessionUser(request: NextRequest): Promise<SessionUser | null> {
   const token = request.cookies.get("auth-token")?.value;
@@ -51,9 +56,11 @@ export async function getSessionUser(request: NextRequest): Promise<SessionUser 
   }
 
   const user = await queryOne<UserRow>(
-    `SELECT id, email, phone, full_name, sap_card_code, sap_card_name, sap_price_list_num,
-            sap_cus_grp01, sap_cus_grp02, sap_cus_grp03, language, approval_status
-     FROM users WHERE company_id = ? AND id = ? AND is_active = TRUE`,
+    `SELECT u.id, u.email, u.phone, u.full_name, u.sap_card_code, u.sap_card_name, u.sap_price_list_num,
+            u.sap_cus_grp01, u.sap_cus_grp02, u.sap_cus_grp03, u.language, u.approval_status, u.must_change_password
+     FROM users u
+     LEFT JOIN admin_roles r ON r.id = u.role_id
+     WHERE u.company_id = ? AND u.id = ? AND u.is_active = TRUE AND (u.role_id IS NULL OR r.kind = 'customer')`,
     [getCompanyId(), decoded.userId]
   );
   if (!user) return null;
@@ -71,5 +78,6 @@ export async function getSessionUser(request: NextRequest): Promise<SessionUser 
     sapCusGrp03: user.sap_cus_grp03,
     language: user.language,
     approvalStatus: user.approval_status,
+    mustChangePassword: !!user.must_change_password,
   };
 }

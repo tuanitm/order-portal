@@ -4,13 +4,14 @@ import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { syncCustomerGroupsForCard } from "@/lib/sap-b1/sync";
 import { isCustomerInApprovalScope } from "@/lib/adminScope";
+import { audited } from "@/lib/auditLog";
 
 /**
  * POST /api/admin/customers/[id]/resync-sap — refresh a customer's channel
  * price list + customer group codes (U_CusGrp01/02/03) from their current
  * SAP BusinessPartner record.
  */
-export async function POST(
+async function POSTHandler(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -33,7 +34,7 @@ export async function POST(
             COALESCE(u.sap_cus_grp03, c.cus_grp03) AS sap_cus_grp03
      FROM users u
      LEFT JOIN customers c ON c.company_id = u.company_id AND c.sap_card_code = u.sap_card_code
-     WHERE u.company_id = ? AND u.id = ?`,
+     WHERE u.company_id = ? AND u.id = ? AND (u.role_id IS NULL OR u.role_id IN (SELECT id FROM admin_roles WHERE kind = 'customer'))`,
     [getCompanyId(), customerId]
   );
   if (!customer) return NextResponse.json({ error: "Customer not found" }, { status: 404 });
@@ -55,3 +56,6 @@ export async function POST(
     return NextResponse.json({ error: "Resync failed" }, { status: 500 });
   }
 }
+
+// Every call is written to the audit log (who, role, target, request, outcome).
+export const POST = audited({ action: "customer_resync_sap", entityType: "customer", entityParam: "id" }, POSTHandler);

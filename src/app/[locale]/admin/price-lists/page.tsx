@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { styles, btn, SyncButton, Toggle, LoadingOrEmpty } from "../adminUi";
 import { useAdminSession } from "../layout";
+import { VN_TIME_ZONE } from "@/lib/vnTime";
 
 interface PriceList {
   price_list_num: number;
@@ -224,7 +225,7 @@ export default function PriceListsPage() {
                           />
                         </td>
                         <td style={{ ...styles.td, color: "var(--text-tertiary, #94A3B8)", fontSize: "0.75rem" }}>
-                          {l.last_synced ? new Date(l.last_synced).toLocaleString() : "—"}
+                          {l.last_synced ? new Date(l.last_synced).toLocaleString(undefined, { timeZone: VN_TIME_ZONE }) : "—"}
                         </td>
                       </tr>
                     ))}
@@ -311,7 +312,7 @@ export default function PriceListsPage() {
                           <td style={styles.td}>{formatPrice(it.base_price)}</td>
                           <td style={styles.td}>{formatPrice(it.price)}</td>
                           <td style={{ ...styles.td, color: "var(--text-tertiary, #94A3B8)", fontSize: "0.75rem" }}>
-                            {it.last_synced ? new Date(it.last_synced).toLocaleString() : "—"}
+                            {it.last_synced ? new Date(it.last_synced).toLocaleString(undefined, { timeZone: VN_TIME_ZONE }) : "—"}
                           </td>
                         </tr>
                       ))}
@@ -368,7 +369,7 @@ export default function PriceListsPage() {
                           <td style={styles.td}>{r.date_from?.slice(0, 10) || "—"}</td>
                           <td style={styles.td}>{r.date_to?.slice(0, 10) || "open-ended"}</td>
                           <td style={{ ...styles.td, color: "var(--text-tertiary, #94A3B8)", fontSize: "0.75rem" }}>
-                            {r.last_synced ? new Date(r.last_synced).toLocaleString() : "—"}
+                            {r.last_synced ? new Date(r.last_synced).toLocaleString(undefined, { timeZone: VN_TIME_ZONE }) : "—"}
                           </td>
                         </tr>
                       ))}
@@ -426,7 +427,7 @@ export default function PriceListsPage() {
                           <td style={styles.td}>{r.valid_from?.slice(0, 10) || "—"}</td>
                           <td style={styles.td}>{r.valid_to?.slice(0, 10) || "open-ended"}</td>
                           <td style={{ ...styles.td, color: "var(--text-tertiary, #94A3B8)", fontSize: "0.75rem" }}>
-                            {r.last_synced ? new Date(r.last_synced).toLocaleString() : "—"}
+                            {r.last_synced ? new Date(r.last_synced).toLocaleString(undefined, { timeZone: VN_TIME_ZONE }) : "—"}
                           </td>
                         </tr>
                       ))}

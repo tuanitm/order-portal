@@ -3,7 +3,7 @@ import { queryOne, query } from "@/lib/db/connection";
 import { createOrdersFromLines, type OrderLineInput } from "@/lib/orderCreate";
 import { getCompanyId } from "@/lib/config";
 import { getSessionUser } from "@/lib/auth/session";
-import { logAuditEvent } from "@/lib/auditLog";
+import { audited, logAuditEvent } from "@/lib/auditLog";
 import { getCustomerAddressBook } from "@/lib/customerAddresses";
 import { getOrderVatTotals } from "@/lib/vatRates";
 
@@ -14,7 +14,7 @@ import { getOrderVatTotals } from "@/lib/vatRates";
  * with the admin "Self create" dialog) for the brand split rules. Does NOT
  * push to SAP; an admin confirms each order (POST /api/admin/orders/[id]/confirm).
  */
-export async function POST(request: NextRequest) {
+async function POSTHandler(request: NextRequest) {
   try {
     const user = await getSessionUser(request);
     if (!user) {
@@ -159,3 +159,6 @@ export async function GET(request: NextRequest) {
     );
   }
 }
+
+// Failed calls are written to the audit log too (successes log their own detailed entry above).
+export const POST = audited({ action: "order_place", entityType: "order", failuresOnly: true }, POSTHandler);

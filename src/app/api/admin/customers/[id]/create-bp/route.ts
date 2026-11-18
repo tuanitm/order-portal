@@ -7,7 +7,7 @@ import { getCustomerGroupAncestors } from "@/lib/customerGroups";
 import { generateCardCode } from "@/lib/sap-b1/cardCode";
 import { getSapClient } from "@/lib/sap-b1/client";
 import { sendApprovalEmail } from "@/lib/email/sender";
-import { logAuditEvent } from "@/lib/auditLog";
+import { audited, logAuditEvent } from "@/lib/auditLog";
 
 /**
  * POST /api/admin/customers/[id]/create-bp — for a new-company registration
@@ -34,7 +34,7 @@ import { logAuditEvent } from "@/lib/auditLog";
  * correcting what the customer typed at signup; anything omitted falls
  * back to the stored registration.
  */
-export async function POST(
+async function POSTHandler(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -83,7 +83,7 @@ export async function POST(
               registration_address, registration_shipping_address, registration_contact_person,
               registration_remark, declared_region_code,
               approval_status, language
-       FROM users WHERE company_id = ? AND id = ?`,
+       FROM users u WHERE u.company_id = ? AND u.id = ? AND (u.role_id IS NULL OR u.role_id IN (SELECT id FROM admin_roles WHERE kind = 'customer'))`,
       [companyId, customerId]
     );
 
@@ -291,3 +291,6 @@ export async function POST(
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }
+
+// Failed calls are written to the audit log too (successes log their own detailed entry above).
+export const POST = audited({ action: "customer_create_bp", entityType: "customer", entityParam: "id", failuresOnly: true }, POSTHandler);

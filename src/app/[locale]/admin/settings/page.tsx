@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { styles, btn, Section } from "../adminUi";
+import { VN_TIME_ZONE } from "@/lib/vnTime";
 
 interface SyncSchedule {
   id: number;
@@ -216,7 +217,7 @@ export default function SettingsPage() {
                 {schedule?.last_run_at ? (
                   <>
                     <p style={{ fontSize: "0.8125rem", color: "var(--text-secondary, #64748B)" }}>
-                      {new Date(schedule.last_run_at).toLocaleString()} — {schedule.last_run_status}
+                      {new Date(schedule.last_run_at).toLocaleString(undefined, { timeZone: VN_TIME_ZONE })} — {schedule.last_run_status}
                     </p>
                     <pre style={{
                       marginTop: "0.5rem", padding: "0.75rem", background: "var(--bg-secondary, #F8FAFC)",

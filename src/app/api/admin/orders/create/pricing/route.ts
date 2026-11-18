@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { getCustomerForAdmin, getOrderWarehouses, priceItemsForCustomer } from "@/lib/adminOrderCreate";
+import { getAllowedBrandCodes } from "@/lib/adminScope";
 
 /**
  * POST /api/admin/orders/create/pricing { customer, warehouse, search? | codes? }
@@ -30,6 +31,7 @@ export async function POST(request: NextRequest) {
 
   try {
     const items = await priceItemsForCustomer(customer, warehouse, {
+      brands: getAllowedBrandCodes(guard.session),
       search: typeof search === "string" ? search : undefined,
       codes: codes?.map((c) => String(c).trim()).filter(Boolean),
     });

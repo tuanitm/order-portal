@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { styles, btn } from "../adminUi";
-import { useAdminSession } from "../layout";
+import { useAdminSession, useStaffBase } from "../layout";
 
 /**
  * Self-service account settings for the currently logged-in admin (root or
@@ -14,6 +14,7 @@ import { useAdminSession } from "../layout";
  */
 export default function ChangePasswordPage() {
   const session = useAdminSession();
+  const staffBase = useStaffBase();
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -96,6 +97,11 @@ export default function ChangePasswordPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to change password");
+      // A forced change ("change password at next login") is done — continue to the area.
+      if (session?.mustChangePassword) {
+        window.location.replace(staffBase);
+        return;
+      }
       setSuccess(true);
       setCurrentPassword("");
       setNewPassword("");

@@ -10,6 +10,9 @@ import {
   ReactNode,
 } from "react";
 
+/** A same-item gift granted on top of a line's chosen free item (promotion "case c"). */
+export interface ExtraGift { code: string | null; name: string | null; buyQty: number; giveQty: number }
+
 // ── Cart Item Type ──
 export interface CartItem {
   sapItemCode: string;
@@ -26,6 +29,9 @@ export interface CartItem {
   promoGiveQty?: number;
   promoGiveItemCode?: string;
   promoGiveItemName?: string;
+  /** Promotion "case c": the same program also gives the bought item itself
+   *  (see GiveawayOption.extra) — a second free line on top of the gift above. */
+  extraGift?: ExtraGift;
   /** Set only on a line added via Excel Import — the customer's free-text Remark column for that row. */
   remark?: string;
   /** Individual discount-waterfall percentages that compound into discountPercent above — see
@@ -55,6 +61,13 @@ export interface CartItem {
 export function calculateFreeQty(item: CartItem): number {
   if (!item.promoBuyQty || !item.promoGiveQty) return 0;
   return Math.floor(item.quantity / item.promoBuyQty) * item.promoGiveQty;
+}
+
+/** Free quantity of the same-item extra gift ("case c") at the line's live quantity. */
+export function calculateExtraFreeQty(item: Pick<CartItem, "quantity" | "extraGift">): number {
+  const g = item.extraGift;
+  if (!g || !g.buyQty || !g.giveQty) return 0;
+  return Math.floor(item.quantity / g.buyQty) * g.giveQty;
 }
 
 /**

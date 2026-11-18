@@ -52,7 +52,8 @@ export async function GET(request: NextRequest) {
                LEFT JOIN customers c ON c.company_id = u.company_id AND c.sap_card_code = u.sap_card_code`;
     const companyId = getCompanyId();
     const params: (string | number)[] = [companyId];
-    const whereClauses: string[] = ["u.company_id = ?"];
+    // Customers only — staff accounts live in the same table.
+    const whereClauses: string[] = ["u.company_id = ?", "(u.role_id IS NULL OR u.role_id IN (SELECT id FROM admin_roles WHERE kind = 'customer'))"];
 
     if (status && ["pending", "approved", "rejected"].includes(status)) {
       whereClauses.push("u.approval_status = ?");

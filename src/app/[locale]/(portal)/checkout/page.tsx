@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useTranslations, useLocale } from "next-intl";
-import { useCart, calculateFreeQty, getCartLineKey } from "@/hooks/useCart";
+import { useCart, calculateFreeQty, calculateExtraFreeQty, getCartLineKey } from "@/hooks/useCart";
 import { Link } from "@/i18n/navigation";
 
 function formatPrice(amount: number): string {
@@ -126,6 +126,27 @@ export default function CheckoutPage() {
       },
     ];
     const freeQty = calculateFreeQty(item);
+    // Promotion "case c": the same program also gives the bought item itself —
+    // listed first, before the other free item.
+    const extraQty = calculateExtraFreeQty(item);
+    if (extraQty > 0 && item.extraGift) {
+      lines.push({
+        key: `${lineKey}-gift-same`,
+        sapItemCode: item.sapItemCode,
+        itemName: item.itemName,
+        quantity: extraQty,
+        uom: item.uom,
+        unitPrice: 0,
+        originalPrice: 0,
+        discountPercent: 0,
+        isGift: true,
+        sourceSapItemCode: item.sapItemCode,
+        promoBuyQty: item.extraGift.buyQty,
+        promoGiveQty: item.extraGift.giveQty,
+        giveawayCode: item.extraGift.code ?? undefined,
+        giveawayName: item.extraGift.name ?? undefined,
+      });
+    }
     if (freeQty > 0) {
       const isSameItem = item.promoGiveItemCode === item.sapItemCode;
       // The buy line only carries the ratio when a gift is actually
@@ -146,10 +167,44 @@ export default function CheckoutPage() {
         discountPercent: 0,
         isGift: true,
         sourceSapItemCode: item.sapItemCode,
+        // Each gift line keeps its own ratio and program (a buy line can have two — see extraGift).
+        promoBuyQty: item.promoBuyQty,
+        promoGiveQty: item.promoGiveQty,
+        giveawayCode: item.giveawayCode,
+        giveawayName: item.giveawayName,
       });
     }
     return lines;
   });
+
+  // VAT preview: each line's total x its item's SAP VAT rate, rounded per line —
+  // the same rule as the order detail page, so the totals agree afterwards.
+  const [vatRates, setVatRates] = useState<Record<string, number> | null>(null);
+  const vatItemKey = [...new Set(items.map((i) => i.sapItemCode))].sort().join(",");
+  useEffect(() => {
+    if (!vatItemKey) return;
+    let cancelled = false;
+    fetch(`/api/orders/vat-rates?items=${encodeURIComponent(vatItemKey)}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (!cancelled) setVatRates(d?.rates ?? null); })
+      .catch(() => { if (!cancelled) setVatRates(null); });
+    return () => { cancelled = true; };
+  }, [vatItemKey]);
+  const tax = (() => {
+    if (!vatRates) return null;
+    const byRate = new Map<number, number>();
+    let complete = true;
+    for (const line of orderLines) {
+      const lineTotal = line.unitPrice * line.quantity;
+      if (line.isGift || lineTotal === 0) continue;
+      const rate = vatRates[line.sapItemCode];
+      if (rate === undefined) { complete = false; continue; }
+      byRate.set(rate, (byRate.get(rate) ?? 0) + Math.round((lineTotal * rate) / 100));
+    }
+    if (byRate.size === 0) return null;
+    const total = [...byRate.values()].reduce((a, b) => a + b, 0);
+    return { byRate: [...byRate.entries()].sort((a, b) => a[0] - b[0]), total, complete };
+  })();
 
   // Display-only preview of how many separate orders placing this cart will
   // create — one per Business Brand (Cost Center dimension 1), since SAP's
@@ -444,10 +499,38 @@ export default function CheckoutPage() {
                   <span>-{formatPrice(discountTotal)}</span>
                 </div>
               )}
-              <div className="cart-sidebar__total-row cart-sidebar__total-row--grand">
-                <span>{t("cart.total")}</span>
-                <span>{formatPrice(grandTotal)}</span>
-              </div>
+              {tax ? (
+                <>
+                  <div className="cart-sidebar__total-row" style={{ fontWeight: 600 }}>
+                    <span>{t("order.totalBeforeVat")}</span>
+                    <span>{formatPrice(grandTotal)}</span>
+                  </div>
+                  {tax.byRate.map(([rate, amount]) => (
+                    <div key={rate} className="cart-sidebar__total-row">
+                      <span>{t("order.vatAt", { rate })}</span>
+                      <span>{formatPrice(amount)}</span>
+                    </div>
+                  ))}
+                  {tax.byRate.length > 1 && (
+                    <div className="cart-sidebar__total-row" style={{ fontWeight: 600 }}>
+                      <span>{t("order.vat")}</span>
+                      <span>{formatPrice(tax.total)}</span>
+                    </div>
+                  )}
+                  <div className="cart-sidebar__total-row cart-sidebar__total-row--grand">
+                    <span>{t("order.totalWithVat")}</span>
+                    <span>{formatPrice(grandTotal + tax.total)}</span>
+                  </div>
+                  {!tax.complete && (
+                    <div style={{ fontSize: "0.75rem", color: "var(--text-tertiary)" }}>{t("order.vatIncomplete")}</div>
+                  )}
+                </>
+              ) : (
+                <div className="cart-sidebar__total-row cart-sidebar__total-row--grand">
+                  <span>{t("cart.total")}</span>
+                  <span>{formatPrice(grandTotal)}</span>
+                </div>
+              )}
             </div>
           </div>
         </div>

@@ -4,6 +4,7 @@ import { getCompanyId } from "@/lib/config";
 import { getSessionUser } from "@/lib/auth/session";
 import { postOrderMessage } from "@/lib/orderMessages";
 import { recalculateOrderTotals } from "@/lib/orderTotals";
+import { audited } from "@/lib/auditLog";
 
 /**
  * POST /api/orders/[id]/lines/[lineId]/confirm — Body: { accept: boolean }.
@@ -14,7 +15,7 @@ import { recalculateOrderTotals } from "@/lib/orderTotals";
  * Logs the decision to the order's message thread either way, so the
  * admin sees it without a separate notification.
  */
-export async function POST(
+async function POSTHandler(
   request: NextRequest,
   { params }: { params: Promise<{ id: string; lineId: string }> }
 ) {
@@ -70,3 +71,6 @@ export async function POST(
 
   return NextResponse.json({ success: true });
 }
+
+// Every call is written to the audit log (who, role, target, request, outcome).
+export const POST = audited({ action: "order_line_customer_confirm", entityType: "order", entityParam: "id" }, POSTHandler);

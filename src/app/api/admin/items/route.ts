@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { query } from "@/lib/db/connection";
 import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
-import { getAllowedItemGroupCodes, groupScopeClause } from "@/lib/adminScope";
+import { getAllowedItemGroupCodes, groupScopeClause, getAllowedBrandCodes, brandScopeClause } from "@/lib/adminScope";
 
 /** Allowed sort columns to prevent SQL injection */
 const SORT_COLUMNS: Record<string, string> = {
@@ -52,7 +52,11 @@ export async function GET(request: NextRequest) {
     "i.item_cat01", "i.item_cat02", "i.item_cat03", "i.item_cat04", "i.item_cat05", "i.item_cat06",
   ]);
   whereClauses.push(scope.sql);
+  // …and to the role's Brands.
+  const brandScope = brandScopeClause(getAllowedBrandCodes(guard.session), "i.brand_code");
+  whereClauses.push(brandScope.sql);
   params.push(...scope.params);
+  params.push(...brandScope.params);
 
   const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(" AND ")}` : "";
 

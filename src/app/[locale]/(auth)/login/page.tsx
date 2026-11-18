@@ -50,10 +50,12 @@ export default function LoginPage() {
           setRejectionReason(data.reason || "");
           return;
         }
+        if (res.status === 401) throw new Error(t("auth.invalidCredentials"));
         throw new Error(data.error || "Login failed");
       }
 
-      window.location.href = "/";
+      // The server detects the role: /admin, /sales, /customer — or the change-password page.
+      window.location.href = `/${locale}${data.redirect || "/customer"}`;
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");
     } finally {

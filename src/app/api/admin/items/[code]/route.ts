@@ -3,6 +3,7 @@ import { query, queryOne } from "@/lib/db/connection";
 import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { getAllowedItemGroupCodes } from "@/lib/adminScope";
+import { audited } from "@/lib/auditLog";
 
 /**
  * PATCH /api/admin/items/[code] — per-item admin overrides, each a separate
@@ -17,7 +18,7 @@ import { getAllowedItemGroupCodes } from "@/lib/adminScope";
  *     customers; null/empty clears the override back to the synced `uom`.
  *     Effective UOM anywhere customer-facing = COALESCE(sales_uom, uom).
  */
-export async function PATCH(
+async function PATCHHandler(
   request: NextRequest,
   { params }: { params: Promise<{ code: string }> }
 ) {
@@ -62,3 +63,6 @@ export async function PATCH(
 
   return NextResponse.json({ success: true });
 }
+
+// Every call is written to the audit log (who, role, target, request, outcome).
+export const PATCH = audited({ action: "item_update", entityType: "item", entityParam: "code" }, PATCHHandler);

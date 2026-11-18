@@ -6,6 +6,7 @@ import { Link } from "@/i18n/navigation";
 import OrderStatusBadge from "@/components/order/OrderStatusBadge";
 import ReorderButton from "@/components/order/ReorderButton";
 import { useOnPushNotification } from "@/hooks/usePushRefresh";
+import { VN_TIME_ZONE } from "@/lib/vnTime";
 
 interface OrderSummary {
   id: number;
@@ -24,7 +25,7 @@ function formatPrice(amount: number): string {
 }
 
 function formatDate(dateString: string, locale: string): string {
-  return new Date(dateString).toLocaleDateString(locale === "vi" ? "vi-VN" : "en-US", {
+  return new Date(dateString).toLocaleDateString(locale === "vi" ? "vi-VN" : "en-US", { timeZone: VN_TIME_ZONE,
     year: "numeric", month: "short", day: "numeric",
     hour: "2-digit", minute: "2-digit",
   });

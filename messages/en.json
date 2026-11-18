@@ -31,9 +31,10 @@
   },
   "auth": {
     "identifyTitle": "Access Ordering Portal",
-    "identifySubtitle": "Enter your email, phone number, or tax code to continue",
-    "identifierLabel": "Email, Phone Number, or MST",
-    "identifierPlaceholder": "email@example.com / 0901234567 / MST",
+    "identifySubtitle": "Enter your user ID, email, phone number, or tax code to continue",
+    "identifierLabel": "User ID, Email, Phone Number, or MST",
+    "invalidCredentials": "Wrong user name or password!",
+    "identifierPlaceholder": "userid / email@example.com / 0901234567 / MST",
     "continueBtn": "Continue",
     "checking": "Checking...",
     "loginTitle": "Login",

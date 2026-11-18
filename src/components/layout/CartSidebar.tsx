@@ -1,7 +1,7 @@
 "use client";
 
 import { useTranslations } from "next-intl";
-import { useCart, calculateFreeQty, getCartLineKey, type CartItem } from "@/hooks/useCart";
+import { useCart, calculateFreeQty, calculateExtraFreeQty, getCartLineKey, type CartItem } from "@/hooks/useCart";
 import { Link } from "@/i18n/navigation";
 import QtyInput from "@/components/common/QtyInput";
 
@@ -17,7 +17,8 @@ function formatPrice(amount: number): string {
 function FreeGiftLine({ item }: { item: CartItem }) {
   const t = useTranslations();
   const freeQty = calculateFreeQty(item);
-  if (freeQty <= 0) return null;
+  const extraQty = calculateExtraFreeQty(item);
+  if (freeQty <= 0 && extraQty <= 0) return null;
 
   const isSameItem = item.promoGiveItemCode === item.sapItemCode;
   // The free quantity itself (wrapped in <b> inside the translation
@@ -25,12 +26,19 @@ function FreeGiftLine({ item }: { item: CartItem }) {
   // "free gift" sentence.
   const boldRed = { b: (chunks: React.ReactNode) => <strong style={{ color: "var(--color-error, #DC2626)" }}>{chunks}</strong> };
   return (
-    <div className="cart-item__free-gift">
-      🎁{" "}
-      {isSameItem
-        ? t.rich("cart.freeGiftSame", { qty: freeQty, ...boldRed })
-        : t.rich("cart.freeGift", { qty: freeQty, item: item.promoGiveItemName || item.promoGiveItemCode || "", ...boldRed })}
-    </div>
+    <>
+      {extraQty > 0 && (
+        <div className="cart-item__free-gift">🎁 {t.rich("cart.freeGiftSame", { qty: extraQty, ...boldRed })}</div>
+      )}
+      {freeQty > 0 && (
+        <div className="cart-item__free-gift">
+          🎁{" "}
+          {isSameItem
+            ? t.rich("cart.freeGiftSame", { qty: freeQty, ...boldRed })
+            : t.rich("cart.freeGift", { qty: freeQty, item: item.promoGiveItemName || item.promoGiveItemCode || "", ...boldRed })}
+        </div>
+      )}
+    </>
   );
 }
 

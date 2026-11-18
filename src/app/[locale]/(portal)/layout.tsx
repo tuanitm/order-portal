@@ -21,6 +21,12 @@ export default function PortalLayout({
     try {
       const res = await fetch("/api/auth/me");
       if (res.ok) {
+        const data = await res.json();
+        // "Change password at next login": nothing else until it's changed.
+        if (data.user?.mustChangePassword && !window.location.pathname.endsWith("/change-password")) {
+          router.replace("/change-password?forced=1");
+          return;
+        }
         setIsAuthenticated(true);
       } else {
         // Not authenticated → redirect to identify page

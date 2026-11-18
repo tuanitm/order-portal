@@ -3,6 +3,7 @@ import { queryOne } from "@/lib/db/connection";
 import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { syncPeriodDiscounts } from "@/lib/sap-b1/sync";
+import { audited } from "@/lib/auditLog";
 
 /**
  * POST /api/admin/period-discounts/sync — Quick-sync entry point (Dashboard
@@ -11,7 +12,7 @@ import { syncPeriodDiscounts } from "@/lib/sap-b1/sync";
  * (/api/admin/price-lists/[num]/period-discounts/sync) but without needing
  * an admin to open that page and pick the list first.
  */
-export async function POST(request: NextRequest) {
+async function POSTHandler(request: NextRequest) {
   const guard = await requireAdminPermission(request, "price-lists");
   if (guard.response) return guard.response;
 
@@ -37,3 +38,6 @@ export async function POST(request: NextRequest) {
     );
   }
 }
+
+// Every call is written to the audit log (who, role, target, request, outcome).
+export const POST = audited({ action: "sync_period_discounts", entityType: "sync" }, POSTHandler);

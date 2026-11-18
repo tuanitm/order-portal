@@ -4,6 +4,7 @@ import { getCompanyId } from "@/lib/config";
 import { getSessionUser } from "@/lib/auth/session";
 import { getBasePriceListNum } from "@/lib/sap-b1/sync";
 import { getVisibleWarehousesForCustomerGroup } from "@/lib/warehouseVisibility";
+import { getCustomerRoleScope, customerItemScopeClauses, customerStockWarehouses } from "@/lib/customerRoleScope";
 import {
   resolveHiddenItemCategories,
   buildHiddenCategoryClauses,
@@ -56,7 +57,12 @@ export async function GET(request: NextRequest) {
     const hiddenCategories = user?.approvalStatus === "approved"
       ? await resolveHiddenItemCategories(user.sapCusGrp01, user.sapCusGrp02, user.sapCusGrp03)
       : [];
-    const { clauses: hiddenClauses, params: hiddenParams } = buildHiddenCategoryClauses(hiddenCategories);
+    const hidden = buildHiddenCategoryClauses(hiddenCategories);
+    // The customer's role: Brands / Product Groups limit the items (none set = no limit).
+    const roleScope = await getCustomerRoleScope(user?.id);
+    const roleItems = await customerItemScopeClauses(roleScope);
+    const hiddenClauses = [...hidden.clauses, ...roleItems.clauses];
+    const hiddenParams: (string | number | null)[] = [...hidden.params, ...roleItems.params];
 
     // WHICH warehouses count for THIS customer: if their level-2 customer
     // group has at least one mapping in `customer_group_warehouses` (set on
@@ -64,7 +70,8 @@ export async function GET(request: NextRequest) {
     // fall back to every globally Included warehouse — same fail-open rule,
     // so an unmapped group never loses visibility.
     const visibleWarehouses = await getVisibleWarehousesForCustomerGroup(cusGrp02);
-    const stockWarehouseCodes = visibleWarehouses.map((w) => w.code);
+    // The role's Warehouses, when set, replace the customer group's.
+    const stockWarehouseCodes = customerStockWarehouses(roleScope, visibleWarehouses.map((w) => w.code));
 
     const ctx: PricingContext = {
       sapCardCode: sapCardCode ?? "",
@@ -128,13 +135,13 @@ export async function GET(request: NextRequest) {
     // own brand-code order rather than whatever order the names happen to
     // sort in. A category with no brand_code at all (shouldn't normally
     // happen) sorts after every coded one rather than before.
-    const categoryPriceGate = buildPriceGateClause(companyId, priceListNum ?? ctx.basePriceListNum, "items");
+    const categoryPriceGate = buildPriceGateClause(companyId, priceListNum ?? ctx.basePriceListNum, "i");
     const categoryWhereClauses = [
       "company_id = ?", "is_active = TRUE", "is_manually_hidden = FALSE", "category IS NOT NULL", "category != ''", ...hiddenClauses,
       categoryPriceGate.clause,
     ];
     const categoryRows = await query<{ category: string; brand_code: string | null }[]>(
-      `SELECT category, MIN(brand_code) AS brand_code FROM items
+      `SELECT category, MIN(brand_code) AS brand_code FROM items i
        WHERE ${categoryWhereClauses.join(" AND ")}
        GROUP BY category
        ORDER BY (MIN(brand_code) IS NULL) ASC, MIN(brand_code) ASC, category ASC`,

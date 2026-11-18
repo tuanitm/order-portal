@@ -4,6 +4,8 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams } from "next/navigation";
 import { styles, btn, Badge, BackLink, SyncButton, ORDER_STATUS_LABELS } from "../../adminUi";
 import SelfCreateOrderDialog, { type DuplicateSource } from "../SelfCreateOrderDialog";
+import { useStaffBase } from "../../layout";
+import { VN_TIME_ZONE } from "@/lib/vnTime";
 
 // 'cancelled' is excluded from the dropdown — it's set exclusively via the
 // dedicated "Cancel Order" button below, which also removes the SAP Draft
@@ -161,7 +163,7 @@ function MessagesThread({ orderId }: { orderId: number }) {
             <div style={{ fontSize: "0.7rem", fontWeight: 600, opacity: 0.8, marginBottom: "0.1875rem" }}>
               {m.sender_type === "admin" ? `Admin${m.sender_name ? ` (${m.sender_name})` : ""}` : m.sender_name || "Customer"}
               {" — "}
-              {new Date(m.created_at).toLocaleString()}
+              {new Date(m.created_at).toLocaleString(undefined, { timeZone: VN_TIME_ZONE })}
             </div>
             <div style={{ fontSize: "0.8125rem", whiteSpace: "pre-wrap" }}>{m.message}</div>
           </div>
@@ -292,6 +294,7 @@ export default function AdminOrderDetailPage() {
   const [lines, setLines] = useState<OrderLine[]>([]);
   const [isSaving, setIsSaving] = useState(false);
   const [duplicateFrom, setDuplicateFrom] = useState<DuplicateSource | null>(null);
+  const staffBase = useStaffBase();
 
   // Warehouse stock check — "Warehouse Visibility" dropdown (the warehouses
   // THIS order's customer can see) plus a live (uncached) per-item Avail
@@ -391,7 +394,7 @@ export default function AdminOrderDetailPage() {
     const text = await res.text();
     const data: {
       error?: string;
-      giftAdjustment?: { sapItemCode: string; from: number; to: number } | null;
+      giftAdjustments?: { lineId: number; sapItemCode: string; from: number; to: number }[];
       totals?: { subtotal: number; discountTotal: number; grandTotal: number; lines: { id: number; lineTotal: number }[] };
     } = text ? JSON.parse(text) : {};
     if (!res.ok) throw new Error(data.error || `Failed to save Confirm Qty (${res.status})`);
@@ -406,8 +409,9 @@ export default function AdminOrderDetailPage() {
         if (l.id === lineId) {
           return { ...l, confirm_qty: confirmQty, customer_confirm_status: confirmQty === l.quantity ? "accepted" : "pending" };
         }
-        if (data.giftAdjustment && l.source_line_id === lineId) {
-          const to = data.giftAdjustment.to;
+        const gift = data.giftAdjustments?.find((g) => g.lineId === l.id);
+        if (gift) {
+          const to = gift.to;
           return { ...l, confirm_qty: to, customer_confirm_status: to === l.quantity ? "accepted" : "pending" };
         }
         return l;
@@ -459,7 +463,7 @@ export default function AdminOrderDetailPage() {
         <div style={styles.container}>
           <div style={{ ...styles.card, padding: "2rem" }}>
             <div style={{ color: "#DC2626", fontWeight: 600, marginBottom: "1rem" }}>{loadError}</div>
-            <BackLink href="/admin/orders" label="Back to Orders" />
+            <BackLink href={`${staffBase}/orders`} label="Back to Orders" />
           </div>
         </div>
       </div>
@@ -489,7 +493,10 @@ export default function AdminOrderDetailPage() {
       supervisor: order.supervisor_code,
       remark: order.remark,
       lines: lines.filter((l) => !l.is_gift_line).map((l) => {
-        const gift = lines.find((g) => g.is_gift_line && g.source_line_id === l.id);
+        // With two gifts (promotion "case c") the choice is the different-item one;
+        // the same-item gift comes back with it automatically.
+        const gifts = lines.filter((g) => g.is_gift_line && g.source_line_id === l.id);
+        const gift = gifts.find((g) => g.sap_item_code !== l.sap_item_code) ?? gifts[0];
         return {
           sapItemCode: l.sap_item_code,
           quantity: Number(l.quantity),

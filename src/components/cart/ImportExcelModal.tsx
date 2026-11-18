@@ -3,7 +3,7 @@
 import { useState, useRef } from "react";
 import { useTranslations, useLocale } from "next-intl";
 import * as XLSX from "xlsx";
-import { useCart, type CartItem } from "@/hooks/useCart";
+import { useCart, calculateExtraFreeQty, type CartItem, type ExtraGift } from "@/hooks/useCart";
 import { IMPORT_TEMPLATE_COLUMNS_EN, IMPORT_TEMPLATE_COLUMNS_VI } from "@/lib/importTemplate";
 import type { ProductWithPricing } from "@/types/product";
 
@@ -113,16 +113,22 @@ function effectivePromo(line: ImportLine): { code?: string; name?: string } {
  *  customer edits the ordered quantity. */
 function effectiveGiveaway(line: ImportLine): {
   code?: string; name?: string | null; buyQty?: number; giveQty?: number; giveItemCode?: string | null; giveItemName?: string | null;
+  extra?: ExtraGift;
 } {
   if (line.giveawayOverride) {
     const g = line.giveawayOverride;
-    return { code: g.code ?? undefined, name: g.name, buyQty: Number(g.buyQty), giveQty: Number(g.giveQty), giveItemCode: g.giveItemCode, giveItemName: g.giveItemName };
+    return {
+      code: g.code ?? undefined, name: g.name, buyQty: Number(g.buyQty), giveQty: Number(g.giveQty), giveItemCode: g.giveItemCode, giveItemName: g.giveItemName,
+      extra: g.extra ? { code: g.extra.code, name: g.extra.name, buyQty: g.extra.buyQty, giveQty: g.extra.giveQty } : undefined,
+    };
   }
   const { product } = line;
+  const first = product.giveawayOptions?.[0];
   return {
-    code: product.giveawayCode, name: product.giveawayOptions?.[0]?.name,
+    code: product.giveawayCode, name: first?.name,
     buyQty: product.promoBuyQty, giveQty: product.promoGiveQty,
     giveItemCode: product.promoGiveItemCode, giveItemName: product.promoGiveItemName,
+    extra: first?.extra ? { code: first.extra.code, name: first.extra.name, buyQty: first.extra.buyQty, giveQty: first.extra.giveQty } : undefined,
   };
 }
 
@@ -323,6 +329,7 @@ export default function ImportExcelModal({ isOpen, onClose }: { isOpen: boolean;
       promoGiveQty: giveaway.giveQty,
       promoGiveItemCode: giveaway.giveItemCode ?? undefined,
       promoGiveItemName: giveaway.giveItemName ?? undefined,
+      extraGift: giveaway.extra,
       remark: line.remark || undefined,
       periodDiscPct: product.periodDiscPct,
       contractDiscPct: product.contractDiscPct,
@@ -460,6 +467,12 @@ export default function ImportExcelModal({ isOpen, onClose }: { isOpen: boolean;
                             )}
                             {isFirstOfGroup && line.remark && (
                               <div style={{ fontSize: "0.7rem", color: "var(--text-tertiary)" }}>📝 {line.remark}</div>
+                            )}
+                            {/* Promotion "case c": the bought item's own free qty first, then the other free item. */}
+                            {calculateExtraFreeQty({ quantity: line.quantity, extraGift: giveaway.extra }) > 0 && (
+                              <div style={{ fontSize: "0.7rem", color: "var(--color-success, #059669)" }}>
+                                🎁 {t.rich("cart.freeGiftSame", { qty: calculateExtraFreeQty({ quantity: line.quantity, extraGift: giveaway.extra }), ...boldRed })}
+                              </div>
                             )}
                             {freeQty > 0 && (
                               <div style={{ fontSize: "0.7rem", color: "var(--color-success, #059669)" }}>

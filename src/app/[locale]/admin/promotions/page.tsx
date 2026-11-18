@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { styles, Badge, SyncButton, LoadingOrEmpty } from "../adminUi";
 import { useAdminSession } from "../layout";
+import { vnToday } from "@/lib/vnTime";
 
 interface Promotion {
   id: number;
@@ -27,7 +28,7 @@ interface Promotion {
 }
 
 function isActive(p: Promotion): boolean {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = vnToday();
   if (p.begin_date && p.begin_date.slice(0, 10) > today) return false;
   if (p.end_date && p.end_date.slice(0, 10) < today) return false;
   return true;

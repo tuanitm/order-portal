@@ -2,13 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 import { query } from "@/lib/db/connection";
 import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
+import { audited } from "@/lib/auditLog";
 
 /**
  * PATCH /api/admin/warehouses/[code] — toggle whether a warehouse's stock
  * counts toward an item's storefront availability.
  * Body: { isIncluded: boolean }
  */
-export async function PATCH(
+async function PATCHHandler(
   request: NextRequest,
   { params }: { params: Promise<{ code: string }> }
 ) {
@@ -33,3 +34,6 @@ export async function PATCH(
 
   return NextResponse.json({ success: true });
 }
+
+// Every call is written to the audit log (who, role, target, request, outcome).
+export const PATCH = audited({ action: "warehouse_update", entityType: "warehouse", entityParam: "code" }, PATCHHandler);

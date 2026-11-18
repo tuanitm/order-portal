@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { queryOne } from "@/lib/db/connection";
-import { getCompanyId } from "@/lib/config";
+import { findUserByIdentifier } from "@/lib/auth/login";
 
 interface MatchRow {
   email: string | null;
@@ -9,8 +8,8 @@ interface MatchRow {
 }
 
 /**
- * POST /api/auth/identify — Check if a user exists by email, phone, or MST
- * (tax) code. Body: { identifier: string }
+ * POST /api/auth/identify — Check if an account exists by userid, email, phone
+ * or MST (tax) code. Body: { identifier: string }
  * Returns: { exists: boolean, identifierType: 'email' | 'phone' | 'mst' }
  *
  * Scans all three columns in one query rather than pre-guessing which one
@@ -38,10 +37,9 @@ export async function POST(request: NextRequest) {
     const normalizedPhone = value.replace(/[+\-\s()]/g, "");
     const normalizedEmail = value.toLowerCase();
 
-    const match = await queryOne<MatchRow>(
-      "SELECT email, phone, mst_code FROM users WHERE company_id = ? AND (email = ? OR phone = ? OR mst_code = ?) LIMIT 1",
-      [getCompanyId(), normalizedEmail, normalizedPhone, value]
-    );
+    // Any account — staff by userid/email, customers also by phone/tax code.
+    const found = await findUserByIdentifier(value);
+    const match: MatchRow | null = found ? { email: found.email, phone: found.phone, mst_code: found.mst_code } : null;
 
     // Classify AFTER the lookup, from whichever column the match actually
     // came from — used only for the signup form's own field pre-fill when
@@ -62,6 +60,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       exists: !!match,
       identifierType,
+      // "staff" for Super Admin / Admin / Sales accounts — the screen goes straight to the password step.
+      accountType: found ? (found.kind && found.kind !== "customer" ? "staff" : "customer") : null,
     });
   } catch (error) {
     console.error("[API] Identify error:", error);

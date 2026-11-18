@@ -3,6 +3,7 @@ import { query, queryOne } from "@/lib/db/connection";
 import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { getAllowedCustomerGroupCodes, inScope } from "@/lib/adminScope";
+import { audited } from "@/lib/auditLog";
 
 /**
  * PATCH /api/admin/sap-customers/[cardCode] — enable/disable a SAP customer.
@@ -11,7 +12,7 @@ import { getAllowedCustomerGroupCodes, inScope } from "@/lib/adminScope";
  * /api/orders), shown the "contact admin" message instead.
  * Body: { isEnabled: boolean }
  */
-export async function PATCH(
+async function PATCHHandler(
   request: NextRequest,
   { params }: { params: Promise<{ cardCode: string }> }
 ) {
@@ -43,3 +44,6 @@ export async function PATCH(
   await query(`UPDATE customers SET is_enabled = ? WHERE company_id = ? AND sap_card_code = ?`, [body.isEnabled, companyId, cardCode]);
   return NextResponse.json({ success: true });
 }
+
+// Every call is written to the audit log (who, role, target, request, outcome).
+export const PATCH = audited({ action: "sap_customer_update", entityType: "customer", entityParam: "cardCode" }, PATCHHandler);

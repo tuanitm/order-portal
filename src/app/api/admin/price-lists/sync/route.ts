@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { syncPriceLists } from "@/lib/sap-b1/sync";
+import { audited } from "@/lib/auditLog";
 
-export async function POST(request: NextRequest) {
+async function POSTHandler(request: NextRequest) {
   const guard = await requireAdminPermission(request, "price-lists");
   if (guard.response) return guard.response;
 
@@ -17,3 +18,6 @@ export async function POST(request: NextRequest) {
     );
   }
 }
+
+// Every call is written to the audit log (who, role, target, request, outcome).
+export const POST = audited({ action: "sync_price_lists", entityType: "sync" }, POSTHandler);

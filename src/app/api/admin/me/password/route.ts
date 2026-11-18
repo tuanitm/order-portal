@@ -3,6 +3,7 @@ import bcrypt from "bcryptjs";
 import { query, queryOne } from "@/lib/db/connection";
 import { getCompanyId } from "@/lib/config";
 import { getAdminSession } from "@/lib/auth/adminSession";
+import { audited } from "@/lib/auditLog";
 
 /**
  * POST /api/admin/me/password — self-service password change for the
@@ -13,7 +14,7 @@ import { getAdminSession } from "@/lib/auth/adminSession";
  * currentPassword to match, unlike the root-only PATCH on
  * /api/admin/users/[id] which can set any admin's password with no check.
  */
-export async function POST(request: NextRequest) {
+async function POSTHandler(request: NextRequest) {
   const session = await getAdminSession(request);
   if (!session || !session.adminId) {
     return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
@@ -29,7 +30,7 @@ export async function POST(request: NextRequest) {
 
   const companyId = getCompanyId();
   const row = await queryOne<{ password_hash: string }>(
-    `SELECT password_hash FROM admin_users WHERE company_id = ? AND id = ?`,
+    `SELECT password_hash FROM users WHERE company_id = ? AND id = ?`,
     [companyId, session.adminId]
   );
   if (!row) {
@@ -42,7 +43,10 @@ export async function POST(request: NextRequest) {
   }
 
   const newHash = await bcrypt.hash(newPassword, 12);
-  await query(`UPDATE admin_users SET password_hash = ? WHERE company_id = ? AND id = ?`, [newHash, companyId, session.adminId]);
+  await query(`UPDATE users SET password_hash = ?, must_change_password = FALSE WHERE company_id = ? AND id = ?`, [newHash, companyId, session.adminId]);
 
   return NextResponse.json({ success: true });
 }
+
+// Every call is written to the audit log (who, role, target, request, outcome).
+export const POST = audited({ action: "password_change", entityType: "user" }, POSTHandler);

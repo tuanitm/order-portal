@@ -3,13 +3,12 @@ import { loadConfig, getCompanyId } from "@/lib/config";
 import type { AdminSession } from "@/lib/auth/adminSession";
 
 /**
- * Per-admin data scoping — which Customer Groups / Item Groups a non-root
- * admin (an `admin_users` row; a root row — is_root=TRUE —
- * is always unrestricted) may see and manage, on the pages that deal in
- * that data directly: Customer Groups, Item Groups, Items, Customers
- * Approval, SAP Customers, and Orders. See admin_user_customer_groups/
- * admin_user_item_groups in schema.sql for the assignment table and the
- * default-deny rule (no rows assigned = sees nothing, not "sees everything").
+ * Data permissions — which Customer Groups / Item Groups / Brands a staff
+ * member may see and manage, inherited from their ROLE (Roles page → Data
+ * permissions; see RoleScope in adminSession.ts). Super Admin is always
+ * unrestricted. Default-deny: a role with nothing configured sees nothing.
+ * Used on Customer Groups, Item Groups, Items, Customer Approval, SAP
+ * Customers, Orders and the Self create dialog.
  *
  * For Orders:
  * - Superadmin sees all orders under config.json's `masterdata.customerGroup` (and descendants).
@@ -18,7 +17,7 @@ import type { AdminSession } from "@/lib/auth/adminSession";
 
 export type AllowedCodes = Set<string> | null; // null = unrestricted (root)
 
-interface GroupRow {
+export interface GroupRow {
   id: number;
   level: number;
   code: string;
@@ -26,7 +25,7 @@ interface GroupRow {
 }
 
 /** Expand a set of assigned group ids to themselves + every descendant's code, via the level/parent_code hierarchy. */
-function expandToDescendantCodes(allRows: GroupRow[], assignedIds: Set<number>): Set<string> {
+export function expandToDescendantCodes(allRows: GroupRow[], assignedIds: Set<number>): Set<string> {
   const byId = new Map(allRows.map((r) => [r.id, r]));
   const childrenByParentKey = new Map<string, GroupRow[]>(); // `${parentLevel}:${parentCode}` -> children
   for (const r of allRows) {
@@ -59,32 +58,38 @@ function expandToDescendantCodes(allRows: GroupRow[], assignedIds: Set<number>):
  * no customers at all, by design — see the table's default-deny comment).
  */
 export async function getAllowedCustomerGroupCodes(session: AdminSession): Promise<AllowedCodes> {
-  if (session.isSuperAdmin || !session.adminId) return null;
+  if (session.isSuperAdmin) return null;
+  const { channels, customerGroups } = session.scope;
+  if (channels.length === 0 && customerGroups.length === 0) return new Set();
 
-  const companyId = getCompanyId();
-  const assigned = await query<{ customer_group_id: number }[]>(
-    `SELECT customer_group_id FROM admin_user_customer_groups WHERE company_id = ? AND admin_user_id = ?`,
-    [companyId, session.adminId]
-  );
-  if (assigned.length === 0) return new Set();
-
-  const allRows = await query<GroupRow[]>(`SELECT id, level, code, parent_code FROM customer_groups WHERE company_id = ?`, [companyId]);
-  return expandToDescendantCodes(allRows, new Set(assigned.map((a) => a.customer_group_id)));
+  const allRows = await query<GroupRow[]>(`SELECT id, level, code, parent_code FROM customer_groups WHERE company_id = ?`, [getCompanyId()]);
+  const expand = (codes: string[]) => expandToDescendantCodes(allRows, new Set(allRows.filter((r) => codes.includes(r.code)).map((r) => r.id)));
+  // Channels (level 1) and Customer Groups together: the groups, limited to those channels.
+  if (channels.length === 0) return expand(customerGroups);
+  if (customerGroups.length === 0) return expand(channels);
+  const underChannels = expand(channels);
+  return new Set([...expand(customerGroups)].filter((c) => underChannels.has(c)));
 }
 
-/** Same as getAllowedCustomerGroupCodes, for item_groups (levels 1-6). */
+/** Same as getAllowedCustomerGroupCodes, for item_groups (levels 1-6) — the role's Product Groups. */
 export async function getAllowedItemGroupCodes(session: AdminSession): Promise<AllowedCodes> {
-  if (session.isSuperAdmin || !session.adminId) return null;
+  if (session.isSuperAdmin) return null;
+  const codes = session.scope.itemGroups;
+  if (codes.length === 0) return new Set();
+  const allRows = await query<GroupRow[]>(`SELECT id, level, code, parent_code FROM item_groups WHERE company_id = ?`, [getCompanyId()]);
+  return expandToDescendantCodes(allRows, new Set(allRows.filter((r) => codes.includes(r.code)).map((r) => r.id)));
+}
 
-  const companyId = getCompanyId();
-  const assigned = await query<{ item_group_id: number }[]>(
-    `SELECT item_group_id FROM admin_user_item_groups WHERE company_id = ? AND admin_user_id = ?`,
-    [companyId, session.adminId]
-  );
-  if (assigned.length === 0) return new Set();
+/** The role's Brands (items.brand_code). null = unrestricted (Super Admin); empty = none. */
+export function getAllowedBrandCodes(session: AdminSession): AllowedCodes {
+  return session.isSuperAdmin ? null : new Set(session.scope.brands);
+}
 
-  const allRows = await query<GroupRow[]>(`SELECT id, level, code, parent_code FROM item_groups WHERE company_id = ?`, [companyId]);
-  return expandToDescendantCodes(allRows, new Set(assigned.map((a) => a.item_group_id)));
+/** SQL for "this items row's brand is allowed" — `col` is the brand_code column (e.g. "i.brand_code"). */
+export function brandScopeClause(codes: AllowedCodes, col: string): { sql: string; params: string[] } {
+  if (codes === null) return { sql: "TRUE", params: [] };
+  if (codes.size === 0) return { sql: "1=0", params: [] };
+  return { sql: `${col} IN (${[...codes].map(() => "?").join(",")})`, params: [...codes] };
 }
 
 /**
@@ -116,7 +121,7 @@ export function inScope(codes: AllowedCodes, candidateCodes: (string | null | un
 /**
  * Scoping for Orders:
  * - Superadmin sees all orders under config.json's `masterdata.customerGroup` (and all its descendants).
- * - Scoped (non-root) admin only sees orders under their assigned customer groups (and descendants).
+ * - Everyone else: orders under their role's Channels / Customer Groups (and descendants).
  * Returns a Set of allowed customer group codes, or an empty Set if no access.
  */
 export async function getOrderAllowedCustomerGroupCodes(session: AdminSession): Promise<Set<string>> {
@@ -138,15 +143,8 @@ export async function getOrderAllowedCustomerGroupCodes(session: AdminSession): 
     return expandToDescendantCodes(allRows, matchingIds);
   }
 
-  if (!session.adminId) return new Set();
-
-  const assigned = await query<{ customer_group_id: number }[]>(
-    `SELECT customer_group_id FROM admin_user_customer_groups WHERE company_id = ? AND admin_user_id = ?`,
-    [companyId, session.adminId]
-  );
-  if (assigned.length === 0) return new Set();
-
-  return expandToDescendantCodes(allRows, new Set(assigned.map((a) => a.customer_group_id)));
+  // Everyone else: their role's Channels / Customer Groups.
+  return (await getAllowedCustomerGroupCodes(session)) ?? new Set();
 }
 
 /**

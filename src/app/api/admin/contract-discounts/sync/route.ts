@@ -3,13 +3,14 @@ import { query } from "@/lib/db/connection";
 import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { syncSpecialPricesForCard } from "@/lib/sap-b1/sync";
+import { audited } from "@/lib/auditLog";
 
 /**
  * POST /api/admin/contract-discounts/sync — bulk-refresh SpecialPrices for
  * every approved customer with a SAP card code. Sequential (not
  * Promise.all) to avoid hammering the SAP session with concurrent requests.
  */
-export async function POST(request: NextRequest) {
+async function POSTHandler(request: NextRequest) {
   const guard = await requireAdminPermission(request, "contract-discounts");
   if (guard.response) return guard.response;
 
@@ -40,3 +41,6 @@ export async function POST(request: NextRequest) {
     failedCardCodes: errors,
   });
 }
+
+// Every call is written to the audit log (who, role, target, request, outcome).
+export const POST = audited({ action: "sync_contract_discounts", entityType: "sync" }, POSTHandler);

@@ -4,13 +4,13 @@ import { getCompanyId } from "@/lib/config";
 import { sendRejectionEmail } from "@/lib/email/sender";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { isCustomerInApprovalScope } from "@/lib/adminScope";
-import { logAuditEvent } from "@/lib/auditLog";
+import { audited, logAuditEvent } from "@/lib/auditLog";
 
 /**
  * POST /api/admin/customers/[id]/reject — Reject a customer
  * Body: { reason: string }
  */
-export async function POST(
+async function POSTHandler(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -59,7 +59,7 @@ export async function POST(
               u.approval_status, u.language
        FROM users u
        LEFT JOIN customers c ON c.company_id = u.company_id AND c.sap_card_code = u.sap_card_code
-       WHERE u.company_id = ? AND u.id = ?`,
+       WHERE u.company_id = ? AND u.id = ? AND (u.role_id IS NULL OR u.role_id IN (SELECT id FROM admin_roles WHERE kind = 'customer'))`,
       [companyId, customerId]
     );
 
@@ -124,3 +124,6 @@ export async function POST(
     );
   }
 }
+
+// Failed calls are written to the audit log too (successes log their own detailed entry above).
+export const POST = audited({ action: "customer_reject", entityType: "customer", entityParam: "id", failuresOnly: true }, POSTHandler);

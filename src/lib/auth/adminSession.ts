@@ -29,14 +29,13 @@ export const ALL_ADMIN_PERMISSIONS = [
 export type AdminPermission = (typeof ALL_ADMIN_PERMISSIONS)[number];
 
 /**
- * Permissions no role can ever grant — only an `admin_users` row with
- * `is_root = TRUE` ("root", isSuperAdmin in the session) may have them,
- * regardless of what a role's own `permissions` JSON contains. Managing
- * admin accounts and the roles that define everyone else's access is
- * itself the thing access control protects; a role-scoped admin who could
- * grant themselves (or any role) "admin-users"/"admin-roles" would be able
- * to escalate to full control, so these are checked by identity
- * (isSuperAdmin), not by the role's permission list — see hasPermission.
+ * Permissions no role can ever grant — only a user whose role is of kind
+ * "super_admin" (isSuperAdmin in the session) may have them, regardless of
+ * what a role's own `permissions` JSON contains. Managing users and the roles
+ * that define everyone else's access is itself the thing access control
+ * protects; a role-scoped admin who could grant themselves (or any role)
+ * "admin-users"/"admin-roles" could escalate to full control, so these are
+ * checked by role kind (isSuperAdmin), not the permission list — see hasPermission.
  */
 export const ROOT_ONLY_PERMISSIONS: AdminPermission[] = ["admin-users", "admin-roles", "settings", "id-reset", "audit-logs"];
 
@@ -45,89 +44,144 @@ export const ASSIGNABLE_ADMIN_PERMISSIONS = ALL_ADMIN_PERMISSIONS.filter(
   (p) => !ROOT_ONLY_PERMISSIONS.includes(p)
 ) as AdminPermission[];
 
+/** Role kinds (admin_roles.kind). Every user has exactly one role. */
+export type RoleKind = "super_admin" | "admin" | "sales" | "customer";
+export type StaffKind = Exclude<RoleKind, "customer">;
+
+/**
+ * A role's data permissions — code lists, inherited by every user of the
+ * role. Brands = items.brand_code (SAP U_ProdBrand, e.g. D1, N1); Channels =
+ * level-1 customer groups (CusGrp01, e.g. GT, MT); Customer Groups / Product
+ * (item) Groups = codes at any level (their sub-groups are included);
+ * Warehouses = SAP warehouse codes. Ignored for Super Admin (sees everything).
+ */
+export interface RoleScope {
+  brands: string[];
+  channels: string[];
+  customerGroups: string[];
+  itemGroups: string[];
+  warehouses: string[];
+}
+
 export interface AdminSession {
   email: string;
   fullName: string;
+  /** Role kind "super_admin" — every function, no data limits. */
   isSuperAdmin: boolean;
+  /** users.id of the signed-in staff member (the name predates the merge of admin_users into users). */
   adminId: number | null;
+  userid: string | null;
+  kind: StaffKind;
+  roleId: number;
+  roleName: string;
   permissions: AdminPermission[];
+  scope: RoleScope;
+  /** Set by an admin ("change password at next login") — every staff API refuses until it's changed. */
+  mustChangePassword: boolean;
 }
 
-interface AdminTokenPayload {
-  email: string;
-  isSuperAdmin: boolean;
-  adminId: number;
+/** Staff token (admin-token cookie). `userId` is users.id; tokens from before the merge (adminId) are rejected. */
+interface StaffTokenPayload {
+  userId: number;
+  staff: true;
 }
 
-interface AdminUserRow {
+interface StaffUserRow {
   id: number;
-  email: string;
+  userid: string | null;
+  email: string | null;
   full_name: string;
-  is_root: number;
   is_active: number;
-  permissions: string | AdminPermission[] | null; // JSON column — mysql2 usually auto-parses to an array; null for a root row (LEFT JOIN, no role)
+  must_change_password: number;
+  role_id: number;
+  role_name: string;
+  kind: RoleKind;
+  permissions: string | AdminPermission[] | null;
+  brands: string | string[] | null;
+  channels: string | string[] | null;
+  customer_groups: string | string[] | null;
+  item_groups: string | string[] | null;
+  warehouses: string | string[] | null;
+}
+
+/** mysql2 auto-parses JSON columns to arrays; a raw string or null is handled too. */
+export function jsonCodeList(v: unknown): string[] {
+  if (Array.isArray(v)) return v.map(String).filter(Boolean);
+  if (typeof v === "string" && v.trim()) {
+    try {
+      const parsed = JSON.parse(v);
+      return Array.isArray(parsed) ? parsed.map(String).filter(Boolean) : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
 }
 
 /**
- * Resolve the currently logged-in admin from the `admin-token` cookie (a
- * signed JWT). Always re-checked against the DB on every request — root
- * included — rather than trusting the JWT's claims for its whole 8h
- * lifetime, so deactivating an account (root or not) takes effect
- * immediately, not just on next login. Returns null if there is no valid
- * session.
+ * Resolve the signed-in staff member (Super Admin / Admin / Sales) from the
+ * `admin-token` cookie (a signed JWT). Re-checked against the DB on every
+ * request — user, role and data permissions — so deactivating an account or
+ * changing a role takes effect immediately. Customers never get a staff
+ * session (their role kind is "customer"). Returns null if there is none.
  */
 export async function getAdminSession(request: NextRequest): Promise<AdminSession | null> {
   const token = request.cookies.get("admin-token")?.value;
   if (!token) return null;
 
-  let decoded: AdminTokenPayload;
+  let decoded: Partial<StaffTokenPayload>;
   try {
-    decoded = jwt.verify(token, JWT_SECRET) as AdminTokenPayload;
+    decoded = jwt.verify(token, JWT_SECRET) as Partial<StaffTokenPayload>;
   } catch {
     return null;
   }
+  if (!decoded.staff || !decoded.userId) return null;
 
-  if (!decoded.adminId) return null;
-
-  const row = await queryOne<AdminUserRow>(
-    `SELECT au.id, au.email, au.full_name, au.is_root, au.is_active, ar.permissions
-     FROM admin_users au
-     LEFT JOIN admin_roles ar ON ar.id = au.role_id
-     WHERE au.company_id = ? AND au.id = ?`,
-    [getCompanyId(), decoded.adminId]
+  const row = await queryOne<StaffUserRow>(
+    `SELECT u.id, u.userid, u.email, u.full_name, u.is_active, u.must_change_password,
+            r.id AS role_id, r.name AS role_name, r.kind, r.permissions,
+            r.brands, r.channels, r.customer_groups, r.item_groups, r.warehouses
+     FROM users u
+     JOIN admin_roles r ON r.id = u.role_id AND r.company_id = u.company_id
+     WHERE u.company_id = ? AND u.id = ?`,
+    [getCompanyId(), decoded.userId]
   );
-  if (!row || !row.is_active) return null;
+  if (!row || !row.is_active || row.kind === "customer") return null;
 
-  if (row.is_root) {
-    return {
-      email: row.email,
-      fullName: row.full_name || row.email,
-      isSuperAdmin: true,
-      adminId: row.id,
-      permissions: [...ALL_ADMIN_PERMISSIONS],
-    };
-  }
-
-  // mysql2 auto-deserializes JSON columns, so row.permissions may already be
-  // an array (typical) or, depending on driver config, a raw string.
-  let permissions: AdminPermission[] = [];
-  try {
-    permissions = Array.isArray(row.permissions) ? row.permissions : JSON.parse(row.permissions || "[]");
-  } catch {
-    permissions = [];
-  }
+  const isSuperAdmin = row.kind === "super_admin";
+  const permissions = isSuperAdmin
+    ? [...ALL_ADMIN_PERMISSIONS]
+    : (jsonCodeList(row.permissions).filter((p) => (ALL_ADMIN_PERMISSIONS as readonly string[]).includes(p)) as AdminPermission[]);
 
   return {
-    email: row.email,
-    fullName: row.full_name || row.email,
-    isSuperAdmin: false,
+    email: row.email || row.userid || "",
+    fullName: row.full_name || row.email || row.userid || "",
+    isSuperAdmin,
     adminId: row.id,
+    userid: row.userid,
+    kind: row.kind,
+    roleId: row.role_id,
+    roleName: row.role_name,
     permissions,
+    scope: {
+      brands: jsonCodeList(row.brands),
+      channels: jsonCodeList(row.channels),
+      customerGroups: jsonCodeList(row.customer_groups),
+      itemGroups: jsonCodeList(row.item_groups),
+      warehouses: jsonCodeList(row.warehouses),
+    },
+    mustChangePassword: !!row.must_change_password,
   };
 }
 
-export function signAdminToken(payload: AdminTokenPayload): string {
+export function signStaffToken(userId: number): string {
+  const payload: StaffTokenPayload = { userId, staff: true };
   return jwt.sign(payload, JWT_SECRET, { expiresIn: "8h" });
+}
+
+/** Where a role kind lands after login. */
+export function homePathForKind(kind: RoleKind): "/admin" | "/sales" | "/customer" {
+  return kind === "customer" ? "/customer" : kind === "sales" ? "/sales" : "/admin";
 }
 
 export function hasPermission(session: AdminSession, permission: AdminPermission): boolean {
@@ -148,6 +202,12 @@ export async function requireAdminPermission(
   const session = await getAdminSession(request);
   if (!session) {
     return { session: null, response: NextResponse.json({ error: "Unauthorized" }, { status: 401 }) };
+  }
+  if (session.mustChangePassword) {
+    return {
+      session: null,
+      response: NextResponse.json({ error: "must_change_password", message: "Please change your password first" }, { status: 403 }),
+    };
   }
   if (!hasPermission(session, permission)) {
     return { session: null, response: NextResponse.json({ error: "Forbidden" }, { status: 403 }) };

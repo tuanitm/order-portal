@@ -4,6 +4,7 @@ import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { getCustomerGroupsWithEffectiveActive } from "@/lib/customerGroups";
 import { getAllowedCustomerGroupCodes } from "@/lib/adminScope";
+import { audited } from "@/lib/auditLog";
 
 /**
  * GET /api/admin/customer-groups — each row's `effective_active`/
@@ -30,7 +31,7 @@ export async function GET(request: NextRequest) {
  * the tree.
  * Body: { level: number, code: string, parent_code?: string, name?: string }
  */
-export async function POST(request: NextRequest) {
+async function POSTHandler(request: NextRequest) {
   const guard = await requireAdminPermission(request, "customer-groups");
   if (guard.response) return guard.response;
   if (!guard.session.isSuperAdmin) {
@@ -58,3 +59,6 @@ export async function POST(request: NextRequest) {
 
   return NextResponse.json({ success: true });
 }
+
+// Every call is written to the audit log (who, role, target, request, outcome).
+export const POST = audited({ action: "customer_group_create", entityType: "customer_group" }, POSTHandler);

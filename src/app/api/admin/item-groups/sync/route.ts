@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { syncItemGroupsFromHana } from "@/lib/itemCategories";
+import { audited } from "@/lib/auditLog";
 
 /**
  * POST /api/admin/item-groups/sync — pull the ItemCat01->06 name hierarchy
@@ -8,7 +9,7 @@ import { syncItemGroupsFromHana } from "@/lib/itemCategories";
  * SQLQueries can't reach these UDTs at all) — the only sync path for this
  * table; the old manual SAP_Item_Group.xlsx upload has been removed.
  */
-export async function POST(request: NextRequest) {
+async function POSTHandler(request: NextRequest) {
   const guard = await requireAdminPermission(request, "item-groups");
   if (guard.response) return guard.response;
   if (!guard.session.isSuperAdmin) {
@@ -26,3 +27,6 @@ export async function POST(request: NextRequest) {
     );
   }
 }
+
+// Every call is written to the audit log (who, role, target, request, outcome).
+export const POST = audited({ action: "sync_item_groups", entityType: "sync" }, POSTHandler);

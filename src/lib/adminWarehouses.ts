@@ -13,20 +13,15 @@ export function masterdataWarehouseCodes(): string[] {
 /**
  * The warehouses this admin may work with — the Inventory page, the "Self
  * create" order dialog and the order page's warehouse picker / SAP push.
- * Root: every masterdata.wareHouse warehouse. Anyone else: their own
- * admin_user_warehouses codes (Admin Users → Warehouse), limited to
- * masterdata.wareHouse; none assigned = none (default-deny, like the group
- * scopes in adminScope.ts).
+ * Super Admin: every masterdata.wareHouse warehouse. Anyone else: their
+ * role's Warehouses (Roles → Data permissions), limited to
+ * masterdata.wareHouse; none configured = none (default-deny, like the
+ * group scopes in adminScope.ts).
  */
 export async function getAdminWarehouseCodes(session: AdminSession): Promise<string[]> {
   const masterdata = masterdataWarehouseCodes();
   if (session.isSuperAdmin) return masterdata;
-  if (!session.adminId) return [];
-  const rows = await query<{ warehouse_code: string }[]>(
-    `SELECT warehouse_code FROM admin_user_warehouses WHERE company_id = ? AND admin_user_id = ?`,
-    [getCompanyId(), session.adminId]
-  );
-  const assigned = new Set(rows.map((r) => r.warehouse_code));
+  const assigned = new Set(session.scope.warehouses);
   return masterdata.filter((code) => assigned.has(code));
 }
 

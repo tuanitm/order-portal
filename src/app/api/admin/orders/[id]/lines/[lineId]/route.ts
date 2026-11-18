@@ -5,6 +5,7 @@ import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { recalculateLinkedGiftQty } from "@/lib/orderGifts";
 import { recalculateOrderTotals } from "@/lib/orderTotals";
 import { isOrderInAdminScope } from "@/lib/adminScope";
+import { audited } from "@/lib/auditLog";
 
 /**
  * PATCH /api/admin/orders/[id]/lines/[lineId] — Body: { confirmQty: number }.
@@ -24,7 +25,7 @@ import { isOrderInAdminScope } from "@/lib/adminScope";
  *
  * If this line is the "buy" side of a buy-X-get-Y promo, its linked gift
  * line's own confirm_qty is recalculated from the new ratio right here —
- * see recalculateLinkedGiftQty — and reported back in `giftAdjustment` so
+ * see recalculateLinkedGiftQty — and reported back in `giftAdjustments` so
  * the admin UI can show it alongside this line's own change.
  *
  * A gift line itself (is_gift_line) can never be PATCHed directly — its
@@ -33,7 +34,7 @@ import { isOrderInAdminScope } from "@/lib/adminScope";
  * UI already hides the input for these lines; this is the server-side
  * enforcement of that same rule).
  */
-export async function PATCH(
+async function PATCHHandler(
   request: NextRequest,
   { params }: { params: Promise<{ id: string; lineId: string }> }
 ) {
@@ -76,8 +77,12 @@ export async function PATCH(
     [confirmQty, customerConfirmStatus, companyId, orderLineId]
   );
 
-  const giftAdjustment = await recalculateLinkedGiftQty(orderLineId, confirmQty);
+  // One entry per gift line that changed (a buy line can have two — promotion "case c").
+  const giftAdjustments = await recalculateLinkedGiftQty(orderLineId, confirmQty);
   // Line totals and the order's subtotal / discount / total follow Cfm Qty.
   const totals = await recalculateOrderTotals(orderId);
-  return NextResponse.json({ success: true, giftAdjustment, totals });
+  return NextResponse.json({ success: true, giftAdjustments, totals });
 }
+
+// Every call is written to the audit log (who, role, target, request, outcome).
+export const PATCH = audited({ action: "order_line_update", entityType: "order", entityParam: "id" }, PATCHHandler);

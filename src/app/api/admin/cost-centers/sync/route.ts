@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { syncCostCenters } from "@/lib/sap-b1/sync";
+import { audited } from "@/lib/auditLog";
 
 /** POST /api/admin/cost-centers/sync — pull Brand/Department codes from SAP. */
-export async function POST(request: NextRequest) {
+async function POSTHandler(request: NextRequest) {
   const guard = await requireAdminPermission(request, "admin-users");
   if (guard.response) return guard.response;
 
@@ -18,3 +19,6 @@ export async function POST(request: NextRequest) {
     );
   }
 }
+
+// Every call is written to the audit log (who, role, target, request, outcome).
+export const POST = audited({ action: "sync_cost_centers", entityType: "sync" }, POSTHandler);

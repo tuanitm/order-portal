@@ -1,8 +1,10 @@
+import { sortOrderLines } from "@/lib/orderLineSort";
 import { NextRequest, NextResponse } from "next/server";
 import { query, queryOne } from "@/lib/db/connection";
 import { getCompanyId } from "@/lib/config";
 import { getSessionUser } from "@/lib/auth/session";
 import { getVatRates } from "@/lib/vatRates";
+import { audited } from "@/lib/auditLog";
 
 /**
  * GET /api/orders/[id] — a single order's detail, for the customer who
@@ -36,9 +38,9 @@ export async function GET(
     return NextResponse.json({ error: "Order not found" }, { status: 404 });
   }
 
-  const rawLines = await query<{ sap_item_code: string; line_total: string; vat_group: string | null }[]>(
+  const rawLines = await query<{ id: number; sap_item_code: string; is_gift_line: number; source_line_id: number | null; line_total: string; vat_group: string | null }[]>(
     `SELECT ol.id, ol.sap_item_code, ol.item_name, ol.quantity, ol.uom, ol.unit_price, ol.discount_percent, ol.line_total,
-            ol.confirm_qty, ol.customer_confirm_status, i.vat_group
+            ol.confirm_qty, ol.customer_confirm_status, ol.is_gift_line, ol.source_line_id, i.vat_group
      FROM order_lines ol
      LEFT JOIN items i ON i.company_id = ol.company_id AND i.sap_item_code = ol.sap_item_code
      WHERE ol.company_id = ? AND ol.order_id = ?`,
@@ -49,7 +51,7 @@ export async function GET(
   // line's VAT group), so tax = Line Total x the item's VAT rate, rounded per
   // line to whole VND. vat_rate is null when the rate isn't known.
   const vatRates = await getVatRates();
-  const lines = rawLines.map((l) => {
+  const lines = sortOrderLines(rawLines).map((l) => {
     const rate = l.vat_group ? vatRates.get(l.vat_group) ?? null : null;
     return { ...l, vat_rate: rate, vat_amount: rate === null ? null : Math.round((Number(l.line_total) * rate) / 100) };
   });
@@ -88,7 +90,7 @@ export async function GET(
  * pushed to SAP yet — once it has, this is SAP's record, not something to
  * silently change here. Body: any subset of { deliveryAddress, contactPhone, remark }.
  */
-export async function PATCH(
+async function PATCHHandler(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -130,3 +132,6 @@ export async function PATCH(
   await query(`UPDATE orders SET ${updates.join(", ")} WHERE company_id = ? AND id = ?`, values);
   return NextResponse.json({ success: true });
 }
+
+// Every call is written to the audit log (who, role, target, request, outcome).
+export const PATCH = audited({ action: "order_update", entityType: "order", entityParam: "id" }, PATCHHandler);

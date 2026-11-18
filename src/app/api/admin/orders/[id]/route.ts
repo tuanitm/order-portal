@@ -1,3 +1,4 @@
+import { sortOrderLines } from "@/lib/orderLineSort";
 import { NextRequest, NextResponse } from "next/server";
 import { query, queryOne } from "@/lib/db/connection";
 import { getCompanyId } from "@/lib/config";
@@ -5,6 +6,7 @@ import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { recordOrderStatus, notifyCustomerOfStatusChange } from "@/lib/orderHistory";
 import { isOrderInAdminScope } from "@/lib/adminScope";
 import { getVatRates } from "@/lib/vatRates";
+import { audited } from "@/lib/auditLog";
 
 // 'cancelled' is deliberately excluded — cancelling can mean deleting the
 // order's SAP Draft Sales Order too, so it only ever goes through the
@@ -33,7 +35,7 @@ export async function GET(
      FROM orders o
      LEFT JOIN users u ON u.company_id = o.company_id AND u.id = o.user_id
      LEFT JOIN customers c ON c.company_id = o.company_id AND c.sap_card_code = COALESCE(o.sap_card_code, u.sap_card_code)
-     LEFT JOIN admin_users au ON au.id = o.created_by_admin_id
+     LEFT JOIN users au ON au.id = o.created_by_admin_id
      WHERE o.company_id = ? AND o.id = ?`,
     [companyId, orderId]
   );
@@ -43,7 +45,7 @@ export async function GET(
   // snapshotted at order time, unlike item_name) — joined to cost_centers
   // (dimension 1) for a readable name, falling back to the raw code if the
   // cost center sync hasn't run or no longer has it.
-  const rawLines = await query<{ vat_group: string | null }[]>(
+  const rawLines = await query<{ id: number; sap_item_code: string; is_gift_line: number; source_line_id: number | null; vat_group: string | null }[]>(
     `SELECT ol.*, i.brand_code, COALESCE(cc.ocr_name, i.brand_code) AS brand_name, i.vat_group
      FROM order_lines ol
      LEFT JOIN items i ON i.company_id = ol.company_id AND i.sap_item_code = ol.sap_item_code
@@ -55,13 +57,13 @@ export async function GET(
   // VAT % from the item's SAP VAT group (null = unknown). The page computes the
   // amounts itself from line_total, so they follow Cfm Qty edits immediately.
   const vatRates = await getVatRates();
-  const lines = rawLines.map((l) => ({ ...l, vat_rate: l.vat_group ? vatRates.get(l.vat_group) ?? null : null }));
+  const lines = sortOrderLines(rawLines).map((l) => ({ ...l, vat_rate: l.vat_group ? vatRates.get(l.vat_group) ?? null : null }));
 
   return NextResponse.json({ order, lines });
 }
 
 /** PATCH /api/admin/orders/[id] — update status. Body: { status: string } */
-export async function PATCH(
+async function PATCHHandler(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
@@ -92,3 +94,6 @@ export async function PATCH(
   }
   return NextResponse.json({ success: true });
 }
+
+// Every call is written to the audit log (who, role, target, request, outcome).
+export const PATCH = audited({ action: "order_update", entityType: "order", entityParam: "id" }, PATCHHandler);

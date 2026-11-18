@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getPool, query } from "@/lib/db/connection";
 import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
+import { audited } from "@/lib/auditLog";
 
 /**
  * GET /api/admin/catalog-visibility — returns the dropdown options
@@ -40,7 +41,7 @@ export async function GET(request: NextRequest) {
  * POST /api/admin/catalog-visibility — add a single visibility rule.
  * Body: { customerGroupId: number, itemCategoryLevel: number, itemCategoryCode: string, isVisible: boolean }
  */
-export async function POST(request: NextRequest) {
+async function POSTHandler(request: NextRequest) {
   const guard = await requireAdminPermission(request, "catalog-visibility");
   if (guard.response) return guard.response;
 
@@ -65,7 +66,7 @@ export async function POST(request: NextRequest) {
  * PUT /api/admin/catalog-visibility — bulk upsert rules (kept for backward compatibility).
  * Body: { rules: { customerGroupId: number, itemCategoryLevel: number, itemCategoryCode: string, isVisible: boolean }[] }
  */
-export async function PUT(request: NextRequest) {
+async function PUTHandler(request: NextRequest) {
   const guard = await requireAdminPermission(request, "catalog-visibility");
   if (guard.response) return guard.response;
 
@@ -103,7 +104,7 @@ export async function PUT(request: NextRequest) {
  * DELETE /api/admin/catalog-visibility — delete a single rule by id.
  * Body: { id: number }
  */
-export async function DELETE(request: NextRequest) {
+async function DELETEHandler(request: NextRequest) {
   const guard = await requireAdminPermission(request, "catalog-visibility");
   if (guard.response) return guard.response;
 
@@ -116,3 +117,8 @@ export async function DELETE(request: NextRequest) {
   await query(`DELETE FROM catalog_visibility WHERE company_id = ? AND id = ?`, [getCompanyId(), id]);
   return NextResponse.json({ success: true });
 }
+
+// Every call is written to the audit log (who, role, target, request, outcome).
+export const POST = audited({ action: "catalog_visibility_add", entityType: "catalog_visibility" }, POSTHandler);
+export const PUT = audited({ action: "catalog_visibility_update", entityType: "catalog_visibility" }, PUTHandler);
+export const DELETE = audited({ action: "catalog_visibility_remove", entityType: "catalog_visibility" }, DELETEHandler);

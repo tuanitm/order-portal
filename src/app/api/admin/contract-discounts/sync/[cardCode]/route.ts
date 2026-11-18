@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { syncSpecialPricesForCard } from "@/lib/sap-b1/sync";
+import { audited } from "@/lib/auditLog";
 
-export async function POST(
+async function POSTHandler(
   request: NextRequest,
   { params }: { params: Promise<{ cardCode: string }> }
 ) {
@@ -18,3 +19,6 @@ export async function POST(
     return NextResponse.json({ error: "Sync failed" }, { status: 500 });
   }
 }
+
+// Every call is written to the audit log (who, role, target, request, outcome).
+export const POST = audited({ action: "sync_contract_discounts", entityType: "customer", entityParam: "cardCode" }, POSTHandler);

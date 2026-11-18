@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { syncCustomerRequiredShelfLife } from "@/lib/sap-b1/sync";
+import { audited } from "@/lib/auditLog";
 
 /**
  * POST /api/admin/contract-discounts/shelf-life/sync — pull Customer
  * Required Shelf Life (SAP CSL headers + lines) into `customer_require_shelflife`,
  * scoped to known customer_groups/item_groups — see syncCustomerRequiredShelfLife.
  */
-export async function POST(request: NextRequest) {
+async function POSTHandler(request: NextRequest) {
   const guard = await requireAdminPermission(request, "contract-discounts");
   if (guard.response) return guard.response;
 
@@ -22,3 +23,6 @@ export async function POST(request: NextRequest) {
     );
   }
 }
+
+// Every call is written to the audit log (who, role, target, request, outcome).
+export const POST = audited({ action: "sync_shelf_life", entityType: "sync" }, POSTHandler);

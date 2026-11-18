@@ -31,9 +31,10 @@
   },
   "auth": {
     "identifyTitle": "Truy cập Cổng Đặt Hàng",
-    "identifySubtitle": "Nhập email, số điện thoại hoặc mã số thuế để tiếp tục",
-    "identifierLabel": "Email, Số điện thoại hoặc MST",
-    "identifierPlaceholder": "email@example.com / 0901234567 / MST",
+    "identifySubtitle": "Nhập tên đăng nhập, email, số điện thoại hoặc mã số thuế để tiếp tục",
+    "identifierLabel": "Tên đăng nhập, Email, Số điện thoại hoặc MST",
+    "invalidCredentials": "Sai tên hoặc mật khẩu!",
+    "identifierPlaceholder": "userid / email@example.com / 0901234567 / MST",
     "continueBtn": "Tiếp tục",
     "checking": "Đang kiểm tra...",
     "loginTitle": "Đăng nhập",

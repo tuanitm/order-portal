@@ -151,9 +151,10 @@ export async function POST(request: NextRequest) {
 
     // Insert user with pending approval status
     const result = await query<{ insertId: number }>(
-      `INSERT INTO users (company_id, email, phone, password_hash, full_name, mst_code, sap_card_code, sap_card_name, sap_price_list_num, sap_cus_grp01, sap_cus_grp02, sap_cus_grp03, registration_address, registration_shipping_address, registration_remark, registration_contact_person, declared_region_code, approval_status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
+      `INSERT INTO users (company_id, role_id, email, phone, password_hash, full_name, mst_code, sap_card_code, sap_card_name, sap_price_list_num, sap_cus_grp01, sap_cus_grp02, sap_cus_grp03, registration_address, registration_shipping_address, registration_remark, registration_contact_person, declared_region_code, approval_status)
+       VALUES (?, (SELECT id FROM admin_roles WHERE company_id = ? AND kind = 'customer' ORDER BY id LIMIT 1), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
       [
+        companyId,
         companyId,
         email.trim().toLowerCase(),
         phone?.trim() || null,

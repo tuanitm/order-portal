@@ -11,12 +11,27 @@ interface AdminSessionInfo {
   fullName: string;
   isSuperAdmin: boolean;
   permissions: AdminPermission[];
+  userid: string | null;
+  kind: "super_admin" | "admin" | "sales";
+  roleName: string;
+  mustChangePassword: boolean;
 }
 
 const AdminSessionContext = createContext<AdminSessionInfo | null>(null);
 export function useAdminSession() {
   return useContext(AdminSessionContext);
 }
+
+/** "admin" for /admin, "sales" for /sales — both areas share this layout. */
+export type StaffArea = "admin" | "sales";
+const StaffBaseContext = createContext<string>("");
+/** The current staff area's base path, e.g. "/vi/admin" or "/vi/sales" — for links between its pages. */
+export function useStaffBase() {
+  return useContext(StaffBaseContext);
+}
+
+/** Pages that exist under /sales (Sales users see only these, within their role's functions). */
+const SALES_AREA_PAGES = new Set(["orders", "inventory", "change-password"]);
 
 interface UnreadOrderSummary {
   order_id: number;
@@ -148,8 +163,8 @@ interface NavItem { key: AdminPermission | "change-password"; label: string; hre
 interface NavGroup { label: string; icon: string; items: NavItem[]; }
 
 function NavGroupSection({
-  group, locale, pathname, defaultOpen,
-}: { group: NavGroup; locale: string; pathname: string; defaultOpen: boolean }) {
+  group, base, pathname, defaultOpen,
+}: { group: NavGroup; base: string; pathname: string; defaultOpen: boolean }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
     <div>
@@ -179,8 +194,8 @@ function NavGroupSection({
       {open && (
         <div style={{ display: "flex", flexDirection: "column", gap: "0.0625rem", paddingLeft: "0.625rem" }}>
           {group.items.map(item => {
-            const href = item.href ? `/${locale}/admin/${item.href}` : `/${locale}/admin`;
-            const isActive = item.href === "" ? pathname === `/${locale}/admin` : pathname.startsWith(href);
+            const href = item.href ? `${base}/${item.href}` : base;
+            const isActive = item.href === "" ? pathname === base : pathname.startsWith(href);
             return (
               <a key={item.key} href={href} style={{
                 display: "flex", alignItems: "center", gap: "0.5rem",
@@ -246,27 +261,30 @@ const NAV_GROUPS: NavGroup[] = [
       { key: "catalog-visibility", label: "Catalog Visibility",href: "catalog-visibility", icon: "🔒" },
       { key: "settings",           label: "SAP Sync Config",  href: "settings",           icon: "🔄", rootOnly: true },
       { key: "id-reset",           label: "Reset the Id",      href: "id-reset",           icon: "🔢", rootOnly: true },
-      { key: "admin-roles",        label: "Admin Roles",       href: "admin-roles",        icon: "🛡️", rootOnly: true },
-      { key: "admin-users",        label: "Admin Users",       href: "admin-users",        icon: "🔑", rootOnly: true },
+      { key: "admin-roles",        label: "Roles",             href: "admin-roles",        icon: "🛡️", rootOnly: true },
+      { key: "admin-users",        label: "Users",             href: "admin-users",        icon: "🔑", rootOnly: true },
       { key: "audit-logs",         label: "Audit Logs",        href: "audit-logs",         icon: "📜", rootOnly: true },
     ],
   },
 ];
 
-export default function AdminLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+export default function AdminLayout({ children }: { children: React.ReactNode }) {
+  return <StaffShell area="admin">{children}</StaffShell>;
+}
+
+/**
+ * The staff area shell — /admin (Super Admin, Admin) and /sales (Sales)
+ * share it. Not signed in → the one login page. A Sales user on /admin goes
+ * to /sales and an admin on /sales to /admin. "Change password at next login"
+ * → the area's change-password page, before anything else.
+ */
+export function StaffShell({ children, area }: { children: React.ReactNode; area: StaffArea }) {
   const t = useTranslations();
   const locale = useLocale();
   const pathname = usePathname();
+  const base = `/${locale}/${area}`;
   const [session, setSession] = useState<AdminSessionInfo | null>(null);
   const [isChecking, setIsChecking] = useState(true);
-  const [adminEmail, setAdminEmail] = useState("");
-  const [adminPassword, setAdminPassword] = useState("");
-  const [loginError, setLoginError] = useState("");
-  const [loginLoading, setLoginLoading] = useState(false);
   const appName = useAppName(true, session?.fullName);
 
   const checkAuth = useCallback(async () => {
@@ -287,37 +305,31 @@ export default function AdminLayout({
     checkAuth();
   }, [checkAuth]);
 
+  // Send each role to its own area, the forced password change first, and
+  // anyone not signed in to the one login page.
+  const redirectTo = isChecking
+    ? null
+    : !session
+      ? `/${locale}/login`
+      : session.kind === "sales" && area === "admin"
+        ? `/${locale}/sales`
+        : session.kind !== "sales" && area === "sales"
+          ? `/${locale}/admin`
+          : session.mustChangePassword && !pathname.endsWith("/change-password")
+            ? `${base}/change-password`
+            : area === "sales" && pathname === base
+              ? `${base}/orders`
+              : null;
+  useEffect(() => {
+    if (redirectTo) window.location.replace(redirectTo);
+  }, [redirectTo]);
+
   // The tab title comes from the root layout ("IMV - Ordering Portal"); this
   // layout is a client component so it can't export metadata — mark the admin
   // area by setting the "(Admin)" title here instead (always English).
   usePageTitle(true, session?.fullName);
 
-  const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoginError("");
-    setLoginLoading(true);
-
-    try {
-      const res = await fetch("/api/admin/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: adminEmail, password: adminPassword }),
-      });
-
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error || "Login failed");
-      }
-
-      await checkAuth();
-    } catch (err) {
-      setLoginError(err instanceof Error ? err.message : "Login failed");
-    } finally {
-      setLoginLoading(false);
-    }
-  };
-
-  if (isChecking) {
+  if (isChecking || redirectTo || !session) {
     return (
       <div className="auth-page">
         <div style={{ color: "var(--text-tertiary)", fontSize: "1rem" }}>
@@ -327,90 +339,11 @@ export default function AdminLayout({
     );
   }
 
-  if (!session) {
-    return (
-      <div className="auth-page">
-        <div className="auth-card animate-scale-in" style={{ maxWidth: "420px" }}>
-          <div className="auth-card__logo">
-            <div className="auth-card__logo-icon" style={{
-              background: "linear-gradient(135deg, #6366F1, #4F46E5)",
-            }}>
-              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-              </svg>
-            </div>
-            <h1 className="auth-card__title">{t("admin.loginTitle")}</h1>
-            <p className="auth-card__subtitle">{t("admin.title")}</p>
-          </div>
-
-          <form className="auth-form" onSubmit={handleLogin} id="admin-login-form">
-            {loginError && (
-              <div style={{
-                padding: "0.75rem 1rem",
-                background: "var(--color-error-light)",
-                color: "#991B1B",
-                borderRadius: "var(--radius-lg)",
-                fontSize: "0.875rem",
-                fontWeight: 500,
-              }}>
-                {loginError}
-              </div>
-            )}
-
-            <div className="input-group">
-              <label className="input-label" htmlFor="adminEmail">{t("admin.adminEmail")}</label>
-              <input
-                type="email"
-                className="input"
-                id="adminEmail"
-                value={adminEmail}
-                onChange={(e) => setAdminEmail(e.target.value)}
-                placeholder="admin@example.com"
-                required
-                autoComplete="email"
-              />
-            </div>
-
-            <div className="input-group">
-              <label className="input-label" htmlFor="adminPassword">{t("admin.adminPassword")}</label>
-              <input
-                type="password"
-                className="input"
-                id="adminPassword"
-                value={adminPassword}
-                onChange={(e) => setAdminPassword(e.target.value)}
-                placeholder="••••••••"
-                required
-              />
-            </div>
-
-            <button
-              type="submit"
-              className="btn btn-primary btn-lg"
-              disabled={loginLoading}
-              style={{ width: "100%" }}
-              id="admin-login-btn"
-            >
-              {loginLoading ? t("common.loading") : t("admin.login")}
-            </button>
-          </form>
-
-          <div style={{ textAlign: "center", marginTop: "1.5rem" }}>
-            <a href={`/${locale}`} style={{
-              fontSize: "0.8125rem",
-              color: "var(--text-tertiary)",
-            }}>
-              ← {locale === "vi" ? "Quay lại cổng đặt hàng" : "Back to ordering portal"}
-            </a>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
   // Which individual nav items this session can see
   const canSee = (item: NavItem): boolean =>
-    item.key === "change-password" ? true
+    session.mustChangePassword ? item.key === "change-password"
+    : area === "sales" && !SALES_AREA_PAGES.has(item.key) ? false
+    : item.key === "change-password" ? true
     : (item as { rootOnly?: boolean }).rootOnly ? session.isSuperAdmin
     : session.isSuperAdmin || session.permissions.includes(item.key as AdminPermission);
 
@@ -423,8 +356,8 @@ export default function AdminLayout({
   // default to open; others start collapsed.
   function groupHasActive(g: typeof visibleGroups[0]): boolean {
     return g.items.some(item => {
-      const href = item.href ? `/${locale}/admin/${item.href}` : `/${locale}/admin`;
-      return item.href === "" ? pathname === `/${locale}/admin` : pathname.startsWith(href);
+      const href = item.href ? `${base}/${item.href}` : base;
+      return item.href === "" ? pathname === base : pathname.startsWith(href);
     });
   }
 
@@ -432,6 +365,7 @@ export default function AdminLayout({
 
   return (
     <AdminSessionContext.Provider value={session}>
+    <StaffBaseContext.Provider value={base}>
       <div style={{ display: "flex", minHeight: "100vh", background: "var(--bg-secondary, #F8FAFC)" }}>
         {canSeeOrders && <MessageNotificationBell locale={locale} pathname={pathname} />}
 
@@ -452,8 +386,8 @@ export default function AdminLayout({
               // as a direct link — no collapsible header needed.
               if (group.items.length === 1) {
                 const item = group.items[0];
-                const href = item.href ? `/${locale}/admin/${item.href}` : `/${locale}/admin`;
-                const isActive = item.href === "" ? pathname === `/${locale}/admin` : pathname.startsWith(href);
+                const href = item.href ? `${base}/${item.href}` : base;
+                const isActive = item.href === "" ? pathname === base : pathname.startsWith(href);
                 return (
                   <a key={item.key} href={href} style={{
                     display: "flex", alignItems: "center", gap: "0.5rem",
@@ -473,7 +407,7 @@ export default function AdminLayout({
                 <NavGroupSection
                   key={group.label}
                   group={group}
-                  locale={locale}
+                  base={base}
                   pathname={pathname}
                   defaultOpen={isGroupActive}
                 />
@@ -482,11 +416,12 @@ export default function AdminLayout({
           </nav>
           <div style={{ borderTop: "1px solid var(--color-gray-200, #E2E8F0)", paddingTop: "0.75rem", marginTop: "0.75rem" }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 0.75rem", marginBottom: "0.25rem" }}>
-              <span style={{ fontSize: "0.75rem", color: "var(--text-tertiary, #94A3B8)", wordBreak: "break-all" }}>
-                {session.email}
+              <span style={{ fontSize: "0.75rem", color: "var(--text-tertiary, #94A3B8)", wordBreak: "break-all" }} title={session.roleName}>
+                {session.userid || session.email}
+                <span style={{ display: "block", fontSize: "0.6875rem" }}>{session.roleName}</span>
               </span>
               <a
-                href="/api/admin/logout"
+                href={`/api/admin/logout?locale=${locale}`}
                 style={{
                   fontSize: "0.75rem",
                   color: "#DC2626",
@@ -513,6 +448,7 @@ export default function AdminLayout({
           {children}
         </div>
       </div>
+    </StaffBaseContext.Provider>
     </AdminSessionContext.Provider>
   );
 }
