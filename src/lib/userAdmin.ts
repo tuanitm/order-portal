@@ -4,11 +4,21 @@ import type { RoleKind } from "@/lib/auth/adminSession";
 
 /**
  * Shared rules of the Users page (POST/PATCH /api/admin/users): one user =
- * one role; data permissions come from the role. userid and email are each
- * unique (per company, case-insensitive). A Customer-role user must be linked
- * to a SAP customer (sap_card_code) — that's whose storefront prices they see
- * and whose orders they place. Staff (Super Admin / Admin / Sales) need a userid.
+ * one role; data permissions come from the role.
+ *
+ * Two tables: STAFF (Super Admin / Admin / Sales) live in `admin_users`,
+ * CUSTOMERS in `users`. userid and email are each unique per company across
+ * BOTH tables (case-insensitive) — the one login screen finds an account by
+ * them. A Customer-role user must be linked to a SAP customer (sap_card_code)
+ * — that's whose storefront prices they see and whose orders they place.
+ * Staff need a userid.
  */
+export type AccountTable = "staff" | "customer";
+
+/** Which table an account of this role kind lives in. */
+export function accountTableForKind(kind: RoleKind): AccountTable {
+  return kind === "customer" ? "customer" : "staff";
+}
 
 export const USERID_PATTERN = /^[A-Za-z0-9._-]{3,50}$/;
 
@@ -17,13 +27,30 @@ export async function getRoleKind(roleId: number): Promise<RoleKind | null> {
   return row?.kind ?? null;
 }
 
-/** Another user (not `exceptId`) already using this userid / email? Case-insensitive. */
-export async function findClash(field: "userid" | "email", value: string, exceptId: number | null): Promise<boolean> {
-  const row = await queryOne<{ id: number }>(
-    `SELECT id FROM users WHERE company_id = ? AND LOWER(${field}) = LOWER(?) ${exceptId ? "AND id <> ?" : ""} LIMIT 1`,
-    exceptId ? [getCompanyId(), value, exceptId] : [getCompanyId(), value]
+/**
+ * Another account already using this userid / email (checked in BOTH tables)
+ * or SAP customer code (customers only)? Case-insensitive. `except` is the
+ * account being edited, so it doesn't clash with itself.
+ */
+export async function findClash(
+  field: "userid" | "email" | "sap_card_code",
+  value: string,
+  except: { table: AccountTable; id: number } | null
+): Promise<boolean> {
+  const companyId = getCompanyId();
+  const skip = (table: AccountTable) => (except && except.table === table ? except.id : 0);
+  const customer = await queryOne<{ id: number }>(
+    `SELECT u.id FROM users u LEFT JOIN admin_roles r ON r.id = u.role_id
+      WHERE u.company_id = ? AND LOWER(u.${field}) = LOWER(?) AND u.id <> ? AND (u.role_id IS NULL OR r.kind = 'customer') LIMIT 1`,
+    [companyId, value, skip("customer")]
   );
-  return !!row;
+  if (customer) return true;
+  if (field === "sap_card_code") return false;
+  const staff = await queryOne<{ id: number }>(
+    `SELECT id FROM admin_users WHERE company_id = ? AND LOWER(${field}) = LOWER(?) AND id <> ? LIMIT 1`,
+    [companyId, value, skip("staff")]
+  );
+  return !!staff;
 }
 
 /** The SAP customer a Customer-role user is linked to — its pricing fields are copied onto the user. */
@@ -38,11 +65,11 @@ export async function getSapCustomer(cardCode: string) {
   );
 }
 
-/** Active Super Admins other than `exceptId` — there must always be at least one. */
+/** Active Super Admins (admin_users) other than staff #`exceptId` — there must always be at least one. */
 export async function otherActiveSuperAdmins(exceptId: number): Promise<number> {
   const row = await queryOne<{ cnt: number }>(
-    `SELECT COUNT(*) AS cnt FROM users u JOIN admin_roles r ON r.id = u.role_id
-      WHERE u.company_id = ? AND r.kind = 'super_admin' AND u.is_active = TRUE AND u.id <> ?`,
+    `SELECT COUNT(*) AS cnt FROM admin_users a JOIN admin_roles r ON r.id = a.role_id
+      WHERE a.company_id = ? AND r.kind = 'super_admin' AND a.is_active = TRUE AND a.id <> ?`,
     [getCompanyId(), exceptId]
   );
   return Number(row?.cnt ?? 0);

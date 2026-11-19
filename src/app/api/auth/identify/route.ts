@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { findUserByIdentifier } from "@/lib/auth/login";
 import { queryOne } from "@/lib/db/connection";
 import { getCompanyId } from "@/lib/config";
+import { rateLimit } from "@/lib/rateLimit";
 
 interface MatchRow {
   email: string | null;
@@ -28,6 +29,9 @@ interface MatchRow {
  * the customer to signup instead of login).
  */
 export async function POST(request: NextRequest) {
+  // Public: limit per IP so it can't be looped to discover accounts / SAP codes.
+  const limited = rateLimit(request, "identify", 30, 60);
+  if (limited) return limited;
   try {
     const body = await request.json();
     const { identifier } = body;

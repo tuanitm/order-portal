@@ -2,7 +2,6 @@ import { getPool } from "@/lib/db/connection";
 import { loadConfig, getCompanyId } from "@/lib/config";
 import { queryHana, getHanaSchema } from "@/lib/hana/client";
 import { withTableLocks } from "@/lib/db/tableLock";
-import { resetIdsAfterSync } from "@/lib/db/idReset";
 
 interface HanaCustomerGroupRow {
   CustGrpCode1: string;
@@ -31,11 +30,11 @@ interface HanaCustomerGroupRow {
  * Scoped by config.json's masterdata.customerGroup (a ready-made SQL IN-list
  * literal, e.g. "'GT'") — only level-1/2 groups matching it are pulled.
  */
-export async function syncCustomerGroupsFromHana(): Promise<{ rowsRead: number; levelsImported: number; idReset: string }> {
+export async function syncCustomerGroupsFromHana(): Promise<{ rowsRead: number; levelsImported: number }> {
   // Waits for an id reset of the same table to finish (see tableLock.ts).
-  const result = await withTableLocks(["customer_groups"], () => syncCustomerGroupsFromHanaUnlocked());
-  // Renumbered in place (child tables follow) — existing groups keep their ids.
-  return { ...result, idReset: await resetIdsAfterSync("customer_groups") };
+  // No automatic id reset afterwards: the table holds ADS rows too and admins
+  // edit it — use the ID Reset page when needed (see resetIdsAfterSync).
+  return withTableLocks(["customer_groups"], () => syncCustomerGroupsFromHanaUnlocked());
 }
 
 async function syncCustomerGroupsFromHanaUnlocked(): Promise<{ rowsRead: number; levelsImported: number }> {

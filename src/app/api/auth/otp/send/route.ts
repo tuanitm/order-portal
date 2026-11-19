@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { isSingleEmail } from "@/lib/emailFormat";
 import { storeOtp, canSendOtp } from "@/lib/auth/otp";
 import { sendOtpEmail } from "@/lib/email/sender";
 import { logAuditEvent } from "@/lib/auditLog";
@@ -19,8 +20,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Email is required" }, { status: 400 });
     }
 
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) {
+    if (!isSingleEmail(email.trim())) {
       return NextResponse.json({ error: "Invalid email format" }, { status: 400 });
     }
 
@@ -67,12 +67,16 @@ export async function POST(request: NextRequest) {
     }
 
     if (purpose === "forgot-password") {
-      const account = await queryOne<{ id: number; userid: string | null }>(
+      // Staff (admin_users) or customer (users).
+      const staff = await queryOne<{ id: number; userid: string | null }>(
+        "SELECT id, userid FROM admin_users WHERE company_id = ? AND LOWER(email) = LOWER(?) LIMIT 1", [getCompanyId(), email]
+      );
+      const account = staff ?? await queryOne<{ id: number; userid: string | null }>(
         "SELECT id, userid FROM users WHERE company_id = ? AND LOWER(email) = LOWER(?) LIMIT 1", [getCompanyId(), email]
       );
       await logAuditEvent({
-        actorType: "customer", actorId: account?.id ?? null, actorLabel: account?.userid || email,
-        action: "password_reset_requested", entityType: "user", entityId: account?.id ?? null, request,
+        actorType: staff ? "admin" : "customer", actorId: account?.id ?? null, actorLabel: account?.userid || email,
+        action: "password_reset_requested", entityType: staff ? "staff" : "user", entityId: account?.id ?? null, request,
       });
     }
 

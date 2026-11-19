@@ -1,9 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
-import { query } from "@/lib/db/connection";
+import { query, queryOne } from "@/lib/db/connection";
 import { getCompanyId } from "@/lib/config";
-import { queryOne } from "@/lib/db/connection";
 import { logAuditEvent } from "@/lib/auditLog";
 
 const JWT_SECRET = process.env.JWT_SECRET || "order-portal-secret-key-change-in-production";
@@ -51,19 +50,20 @@ export async function POST(request: NextRequest) {
     const passwordHash = await bcrypt.hash(newPassword, 12);
     // Same generic response whether or not a row actually matched — never
     // reveal whether a given email is a registered account.
-    await query(
-      "UPDATE users SET password_hash = ? WHERE company_id = ? AND email = ? AND is_active = TRUE",
-      [passwordHash, getCompanyId(), decoded.email]
-    );
-    const account = await queryOne<{ id: number; userid: string | null }>(
-      "SELECT id, userid FROM users WHERE company_id = ? AND email = ? AND is_active = TRUE LIMIT 1",
-      [getCompanyId(), decoded.email]
-    );
-    if (account) {
+    // Staff live in admin_users, customers in users (an email is unique across both).
+    for (const [table, actorType] of [["admin_users", "admin"], ["users", "customer"]] as const) {
+      const account = await queryOne<{ id: number; userid: string | null }>(
+        `SELECT id, userid FROM ${table} WHERE company_id = ? AND LOWER(email) = LOWER(?) AND is_active = TRUE LIMIT 1`,
+        [getCompanyId(), decoded.email]
+      );
+      if (!account) continue;
+      await query(`UPDATE ${table} SET password_hash = ? WHERE company_id = ? AND id = ?`, [passwordHash, getCompanyId(), account.id]);
       await logAuditEvent({
-        actorType: "customer", actorId: account.id, actorLabel: account.userid || decoded.email,
-        action: "password_reset", entityType: "user", entityId: account.id, details: { via: "forgot-password OTP" }, request,
+        actorType, actorId: account.id, actorLabel: account.userid || decoded.email,
+        action: "password_reset", entityType: actorType === "admin" ? "staff" : "user", entityId: account.id,
+        details: { via: "forgot-password OTP" }, request,
       });
+      break;
     }
 
     return NextResponse.json({

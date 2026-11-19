@@ -1,15 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
+import { isSingleEmail } from "@/lib/emailFormat";
 import bcrypt from "bcryptjs";
 import { query } from "@/lib/db/connection";
 import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { audited, logAuditEvent } from "@/lib/auditLog";
-import { USERID_PATTERN, findClash, getRoleKind, getSapCustomer } from "@/lib/userAdmin";
+import { USERID_PATTERN, findClash, getRoleKind, getSapCustomer, accountTableForKind } from "@/lib/userAdmin";
 import { checkCustomerFitsRole } from "@/lib/customerRoleScope";
 
 /**
- * GET /api/admin/users?kind=staff|customer|<role kind>&search= — every user
- * (staff and customers), with their role. Super Admin only ("admin-users").
+ * GET /api/admin/users?kind=staff|customer|<role kind>&search= — every user,
+ * with their role and `account`: "staff" rows come from admin_users, "customer"
+ * rows from users (ids can repeat between the two — edit/delete pass
+ * ?account=). Super Admin only ("admin-users").
  */
 export async function GET(request: NextRequest) {
   const guard = await requireAdminPermission(request, "admin-users");
@@ -18,29 +21,43 @@ export async function GET(request: NextRequest) {
   const sp = request.nextUrl.searchParams;
   const kind = sp.get("kind") || "";
   const search = (sp.get("search") || "").trim();
-  const where = ["u.company_id = ?"];
-  const params: (string | number)[] = [getCompanyId()];
-  if (kind === "staff") where.push("r.kind IN ('super_admin','admin','sales')");
-  else if (["super_admin", "admin", "sales", "customer"].includes(kind)) { where.push("r.kind = ?"); params.push(kind); }
-  if (search) {
-    const like = `%${search}%`;
-    where.push("(u.userid LIKE ? OR u.email LIKE ? OR u.full_name LIKE ? OR u.sap_card_code LIKE ? OR u.phone LIKE ?)");
-    params.push(like, like, like, like, like);
-  }
+  const companyId = getCompanyId();
+  const like = `%${search}%`;
+  const staffKind = ["super_admin", "admin", "sales"].includes(kind) ? kind : null;
+  const wantStaff = kind === "" || kind === "staff" || staffKind !== null;
+  const wantCustomers = kind === "" || kind === "customer";
 
-  const users = await query(
-    `SELECT u.id, u.userid, u.email, u.phone, u.full_name, u.sap_card_code, u.sap_card_name, u.is_active,
-            u.must_change_password, u.approval_status, u.department_code, u.owner_code, u.created_at,
-            r.id AS role_id, r.name AS role_name, r.kind AS role_kind,
-            (SELECT COUNT(*) FROM orders o WHERE o.company_id = u.company_id AND o.user_id = u.id) AS order_count
-       FROM users u
-       LEFT JOIN admin_roles r ON r.id = u.role_id
-      WHERE ${where.join(" AND ")}
-      ORDER BY FIELD(r.kind, 'super_admin', 'admin', 'sales', 'customer'), u.userid IS NULL, u.userid, u.email
-      LIMIT 500`,
-    params
-  );
-  return NextResponse.json({ users });
+  const staff = wantStaff
+    ? await query<Record<string, unknown>[]>(
+        `SELECT 'staff' AS account, a.id, a.userid, a.email, a.phone, a.full_name, NULL AS sap_card_code, NULL AS sap_card_name,
+                a.is_active, a.must_change_password, 'approved' AS approval_status, a.department_code, a.owner_code, a.created_at,
+                r.id AS role_id, r.name AS role_name, r.kind AS role_kind, 0 AS order_count
+           FROM admin_users a
+           JOIN admin_roles r ON r.id = a.role_id AND r.company_id = a.company_id AND r.kind <> 'customer'
+          WHERE a.company_id = ?
+            ${staffKind ? "AND r.kind = ?" : ""}
+            ${search ? "AND (a.userid LIKE ? OR a.email LIKE ? OR a.full_name LIKE ? OR a.phone LIKE ?)" : ""}
+          ORDER BY FIELD(r.kind, 'super_admin', 'admin', 'sales'), a.userid IS NULL, a.userid, a.email
+          LIMIT 500`,
+        [companyId, ...(staffKind ? [staffKind] : []), ...(search ? [like, like, like, like] : [])]
+      )
+    : [];
+  const customers = wantCustomers
+    ? await query<Record<string, unknown>[]>(
+        `SELECT 'customer' AS account, u.id, u.userid, u.email, u.phone, u.full_name, u.sap_card_code, u.sap_card_name, u.is_active,
+                u.must_change_password, u.approval_status, NULL AS department_code, NULL AS owner_code, u.created_at,
+                r.id AS role_id, r.name AS role_name, COALESCE(r.kind, 'customer') AS role_kind,
+                (SELECT COUNT(*) FROM orders o WHERE o.company_id = u.company_id AND o.user_id = u.id) AS order_count
+           FROM users u
+           LEFT JOIN admin_roles r ON r.id = u.role_id
+          WHERE u.company_id = ? AND (u.role_id IS NULL OR r.kind = 'customer')
+            ${search ? "AND (u.userid LIKE ? OR u.email LIKE ? OR u.full_name LIKE ? OR u.sap_card_code LIKE ? OR u.phone LIKE ?)" : ""}
+          ORDER BY u.userid IS NULL, u.userid, u.email
+          LIMIT 500`,
+        [companyId, ...(search ? [like, like, like, like, like] : [])]
+      )
+    : [];
+  return NextResponse.json({ users: [...staff, ...customers] });
 }
 
 /**
@@ -64,9 +81,10 @@ async function POSTHandler(request: NextRequest) {
   if (!fullName) return NextResponse.json({ error: "Name is required" }, { status: 400 });
   if (password.length < 6) return NextResponse.json({ error: "Password must be at least 6 characters" }, { status: 400 });
   if (kind !== "customer" && !userid) return NextResponse.json({ error: "User ID is required for staff" }, { status: 400 });
+  if (kind !== "customer" && !email) return NextResponse.json({ error: "Email is required for staff" }, { status: 400 });
   if (kind !== "customer" && !userid && !email) return NextResponse.json({ error: "Enter a User ID or an email" }, { status: 400 });
   if (kind !== "customer" && userid && !USERID_PATTERN.test(userid)) return NextResponse.json({ error: "User ID: 3–50 letters, digits, dot, dash or underscore" }, { status: 400 });
-  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return NextResponse.json({ error: "Email is not valid" }, { status: 400 });
+  if (email && !isSingleEmail(email)) return NextResponse.json({ error: "Email: enter one valid address (used to sign in)" }, { status: 400 });
   if (kind !== "customer" && userid && (await findClash("userid", userid, null))) return NextResponse.json({ error: `User ID "${userid}" is already used` }, { status: 409 });
   if (email && (await findClash("email", email, null))) return NextResponse.json({ error: `Email "${email}" is already used` }, { status: 409 });
 
@@ -81,9 +99,34 @@ async function POSTHandler(request: NextRequest) {
     if (await findClash("userid", customer.sap_card_code, null)) {
       return NextResponse.json({ error: `User ID "${customer.sap_card_code}" is already used` }, { status: 409 });
     }
+    // UNIQUE (company_id, sap_card_code): one portal account per SAP customer.
+    if (await findClash("sap_card_code", customer.sap_card_code, null)) {
+      return NextResponse.json({ error: `SAP customer ${customer.sap_card_code} already has a portal account` }, { status: 409 });
+    }
   }
   // A Customer's User ID is always its SAP customer code (both required).
   const finalUserid = customer ? customer.sap_card_code : userid;
+  const phone = (typeof body.phone === "string" && body.phone.trim()) || null;
+  const passwordHash = await bcrypt.hash(password, 12);
+
+  // Staff -> admin_users; customers -> users.
+  if (accountTableForKind(kind) === "staff") {
+    const staffResult = await query<{ insertId: number }>(
+      `INSERT INTO admin_users (company_id, userid, role_id, is_root, email, phone, password_hash, full_name,
+                                must_change_password, is_active, department_code, owner_code)
+       VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, TRUE, ?, ?)`,
+      [getCompanyId(), finalUserid, roleId, email, phone, passwordHash, fullName, !!body.mustChangePassword,
+       (typeof body.departmentCode === "string" && body.departmentCode.trim()) || null,
+       (typeof body.ownerCode === "string" && body.ownerCode.trim()) || null]
+    );
+    const staffId = (staffResult as unknown as { insertId: number }).insertId;
+    await logAuditEvent({
+      actorType: "admin", actorId: guard.session.adminId, actorLabel: guard.session.email,
+      action: "admin_user_create", entityType: "staff", entityId: staffId,
+      details: { account: "staff", userid: finalUserid, email, fullName, roleId, kind }, request,
+    });
+    return NextResponse.json({ success: true, userId: staffId, account: "staff" });
+  }
 
   const result = await query<{ insertId: number }>(
     `INSERT INTO users (company_id, userid, role_id, email, phone, password_hash, full_name, must_change_password, is_active,

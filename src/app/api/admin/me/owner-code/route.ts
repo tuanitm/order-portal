@@ -21,7 +21,7 @@ export async function GET(request: NextRequest) {
   }
 
   const row = await queryOne<{ owner_code: string | null }>(
-    `SELECT owner_code FROM users WHERE company_id = ? AND id = ?`,
+    `SELECT owner_code FROM admin_users WHERE company_id = ? AND id = ?`,
     [getCompanyId(), session.adminId]
   );
   return NextResponse.json({ ownerCode: row?.owner_code ?? null });
@@ -43,7 +43,7 @@ async function PATCHHandler(request: NextRequest) {
   }
 
   await query(
-    `UPDATE users SET owner_code = ? WHERE company_id = ? AND id = ?`,
+    `UPDATE admin_users SET owner_code = ? WHERE company_id = ? AND id = ?`,
     [ownerCode || null, getCompanyId(), session.adminId]
   );
   return NextResponse.json({ success: true });

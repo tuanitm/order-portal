@@ -79,7 +79,7 @@ async function POSTHandler(
   await notifyCustomerOfStatusChange(orderId, "cancelled");
 
   const admin = await queryOne<{ full_name: string | null }>(
-    `SELECT full_name FROM users WHERE company_id = ? AND id = ?`,
+    `SELECT full_name FROM admin_users WHERE company_id = ? AND id = ?`,
     [companyId, guard.session.adminId]
   );
   await postOrderMessage(orderId, "admin", admin?.full_name || null, "Cancelled this order.");

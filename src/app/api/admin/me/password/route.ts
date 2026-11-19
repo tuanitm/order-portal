@@ -30,7 +30,7 @@ async function POSTHandler(request: NextRequest) {
 
   const companyId = getCompanyId();
   const row = await queryOne<{ password_hash: string }>(
-    `SELECT password_hash FROM users WHERE company_id = ? AND id = ?`,
+    `SELECT password_hash FROM admin_users WHERE company_id = ? AND id = ?`,
     [companyId, session.adminId]
   );
   if (!row) {
@@ -43,7 +43,7 @@ async function POSTHandler(request: NextRequest) {
   }
 
   const newHash = await bcrypt.hash(newPassword, 12);
-  await query(`UPDATE users SET password_hash = ?, must_change_password = FALSE WHERE company_id = ? AND id = ?`, [newHash, companyId, session.adminId]);
+  await query(`UPDATE admin_users SET password_hash = ?, must_change_password = FALSE WHERE company_id = ? AND id = ?`, [newHash, companyId, session.adminId]);
 
   return NextResponse.json({ success: true });
 }

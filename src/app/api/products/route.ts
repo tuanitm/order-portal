@@ -63,7 +63,7 @@ export async function GET(request: NextRequest) {
     // so an unmapped group never loses visibility. The stock table is the
     // scheduled-sync one or the live one (refreshed from SAP if due) — see
     // src/lib/stock/liveStock.ts.
-    const [hiddenCategories, roleScope, visibleWarehouses, basePriceListNum, stockTable] = await Promise.all([
+    const [hiddenCategories, roleScope, visibleWarehouses, basePriceListNum] = await Promise.all([
       user?.approvalStatus === "approved"
         ? resolveHiddenItemCategories(user.sapCusGrp01, user.sapCusGrp02, user.sapCusGrp03)
         : Promise.resolve([]),
@@ -71,7 +71,6 @@ export async function GET(request: NextRequest) {
       getCustomerRoleScope(user?.id),
       getVisibleWarehousesForCustomerGroup(cusGrp02),
       getBasePriceListNum(),
-      getStorefrontStockTable(),
     ]);
     const hidden = buildHiddenCategoryClauses(hiddenCategories);
     const roleItems = await customerItemScopeClauses(roleScope);
@@ -80,6 +79,9 @@ export async function GET(request: NextRequest) {
 
     // The role's Warehouses, when set, replace the customer group's.
     const stockWarehouseCodes = customerStockWarehouses(roleScope, visibleWarehouses.map((w) => w.code));
+    // No warehouses (guest, unmapped customer) = no stock gate — don't touch
+    // (or, in live mode, refresh from SAP) a stock table that won't be read.
+    const stockTable = stockWarehouseCodes.length > 0 ? await getStorefrontStockTable() : "item_warehouse_stock";
 
     const ctx: PricingContext = {
       sapCardCode: sapCardCode ?? "",

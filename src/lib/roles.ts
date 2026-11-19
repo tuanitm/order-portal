@@ -96,7 +96,8 @@ export interface RoleRow {
 export async function listRoles(): Promise<RoleRow[]> {
   const rows = await query<Record<string, unknown>[]>(
     `SELECT r.id, r.name, r.description, r.kind, r.permissions, r.brands, r.channels, r.customer_groups, r.item_groups, r.warehouses, r.created_at,
-            (SELECT COUNT(*) FROM users u WHERE u.company_id = r.company_id AND u.role_id = r.id) AS user_count
+            (SELECT COUNT(*) FROM users u WHERE u.company_id = r.company_id AND u.role_id = r.id)
+              + (SELECT COUNT(*) FROM admin_users a WHERE a.company_id = r.company_id AND a.role_id = r.id) AS user_count
        FROM admin_roles r WHERE r.company_id = ?
       ORDER BY FIELD(r.kind, 'super_admin', 'admin', 'sales', 'customer'), r.name`,
     [getCompanyId()]

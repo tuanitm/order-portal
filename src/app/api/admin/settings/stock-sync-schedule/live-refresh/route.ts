@@ -11,9 +11,21 @@ async function POSTHandler(request: NextRequest) {
   const guard = await requireAdminPermission(request, "settings");
   if (guard.response) return guard.response;
 
+  let stock: { rows: number; ms: number };
   try {
-    const stock = await refreshLiveStock();
-    const started = Date.now();
+    stock = await refreshLiveStock();
+  } catch (error) {
+    console.error("[Admin] Live stock refresh failed:", error);
+    return NextResponse.json(
+      { error: "Live stock refresh failed", message: error instanceof Error ? error.message : String(error) },
+      { status: 502 }
+    );
+  }
+
+  // The quantities are already live at this point — a shelf-life failure
+  // (batch dates come from the Service Layer, not HANA) is only a warning.
+  const started = Date.now();
+  try {
     await refreshLiveShelfLife();
     return NextResponse.json({
       success: true,
@@ -21,11 +33,12 @@ async function POSTHandler(request: NextRequest) {
       summary: `✓ Live stock: ${stock.rows} rows in ${stock.ms} ms; shelf life in ${Date.now() - started} ms`,
     });
   } catch (error) {
-    console.error("[Admin] Live stock refresh failed:", error);
-    return NextResponse.json(
-      { error: "Live stock refresh failed", message: error instanceof Error ? error.message : String(error) },
-      { status: 502 }
-    );
+    console.error("[Admin] Live shelf-life refresh failed:", error);
+    return NextResponse.json({
+      success: true,
+      status: "warning",
+      summary: `✓ Live stock: ${stock.rows} rows in ${stock.ms} ms. ⚠ Shelf life not refreshed (previous values kept): ${error instanceof Error ? error.message : String(error)}`,
+    });
   }
 }
 

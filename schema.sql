@@ -797,6 +797,13 @@ CREATE TABLE IF NOT EXISTS admin_roles (
   UNIQUE KEY uk_company_name (company_id, name)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- Staff accounts (Super Admin / Admin / Sales). Customers live in `users`;
+-- staff live here (scripts/migrate_staff_to_admin_users.mjs). This app (IMV)
+-- uses the role's kind (admin_roles.kind = super_admin) for full access and
+-- keeps is_root = FALSE; Order-Portal2 (ADS) still uses is_root. userid and
+-- email are sign-in names, unique per company across admin_users AND users
+-- (userAdmin.findClash). The admin-token JWT carries admin_users.id (staffId).
+--
 -- Admin Users. `is_root` marks the "root" account(s) — unrestricted,
 -- bypasses every role/scope check (see hasPermission, getAllowed*Codes),
 -- and only root can reach this table's own admin UI (Admin Users/Admin
@@ -810,12 +817,16 @@ CREATE TABLE IF NOT EXISTS admin_roles (
 CREATE TABLE IF NOT EXISTS admin_users (
   id INT AUTO_INCREMENT PRIMARY KEY,
   company_id VARCHAR(50) NOT NULL,
+  userid VARCHAR(100) NULL,
+  -- Compulsory for staff; staff sign in with userid or email.
   email VARCHAR(255) NOT NULL,
+  phone VARCHAR(20) NULL,
   password_hash VARCHAR(255) NOT NULL,
   full_name VARCHAR(255) NOT NULL,
   role_id INT NULL,
   is_root BOOLEAN NOT NULL DEFAULT FALSE,
   is_active BOOLEAN DEFAULT TRUE,
+  must_change_password BOOLEAN NOT NULL DEFAULT FALSE,
   -- This admin's own cost center code, dimension 2 in cost_centers (see
   -- that table's comment) — posted as OcrCode2/CogsOcrCo2 on every Sales
   -- Order line when THIS admin confirms/pushes an order to SAP (see POST
@@ -838,6 +849,7 @@ CREATE TABLE IF NOT EXISTS admin_users (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (role_id) REFERENCES admin_roles(id),
   UNIQUE KEY uk_company_email (company_id, email),
+  UNIQUE KEY uk_company_userid (company_id, userid),
   CONSTRAINT chk_admin_users_role CHECK (
     (is_root = TRUE AND role_id IS NULL) OR (is_root = FALSE AND role_id IS NOT NULL)
   )

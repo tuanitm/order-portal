@@ -5,7 +5,11 @@ import { styles, btn, Badge, LoadingOrEmpty } from "../adminUi";
 
 type RoleKind = "super_admin" | "admin" | "sales" | "customer";
 
+/** Staff live in admin_users, customers in users — ids can repeat, so rows carry their table. */
+type Account = "staff" | "customer";
+
 interface UserRow {
+  account: Account;
   id: number;
   userid: string | null;
   email: string | null;
@@ -29,6 +33,8 @@ interface SapCustomer { sap_card_code: string; card_name: string | null }
 
 interface Form {
   id: number | null;
+  /** Set when editing; a role change can't move an account between staff and customer. */
+  account: Account | null;
   userid: string;
   fullName: string;
   email: string;
@@ -54,9 +60,11 @@ const fieldLabel: CSSProperties = { fontSize: "0.6875rem", fontWeight: 700, colo
 const hint: CSSProperties = { fontSize: "0.6875rem", color: "var(--text-tertiary, #94A3B8)", marginTop: 2 };
 
 const blankForm = (): Form => ({
-  id: null, userid: "", fullName: "", email: "", phone: "", roleId: "", sapCardCode: "", sapCardName: "",
+  id: null, account: null, userid: "", fullName: "", email: "", phone: "", roleId: "", sapCardCode: "", sapCardName: "",
   password: "", mustChangePassword: true, isActive: true, departmentCode: "", ownerCode: "",
 });
+
+const userUrl = (u: { id: number | null; account: Account | null }) => `/api/admin/users/${u.id}?account=${u.account ?? "customer"}`;
 
 /** Type-ahead over SAP Customers (synced BPs). */
 function SapCustomerPicker({ code, name, onPick }: { code: string; name: string; onPick: (code: string, name: string) => void }) {
@@ -138,7 +146,7 @@ export default function UsersPage() {
   const edit = (u: UserRow | null) => {
     setError("");
     setForm(u ? {
-      id: u.id, userid: u.userid ?? "", fullName: u.full_name, email: u.email ?? "", phone: u.phone ?? "",
+      id: u.id, account: u.account, userid: u.userid ?? "", fullName: u.full_name, email: u.email ?? "", phone: u.phone ?? "",
       roleId: u.role_id ? String(u.role_id) : "", sapCardCode: u.sap_card_code ?? "", sapCardName: u.sap_card_name ?? "",
       password: "", mustChangePassword: !!u.must_change_password, isActive: !!u.is_active,
       departmentCode: u.department_code ?? "", ownerCode: u.owner_code ?? "",
@@ -158,7 +166,7 @@ export default function UsersPage() {
       if (isStaff) { body.departmentCode = form.departmentCode; body.ownerCode = form.ownerCode; }
       if (form.password) body.password = form.password;
       if (form.id) body.isActive = form.isActive;
-      const res = await fetch(form.id ? `/api/admin/users/${form.id}` : "/api/admin/users", {
+      const res = await fetch(form.id ? userUrl(form) : "/api/admin/users", {
         method: form.id ? "PATCH" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -175,7 +183,7 @@ export default function UsersPage() {
   };
 
   const quickPatch = async (u: UserRow, patch: Record<string, unknown>) => {
-    const res = await fetch(`/api/admin/users/${u.id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
+    const res = await fetch(userUrl(u), { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) });
     const data = await res.json();
     if (!res.ok) alert(data.error || "Update failed");
     await load(tab, search);
@@ -183,14 +191,14 @@ export default function UsersPage() {
 
   const remove = async (u: UserRow) => {
     if (!confirm(`Delete user "${u.userid || u.email}"?`)) return;
-    const res = await fetch(`/api/admin/users/${u.id}`, { method: "DELETE" });
+    const res = await fetch(userUrl(u), { method: "DELETE" });
     const data = await res.json();
     if (!res.ok) alert(data.error || "Delete failed");
     await load(tab, search);
   };
 
   const canSave = !!form && !!form.fullName.trim() && !!form.roleId && (form.id !== null || form.password.length >= 6)
-    && (formKind !== "customer" || !!form.sapCardCode.trim()) && (!isStaff || !!form.userid.trim());
+    && (formKind !== "customer" || !!form.sapCardCode.trim()) && (!isStaff || (!!form.userid.trim() && !!form.email.trim()));
 
   return (
     <div style={styles.page}>
@@ -214,7 +222,10 @@ export default function UsersPage() {
                 <span style={fieldLabel}>Role *</span>
                 <select style={{ ...styles.input, width: "100%" }} value={form.roleId} onChange={(e) => setForm({ ...form, roleId: e.target.value })}>
                   <option value="">— Choose a role —</option>
-                  {(["super_admin", "admin", "sales", "customer"] as RoleKind[]).map((k) => {
+                  {(["super_admin", "admin", "sales", "customer"] as RoleKind[])
+                    // Editing: only roles of the same table (staff ↔ customer can't be switched).
+                    .filter((k) => !form.account || (form.account === "customer") === (k === "customer"))
+                    .map((k) => {
                     const list = roles.filter((r) => r.kind === k);
                     return list.length ? (
                       <optgroup key={k} label={KIND_LABEL[k]}>
@@ -244,7 +255,7 @@ export default function UsersPage() {
                 <input style={{ ...styles.input, width: "100%" }} value={form.fullName} onChange={(e) => setForm({ ...form, fullName: e.target.value })} />
               </div>
               <div>
-                <span style={fieldLabel}>Email</span>
+                <span style={fieldLabel}>Email{isStaff ? " *" : ""}</span>
                 <input style={{ ...styles.input, width: "100%" }} type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
                 <div style={hint}>Unique · also works for sign-in</div>
               </div>
@@ -334,7 +345,7 @@ export default function UsersPage() {
                 </thead>
                 <tbody>
                   {users.map((u) => (
-                    <tr key={u.id} style={{ opacity: u.is_active ? 1 : 0.55 }}>
+                    <tr key={`${u.account}-${u.id}`} style={{ opacity: u.is_active ? 1 : 0.55 }}>
                       <td style={{ ...styles.td, fontFamily: "monospace", fontWeight: 700 }}>{u.userid || <span style={{ color: "var(--text-tertiary, #94A3B8)" }}>—</span>}</td>
                       <td style={styles.td}>{u.full_name}</td>
                       <td style={{ ...styles.td, fontSize: "0.75rem" }}>

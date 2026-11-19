@@ -5,6 +5,7 @@ import { sendApprovalEmail } from "@/lib/email/sender";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { isCustomerInApprovalScope } from "@/lib/adminScope";
 import { audited, logAuditEvent } from "@/lib/auditLog";
+import { findClash } from "@/lib/userAdmin";
 
 /**
  * POST /api/admin/customers/[id]/approve — Approve a customer
@@ -87,6 +88,13 @@ async function POSTHandler(
     if (userIdClash) {
       return NextResponse.json(
         { error: `User ID "${customer.sap_card_code}" is already used by another account (${userIdClash.email || `#${userIdClash.id}`}) — fix that account first` },
+        { status: 409 }
+      );
+    }
+    // ...or by a staff account (admin_users) — sign-in names are unique across both.
+    if (await findClash("userid", customer.sap_card_code, { table: "customer", id: customerId })) {
+      return NextResponse.json(
+        { error: `User ID "${customer.sap_card_code}" is already used by a staff account — fix that account first` },
         { status: 409 }
       );
     }

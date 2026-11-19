@@ -26,33 +26,52 @@ export interface LoginUserRow {
   must_change_password: number;
   /** null for an account with no role yet (treated as a customer). */
   kind: RoleKind | null;
+  /** Which table the account lives in: admin_users (staff) or users (customers). */
+  account?: "staff" | "customer";
 }
 
 /**
- * Find the account an identifier belongs to: userid or email (everyone), or
- * phone / tax code (customers). Exact userid/email matches win over phone/tax
- * code, so a staff userid can't be shadowed by a customer's phone number.
+ * Find the account an identifier belongs to. Staff (Super Admin / Admin /
+ * Sales) live in `admin_users` and sign in by userid or email; customers
+ * live in `users` and sign in by userid, SAP code, email, phone or tax code.
+ * Staff are checked first, so a staff userid can't be shadowed by a
+ * customer's phone number (userid and email are also kept unique across both
+ * tables — see userAdmin.findClash).
  */
 export async function findUserByIdentifier(identifier: string): Promise<LoginUserRow | null> {
   const value = identifier.trim();
   const lower = value.toLowerCase();
   const phone = value.replace(/[+\-\s()]/g, "");
-  return queryOne<LoginUserRow>(
+  const staff = await queryOne<LoginUserRow>(
+    `SELECT a.id, a.userid, a.email, a.phone, a.full_name, NULL AS mst_code, NULL AS sap_card_code, NULL AS sap_card_name,
+            a.password_hash, 'vi' AS language, a.is_active, 'approved' AS approval_status, NULL AS rejection_reason,
+            a.must_change_password, r.kind
+       FROM admin_users a
+       JOIN admin_roles r ON r.id = a.role_id AND r.company_id = a.company_id AND r.kind <> 'customer'
+      WHERE a.company_id = ? AND (LOWER(a.userid) = ? OR LOWER(a.email) = ?)
+      ORDER BY (LOWER(a.userid) = ?) DESC, a.id
+      LIMIT 1`,
+    [getCompanyId(), lower, lower, lower]
+  );
+  if (staff) return { ...staff, account: "staff" };
+  const customer = await queryOne<LoginUserRow>(
     `SELECT u.id, u.userid, u.email, u.phone, u.full_name, u.mst_code, u.sap_card_code, u.sap_card_name, u.password_hash,
-            u.language, u.is_active, u.approval_status, u.rejection_reason, u.must_change_password, r.kind
+            u.language, u.is_active, u.approval_status, u.rejection_reason, u.must_change_password, 'customer' AS kind
        FROM users u
        LEFT JOIN admin_roles r ON r.id = u.role_id
-      WHERE u.company_id = ?
+      WHERE u.company_id = ? AND (u.role_id IS NULL OR r.kind = 'customer')
         AND (LOWER(u.userid) = ? OR LOWER(u.sap_card_code) = ? OR LOWER(u.email) = ? OR u.phone = ? OR u.mst_code = ?)
       ORDER BY (LOWER(u.userid) = ?) DESC, (LOWER(u.sap_card_code) = ?) DESC, (LOWER(u.email) = ?) DESC, u.id
       LIMIT 1`,
     [getCompanyId(), lower, lower, lower, phone, value, lower, lower, lower]
   );
+  return customer ? { ...customer, account: "customer" } : null;
 }
 
 /**
  * The one login for everyone (POST /api/auth/login; /api/admin/login is an
- * alias). Detects the account's role and signs it in accordingly:
+ * alias). Staff come from admin_users, customers from users (see
+ * findUserByIdentifier); signs each in accordingly:
  *  - Super Admin / Admin / Sales → staff session (admin-token cookie, 8h),
  *    lands on /admin or /sales;
  *  - Customer → storefront session (auth-token cookie, 30 days with "remember
@@ -71,7 +90,7 @@ export async function loginResponse(
   }
   const value = identifier.trim();
   const user = await findUserByIdentifier(value);
-  const kind: RoleKind = user?.kind ?? "customer";
+  const kind: RoleKind = user?.account === "staff" ? (user.kind ?? "admin") : "customer";
   const actorType = kind === "customer" ? "customer" : "admin";
   const label = user?.email || user?.userid || value;
 

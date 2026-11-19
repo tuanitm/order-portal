@@ -5,7 +5,10 @@ import { getCompanyId } from "@/lib/config";
 import { audited } from "@/lib/auditLog";
 import type { StockSyncScheduleRow } from "@/lib/sap-b1/stockSyncSchedule";
 import { validateStockSyncWindows, parseStockSyncWindows, type StockSyncWindow } from "@/lib/stockSyncWindows";
-import { LIVE_CACHE_MIN_SECONDS, LIVE_CACHE_MAX_SECONDS, invalidateStockSettings } from "@/lib/stock/liveStock";
+import {
+  LIVE_CACHE_MIN_SECONDS, LIVE_CACHE_MAX_SECONDS, invalidateStockSettings, getStockSettings,
+  refreshLiveStock, refreshLiveShelfLife,
+} from "@/lib/stock/liveStock";
 
 /**
  * GET/PATCH /api/admin/settings/stock-sync-schedule — how the storefront gets
@@ -67,6 +70,27 @@ async function PATCHHandler(request: NextRequest) {
     .sort((a, b) => a.start.localeCompare(b.start));
   const companyId = getCompanyId();
 
+  // Switching to option 2: read live stock from SAP once BEFORE saving, so
+  // the storefront never switches to an empty live table. If SAP can't be
+  // read, nothing is saved and the storefront stays on option 1.
+  let liveNote = "";
+  if (stockSource === "live" && (await getStockSettings()).source !== "live") {
+    try {
+      const r = await refreshLiveStock();
+      liveNote = `First live read: ${r.rows} rows in ${r.ms} ms.`;
+      // Shelf life is slow (5–15 s) — fill it in the background.
+      refreshLiveShelfLife().catch((e) => console.error("[LiveStock] Shelf-life refresh failed:", e));
+    } catch (error) {
+      return NextResponse.json(
+        {
+          error: "Could not read live stock from SAP — still on option 1 (nothing saved)",
+          message: error instanceof Error ? error.message : String(error),
+        },
+        { status: 502 }
+      );
+    }
+  }
+
   await query(
     `INSERT INTO sync_schedule_settings (company_id, stock_sync_enabled, stock_sync_windows, stock_source, stock_live_cache_seconds)
      VALUES (?, ?, ?, ?, ?)
@@ -79,7 +103,7 @@ async function PATCHHandler(request: NextRequest) {
   // The storefront picks up the new source on its next request.
   invalidateStockSettings();
 
-  return NextResponse.json({ success: true, schedule: await loadSchedule(companyId) });
+  return NextResponse.json({ success: true, note: liveNote || undefined, schedule: await loadSchedule(companyId) });
 }
 
 // Every call is written to the audit log (who, role, target, request, outcome).

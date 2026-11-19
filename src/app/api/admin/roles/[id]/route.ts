@@ -25,7 +25,7 @@ async function PATCHHandler(request: NextRequest, { params }: { params: Promise<
   if (!def.ok) return NextResponse.json({ error: def.error }, { status: 400 });
 
   if (def.kind !== current.kind) {
-    const users = await queryOne<{ cnt: number }>(`SELECT COUNT(*) AS cnt FROM users WHERE company_id = ? AND role_id = ?`, [companyId, roleId]);
+    const users = await queryOne<{ cnt: number }>(`SELECT (SELECT COUNT(*) FROM users WHERE company_id = ? AND role_id = ?) + (SELECT COUNT(*) FROM admin_users WHERE company_id = ? AND role_id = ?) AS cnt`, [companyId, roleId, companyId, roleId]);
     if (users && users.cnt > 0) {
       return NextResponse.json({ error: `Can't change the role type while ${users.cnt} user(s) hold this role — move them to another role first` }, { status: 409 });
     }
@@ -62,7 +62,7 @@ async function DELETEHandler(request: NextRequest, { params }: { params: Promise
   if (isNaN(roleId)) return NextResponse.json({ error: "Invalid role ID" }, { status: 400 });
 
   const companyId = getCompanyId();
-  const inUse = await queryOne<{ cnt: number }>(`SELECT COUNT(*) as cnt FROM users WHERE company_id = ? AND role_id = ?`, [companyId, roleId]);
+  const inUse = await queryOne<{ cnt: number }>(`SELECT (SELECT COUNT(*) FROM users WHERE company_id = ? AND role_id = ?) + (SELECT COUNT(*) FROM admin_users WHERE company_id = ? AND role_id = ?) AS cnt`, [companyId, roleId, companyId, roleId]);
   if (inUse && inUse.cnt > 0) {
     return NextResponse.json({ error: `Cannot delete: ${inUse.cnt} user(s) still assigned to this role` }, { status: 409 });
   }

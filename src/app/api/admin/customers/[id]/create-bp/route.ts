@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { isSingleEmail } from "@/lib/emailFormat";
 import { query, queryOne } from "@/lib/db/connection";
 import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
@@ -8,6 +9,7 @@ import { generateCardCode } from "@/lib/sap-b1/cardCode";
 import { getSapClient } from "@/lib/sap-b1/client";
 import { sendApprovalEmail } from "@/lib/email/sender";
 import { audited, logAuditEvent } from "@/lib/auditLog";
+import { findClash } from "@/lib/userAdmin";
 
 /**
  * POST /api/admin/customers/[id]/create-bp — for a new-company registration
@@ -113,6 +115,13 @@ async function POSTHandler(
       || customer.full_name;
     const mstCode = (typeof body.mstCode === "string" && body.mstCode.trim()) || customer.mst_code;
     const email = (typeof body.email === "string" && body.email.trim()) ? body.email.trim().toLowerCase() : (customer.email || null);
+    // It's also the user's sign-in email — one address only, not used by another account (staff or customer).
+    if (email && !isSingleEmail(email)) {
+      return NextResponse.json({ error: "Email: enter one valid address (used to sign in)" }, { status: 400 });
+    }
+    if (email && (await findClash("email", email, { table: "customer", id: customerId }))) {
+      return NextResponse.json({ error: `Email "${email}" is already used by another account` }, { status: 409 });
+    }
     const phone = (typeof body.phone === "string" && body.phone.trim()) || customer.phone || null;
     const billingAddress = (typeof body.billingAddress === "string" && body.billingAddress.trim()) || customer.registration_address || "";
     const shippingAddress = (typeof body.shippingAddress === "string" && body.shippingAddress.trim())

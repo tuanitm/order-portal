@@ -39,7 +39,14 @@ const sqlString = (v: string) => `'${v.replace(/'/g, "''")}'`;
  */
 export async function queryHanaInventoryByWarehouse(
   warehouseCodes: string[],
-  search?: string
+  search?: string,
+  /**
+   * Also keep rows where only OnOrder ≠ 0 (OnHand = Committed = 0) — the
+   * scheduled stock sync stores them so Admin → Warehouses still shows the
+   * On Order qty; their Available is 0, so the storefront is unaffected.
+   * Off (default) = exactly the .sql file's filter, as Admin → Inventory.
+   */
+  options: { includeOnOrderOnly?: boolean } = {}
 ): Promise<HanaInventoryRow[]> {
   if (warehouseCodes.length === 0) return [];
   const schema = getHanaSchema();
@@ -98,7 +105,7 @@ export async function queryHanaInventoryByWarehouse(
         AND (T1."U_ItemCat01" IN (${itemGroupFilter}) OR T1."U_ItemCat02" IN (${itemGroupFilter}))
         AND T0."WhsCode" IN (${whsSql})
     ) X
-    WHERE (X."on_hand" <> 0 OR X."committed" <> 0)
+    WHERE (X."on_hand" <> 0 OR X."committed" <> 0${options.includeOnOrderOnly ? ` OR X."ordered" <> 0` : ""})
       ${search ? `AND (X."item_code" LIKE ${sqlString(`%${search}%`)} OR X."item_name" LIKE ${sqlString(`%${search}%`)})` : ""}
     ORDER BY X."item_code", X."whs_code"
   `;

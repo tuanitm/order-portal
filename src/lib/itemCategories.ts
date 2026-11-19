@@ -2,7 +2,6 @@ import { getPool } from "@/lib/db/connection";
 import { loadConfig, getCompanyId } from "@/lib/config";
 import { queryHana, getHanaSchema } from "@/lib/hana/client";
 import { withTableLocks } from "@/lib/db/tableLock";
-import { resetIdsAfterSync } from "@/lib/db/idReset";
 
 interface HanaItemGroupRow {
   ItemGrpCode1: string;
@@ -40,11 +39,11 @@ interface HanaItemGroupRow {
  * source query — safe here because every item in this app's data has all
  * 6 category levels populated (verified against the live `items` table).
  */
-export async function syncItemGroupsFromHana(): Promise<{ rowsRead: number; levelsImported: number; idReset: string }> {
+export async function syncItemGroupsFromHana(): Promise<{ rowsRead: number; levelsImported: number }> {
   // Waits for an id reset of the same table to finish (see tableLock.ts).
-  const result = await withTableLocks(["item_groups"], () => syncItemGroupsFromHanaUnlocked());
-  // Renumbered in place (child tables follow) — existing groups keep their ids.
-  return { ...result, idReset: await resetIdsAfterSync("item_groups") };
+  // No automatic id reset afterwards: the table holds ADS rows too and admins
+  // edit it — use the ID Reset page when needed (see resetIdsAfterSync).
+  return withTableLocks(["item_groups"], () => syncItemGroupsFromHanaUnlocked());
 }
 
 async function syncItemGroupsFromHanaUnlocked(): Promise<{ rowsRead: number; levelsImported: number }> {

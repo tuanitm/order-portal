@@ -255,7 +255,7 @@ async function syncInventoryStockUnlocked(): Promise<{ rowsSynced: number }> {
   const companyId = getCompanyId();
   const masterdata = loadConfig().masterdata;
   const [rows, batchRows] = await Promise.all([
-    queryHanaInventoryByWarehouse(configWarehouseCodes()),
+    queryHanaInventoryByWarehouse(configWarehouseCodes(), undefined, { includeOnOrderOnly: true }),
     sap.getBatchStock(masterdata.itemGroup, masterdata.wareHouse),
   ]);
 

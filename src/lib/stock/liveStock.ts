@@ -53,6 +53,8 @@ interface LiveState {
   lastAttemptAt: number;
   inflight: Promise<void> | null;
   shelfRefreshedAt: number | null;
+  /** ms epoch of the last shelf-life attempt, success or not — throttles retries after a failure. */
+  shelfLastAttemptAt: number;
   shelfInflight: Promise<void> | null;
   /** Latest worst-batch shelf-life % per "item|warehouse", applied to new live rows. */
   shelfLife: Map<string, number>;
@@ -63,7 +65,7 @@ function state(): LiveState {
   if (!g.__liveStockState) {
     g.__liveStockState = {
       settings: null, settingsReadAt: 0, refreshedAt: null, lastAttemptAt: 0, inflight: null,
-      shelfRefreshedAt: null, shelfInflight: null, shelfLife: new Map(),
+      shelfRefreshedAt: null, shelfLastAttemptAt: 0, shelfInflight: null, shelfLife: new Map(),
     };
   }
   return g.__liveStockState;
@@ -99,6 +101,10 @@ export async function getStorefrontStockTable(): Promise<StockTable> {
   const settings = await getStockSettings();
   if (settings.source !== "live") return "item_warehouse_stock";
   await ensureLiveStockFresh(settings.liveCacheSeconds);
+  // Until the live table has been filled successfully at least once (first
+  // switch to option 2, SAP slow or failing), it may be empty — which would
+  // hide every product. Keep serving the scheduled-sync stock until then.
+  if (!state().refreshedAt) return "item_warehouse_stock";
   return "item_warehouse_stock_live";
 }
 
@@ -117,8 +123,16 @@ async function ensureLiveStockFresh(cacheSeconds: number): Promise<void> {
     if (s.shelfRefreshedAt === null) s.shelfRefreshedAt = 0;
   }
 
-  // Shelf life: background only, never awaited by a page.
-  if (!s.shelfInflight && Date.now() - s.shelfRefreshedAt! > SHELF_LIFE_REFRESH_MINUTES * 60 * 1000) {
+  // Shelf life: background only, never awaited by a page. A failed attempt
+  // (e.g. Service Layer down) is not retried until the next window either,
+  // so SAP doesn't get a 5–15 s batch query on every page load.
+  const shelfWindowMs = SHELF_LIFE_REFRESH_MINUTES * 60 * 1000;
+  if (
+    !s.shelfInflight &&
+    Date.now() - s.shelfRefreshedAt! > shelfWindowMs &&
+    Date.now() - s.shelfLastAttemptAt > shelfWindowMs
+  ) {
+    s.shelfLastAttemptAt = Date.now();
     s.shelfInflight = refreshLiveShelfLife()
       .catch((e) => console.error("[LiveStock] Shelf-life refresh failed:", e))
       .finally(() => { s.shelfInflight = null; });

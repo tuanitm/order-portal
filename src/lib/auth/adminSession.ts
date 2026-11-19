@@ -68,7 +68,7 @@ export interface AdminSession {
   fullName: string;
   /** Role kind "super_admin" — every function, no data limits. */
   isSuperAdmin: boolean;
-  /** users.id of the signed-in staff member (the name predates the merge of admin_users into users). */
+  /** admin_users.id of the signed-in staff member (staff live in admin_users, customers in users). */
   adminId: number | null;
   userid: string | null;
   kind: StaffKind;
@@ -80,9 +80,13 @@ export interface AdminSession {
   mustChangePassword: boolean;
 }
 
-/** Staff token (admin-token cookie). `userId` is users.id; tokens from before the merge (adminId) are rejected. */
+/**
+ * Staff token (admin-token cookie). `staffId` is admin_users.id. Older tokens
+ * (`userId` = a users.id from when staff lived in users) carry no staffId and
+ * are rejected — those staff simply sign in again.
+ */
 interface StaffTokenPayload {
-  userId: number;
+  staffId: number;
   staff: true;
 }
 
@@ -135,16 +139,16 @@ export async function getAdminSession(request: NextRequest): Promise<AdminSessio
   } catch {
     return null;
   }
-  if (!decoded.staff || !decoded.userId) return null;
+  if (!decoded.staff || !decoded.staffId) return null;
 
   const row = await queryOne<StaffUserRow>(
-    `SELECT u.id, u.userid, u.email, u.full_name, u.is_active, u.must_change_password,
+    `SELECT a.id, a.userid, a.email, a.full_name, a.is_active, a.must_change_password,
             r.id AS role_id, r.name AS role_name, r.kind, r.permissions,
             r.brands, r.channels, r.customer_groups, r.item_groups, r.warehouses
-     FROM users u
-     JOIN admin_roles r ON r.id = u.role_id AND r.company_id = u.company_id
-     WHERE u.company_id = ? AND u.id = ?`,
-    [getCompanyId(), decoded.userId]
+     FROM admin_users a
+     JOIN admin_roles r ON r.id = a.role_id AND r.company_id = a.company_id
+     WHERE a.company_id = ? AND a.id = ?`,
+    [getCompanyId(), decoded.staffId]
   );
   if (!row || !row.is_active || row.kind === "customer") return null;
 
@@ -174,8 +178,8 @@ export async function getAdminSession(request: NextRequest): Promise<AdminSessio
   };
 }
 
-export function signStaffToken(userId: number): string {
-  const payload: StaffTokenPayload = { userId, staff: true };
+export function signStaffToken(staffId: number): string {
+  const payload: StaffTokenPayload = { staffId, staff: true };
   return jwt.sign(payload, JWT_SECRET, { expiresIn: "8h" });
 }
 

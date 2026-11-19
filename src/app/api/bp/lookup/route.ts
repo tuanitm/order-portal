@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { queryOne } from "@/lib/db/connection";
 import { getCompanyId } from "@/lib/config";
+import { rateLimit } from "@/lib/rateLimit";
 
 interface CustomerMatchRow {
   sap_card_code: string;
@@ -24,10 +25,42 @@ interface CustomerMatchRow {
  * whichever of the 3 the customer has typed so far, and this matches on
  * ANY of them (same normalization as POST /api/auth/identify, so the same
  * value finds the same row either place looks it up). Returns the first
- * match's BP identity + SAP linkage fields for auto-filling the rest of the
- * form, never more than one row.
+ * match's BP identity for auto-filling the rest of the form, never more
+ * than one row.
+ *
+ * Public (no login), so it must not leak customer data:
+ *  - matched ONLY by a SAP customer code (short, guessable) → just the name
+ *    plus a MASKED email/phone hint ("ng***@gmail.com"), never the real
+ *    contact details or tax code;
+ *  - matched by an email / phone / tax code the caller typed → the other
+ *    identifiers too (they already know one of the customer's identifiers);
+ *  - price list and customer groups are never returned — signup reads them
+ *    from the customers table itself (POST /api/auth/signup);
+ *  - rate-limited per IP.
  */
+function maskEmail(email: string | null): string | null {
+  if (!email) return null;
+  // SAP's email field can hold several addresses ("a@x.com;b@y.com").
+  const masked = email
+    .split(/[;,\s]+/)
+    .filter(Boolean)
+    .map((one) => {
+      const [user, domain] = one.split("@");
+      return domain ? `${user.slice(0, 2)}***@${domain}` : "***";
+    });
+  return masked.length ? masked.join("; ") : null;
+}
+
+function maskPhone(phone: string | null): string | null {
+  if (!phone) return null;
+  const d = phone.replace(/\s/g, "");
+  if (d.length < 5) return "***";
+  return `${d.slice(0, 2)}${"*".repeat(Math.max(3, d.length - 4))}${d.slice(-2)}`;
+}
+
 export async function POST(request: NextRequest) {
+  const limited = rateLimit(request, "bp-lookup", 30, 60);
+  if (limited) return limited;
   try {
     const body = await request.json();
     const email = typeof body?.email === "string" ? body.email.trim() : "";
@@ -77,17 +110,32 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ found: false });
     }
 
+    // Did the caller prove they know one of the customer's identifiers?
+    const knowsIdentifier =
+      (!!email && match.email?.toLowerCase() === email.toLowerCase()) ||
+      (!!phone && (match.phone ?? "").replace(/[+\-\s()]/g, "") === phone.replace(/[+\-\s()]/g, "")) ||
+      (!!mstCode && (match.mst_code ?? "").replace(/[^0-9A-Za-z]/g, "") === mstCode.replace(/[^0-9A-Za-z]/g, ""));
+
+    if (!knowsIdentifier) {
+      // Matched only by the SAP customer code.
+      return NextResponse.json({
+        found: true,
+        codeOnly: true,
+        cardCode: match.sap_card_code,
+        cardName: match.card_name,
+        emailHint: maskEmail(match.email),
+        phoneHint: maskPhone(match.phone),
+      });
+    }
+
     return NextResponse.json({
       found: true,
       cardCode: match.sap_card_code,
       cardName: match.card_name,
-      email: match.email,
+      // No email: the user's sign-in email is their own, typed and OTP-verified
+      // — SAP's customer email is never copied onto a user.
       phone: match.phone,
       mstCode: match.mst_code,
-      priceListNum: match.price_list_num,
-      cusGrp01: match.cus_grp01,
-      cusGrp02: match.cus_grp02,
-      cusGrp03: match.cus_grp03,
     });
   } catch (error) {
     console.error("[API] BP lookup error:", error);

@@ -98,10 +98,14 @@ export default function SettingsPage() {
         body: JSON.stringify({ isEnabled: stockEnabled, windows: stockWindows, stockSource, liveCacheSeconds }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to save");
+      if (!res.ok) {
+        // e.g. option 2 chosen but SAP couldn't be read: nothing saved, still option 1.
+        if (data.schedule === undefined && stockSource === "live") setStockSource(stockSchedule?.stock_source ?? "sync");
+        throw new Error([data.error, data.message].filter(Boolean).join(" — ") || "Failed to save");
+      }
       setStockSchedule(data.schedule);
       setStockWindows(data.schedule?.stock_sync_windows ?? []);
-      setStockMessage("Saved.");
+      setStockMessage(data.note ? `Saved. ${data.note}` : "Saved.");
     } catch (err) {
       setStockMessage(err instanceof Error ? err.message : "Failed to save");
     } finally {

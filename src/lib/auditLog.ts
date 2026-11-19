@@ -37,12 +37,14 @@ function clientIp(request: NextRequest): string | null {
   return request.headers.get("x-real-ip");
 }
 
-async function roleOf(actorId: number): Promise<AuditActorRole | null> {
+/** Staff (actorType "admin") are admin_users rows; customers are users rows. */
+async function roleOf(actorType: AuditActorType, actorId: number): Promise<AuditActorRole | null> {
+  if (actorType === "customer") return "customer";
   const row = await queryOne<{ kind: AuditActorRole | null }>(
-    `SELECT r.kind FROM users u LEFT JOIN admin_roles r ON r.id = u.role_id WHERE u.company_id = ? AND u.id = ?`,
+    `SELECT r.kind FROM admin_users a LEFT JOIN admin_roles r ON r.id = a.role_id WHERE a.company_id = ? AND a.id = ?`,
     [getCompanyId(), actorId]
   );
-  return row ? row.kind ?? "customer" : null;
+  return row?.kind ?? null;
 }
 
 /**
@@ -54,7 +56,7 @@ export async function logAuditEvent(entry: AuditLogEntry): Promise<void> {
   try {
     const ip = entry.request ? clientIp(entry.request) : null;
     const userAgent = entry.request?.headers.get("user-agent")?.slice(0, 255) || null;
-    const role = entry.actorRole !== undefined ? entry.actorRole : entry.actorId ? await roleOf(entry.actorId) : null;
+    const role = entry.actorRole !== undefined ? entry.actorRole : entry.actorId ? await roleOf(entry.actorType, entry.actorId) : null;
     await query(
       `INSERT INTO audit_logs
          (company_id, actor_type, actor_role, actor_id, actor_label, action, entity_type, entity_id, details, ip_address, user_agent)
@@ -113,7 +115,7 @@ async function resolveActor(request: NextRequest): Promise<{ type: AuditActorTyp
   const { getSessionUser } = await import("@/lib/auth/session");
   const u = await getSessionUser(request);
   if (!u) return null;
-  const row = await queryOne<{ userid: string | null }>(`SELECT userid FROM users WHERE id = ?`, [u.id]);
+  const row = await queryOne<{ userid: string | null }>(`SELECT userid FROM users WHERE company_id = ? AND id = ?`, [getCompanyId(), u.id]);
   return { type: "customer", id: u.id, label: row?.userid || u.email || u.sapCardCode || u.fullName, role: "customer" };
 }
 

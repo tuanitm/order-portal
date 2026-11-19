@@ -78,9 +78,17 @@ export async function POST(request: NextRequest) {
         ? jwt.sign({ email: email.toLowerCase().trim(), purpose: "password-reset" }, JWT_SECRET, { expiresIn: "10m" })
         : undefined;
 
+    // Same for signup: POST /api/auth/signup requires this token whenever an
+    // email is given, instead of trusting a client-sent "emailVerified: true".
+    const signupToken =
+      purpose === "signup"
+        ? jwt.sign({ email: email.toLowerCase().trim(), purpose: "signup" }, JWT_SECRET, { expiresIn: "30m" })
+        : undefined;
+
     return NextResponse.json({
       valid: true,
       resetToken,
+      signupToken,
       message:
         language === "vi"
           ? "Xác thực OTP thành công"

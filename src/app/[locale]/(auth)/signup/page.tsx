@@ -30,9 +30,11 @@ export default function SignupPage() {
   // Set once ANY of email/phone/mstCode matches a row in the SAP customer
   // cache (see the debounced lookup effect below) — drives both the
   // "found" banner and the SAP linkage fields sent on signup.
+  // Price list / groups aren't sent back by the lookup: signup reads them from
+  // the customers table on the server. emailHint/phoneHint: masked SAP
+  // contact, shown when the BP was found only by its SAP customer code.
   const [bpMatch, setBpMatch] = useState<{
-    cardCode: string; cardName: string; priceListNum: number | null;
-    cusGrp01: string | null; cusGrp02: string | null; cusGrp03: string | null;
+    cardCode: string; cardName: string; emailHint: string | null; phoneHint: string | null;
   } | null>(null);
   const [bpLookupLoading, setBpLookupLoading] = useState(false);
   // New-company registration fields — only collected/shown once the MST
@@ -104,13 +106,13 @@ export default function SignupPage() {
         const data = await res.json();
         if (data.found) {
           setBpMatch({
-            cardCode: data.cardCode, cardName: data.cardName, priceListNum: data.priceListNum ?? null,
-            cusGrp01: data.cusGrp01 ?? null, cusGrp02: data.cusGrp02 ?? null, cusGrp03: data.cusGrp03 ?? null,
+            cardCode: data.cardCode, cardName: data.cardName,
+            emailHint: data.emailHint ?? null, phoneHint: data.phoneHint ?? null,
           });
-          // Auto-fill the customer name from the matched BP, and whichever
-          // of the other two identifiers the customer hasn't typed yet.
+          // Auto-fill the customer name from the matched BP, and the phone /
+          // tax code if not typed yet. Never the email: the sign-in email is
+          // the user's own single address (SAP's may hold several).
           if (data.cardName) setFullName(data.cardName);
-          if (data.email && !email) setEmail(data.email);
           if (data.phone && !phone) setPhone(data.phone);
           if (data.mstCode && !mstCode) setMstCode(data.mstCode);
         } else {
@@ -184,8 +186,13 @@ export default function SignupPage() {
     e.preventDefault();
     setError("");
 
-    if (!email) {
+    // New customer: email required (OTP). Existing SAP customer: optional.
+    if (!email.trim() && !bpMatch) {
       setError(t("auth.emailRequired"));
+      return;
+    }
+    if (email.trim() && !/^[^\s@;,]+@[^\s@;,]+\.[^\s@;,]+$/.test(email.trim())) {
+      setError(t("auth.emailSingle"));
       return;
     }
     if (password !== confirmPassword) {
@@ -201,6 +208,11 @@ export default function SignupPage() {
       return;
     }
 
+    // Existing SAP customer without an email: no OTP — admin approval checks it.
+    if (!email.trim() && bpMatch) {
+      await handleCreateAccount(undefined);
+      return;
+    }
     await handleSendOtp();
   };
 
@@ -258,8 +270,8 @@ export default function SignupPage() {
         throw new Error(data.message || t("auth.otpInvalid"));
       }
 
-      // OTP verified → create account
-      await handleCreateAccount();
+      // OTP verified → create account (the token proves it to the server)
+      await handleCreateAccount(data.signupToken);
     } catch (err) {
       setOtpError(err instanceof Error ? err.message : t("auth.otpInvalid"));
     } finally {
@@ -270,36 +282,32 @@ export default function SignupPage() {
   // Create account after OTP verification. `match` null means "new
   // company, no existing BP" — in that case the Company Name/Address/
   // Region/Remark fields are sent instead of SAP linkage fields.
-  const submitSignup = async (match: typeof bpMatch) => {
+  const submitSignup = async (match: typeof bpMatch, signupToken: string | undefined) => {
     return fetch("/api/auth/signup", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         fullName,
-        email: email || undefined,
+        email: email.trim() || undefined,
+        signupToken,
         phone: phone || undefined,
         password,
         mstCode: mstCode.trim() || undefined,
         sapCardCode: match?.cardCode || undefined,
         sapCardName: match ? match.cardName : companyName.trim() || undefined,
-        sapPriceListNum: match?.priceListNum ?? undefined,
-        sapCusGrp01: match?.cusGrp01 ?? undefined,
-        sapCusGrp02: match?.cusGrp02 ?? undefined,
-        sapCusGrp03: match?.cusGrp03 ?? undefined,
         registrationAddress: !match ? billingAddress.trim() || undefined : undefined,
         registrationShippingAddress: !match && !shippingSameAsBilling ? shippingAddress.trim() || undefined : undefined,
         registrationRemark: !match ? remark.trim() || undefined : undefined,
         registrationContactPerson: !match ? contactPerson.trim() || undefined : undefined,
         declaredRegionCode: !match ? region || undefined : undefined,
-        emailVerified: true,
       }),
     });
   };
 
-  const handleCreateAccount = async () => {
+  const handleCreateAccount = async (signupToken: string | undefined) => {
     setIsLoading(true);
     try {
-      let res = await submitSignup(bpMatch);
+      let res = await submitSignup(bpMatch, signupToken);
       // A live SAP check (server-side) found a BP for this tax code after
       // all — the local cache we checked earlier was stale. Switch to the
       // existing-customer path instead of creating a duplicate pending row.
@@ -308,10 +316,10 @@ export default function SignupPage() {
         if (data.existingBp) {
           const found = {
             cardCode: data.existingBp.cardCode, cardName: data.existingBp.cardName,
-            priceListNum: null, cusGrp01: null, cusGrp02: null, cusGrp03: null,
+            emailHint: null, phoneHint: null,
           };
           setBpMatch(found);
-          res = await submitSignup(found);
+          res = await submitSignup(found, signupToken);
         }
       }
       if (!res.ok) {
@@ -536,13 +544,13 @@ export default function SignupPage() {
           </div>
 
           <div className="input-group">
-            <label className="input-label" htmlFor="email">{t("auth.email")} *
+            <label className="input-label" htmlFor="email">{t("auth.email")}{bpMatch ? "" : " *"}
               <span style={{ fontSize: "0.7rem", color: "var(--text-tertiary)", marginLeft: "0.5rem", fontWeight: 400 }}>
-                ({locale === "vi" ? "dùng để xác thực OTP" : "used for OTP verification"})
+                ({bpMatch ? t("auth.emailOptionalExisting") : t("auth.emailForOtp")})
               </span>
             </label>
             <input type="email" className="input" id="email" value={email}
-              onChange={(e) => { setEmail(e.target.value); setBpMatch(null); }} placeholder="email@example.com" required />
+              onChange={(e) => { setEmail(e.target.value); setBpMatch(null); }} placeholder="email@example.com" required={!bpMatch} />
           </div>
 
           <div className="input-group">
@@ -577,6 +585,11 @@ export default function SignupPage() {
                 fontSize: "0.875rem", fontWeight: 500, marginTop: "0.5rem",
               }}>
                 ✓ {t("auth.mstFound")}: <strong>{bpMatch.cardName}</strong> ({bpMatch.cardCode})
+                {(bpMatch.emailHint || bpMatch.phoneHint) && (
+                  <div style={{ fontSize: "0.75rem", fontWeight: 400, marginTop: "0.25rem" }}>
+                    {t("auth.sapContactHint", { contact: [bpMatch.emailHint, bpMatch.phoneHint].filter(Boolean).join(" · ") })}
+                  </div>
+                )}
               </div>
             )}
           </div>

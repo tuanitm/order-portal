@@ -188,16 +188,46 @@ export async function previewIdReset(): Promise<IdResetPreview[]> {
 }
 
 /**
- * Run right after a SAP/HANA sync rewrote `table`: renumbers its ids back to
+ * Post-sync reset only once the ids have used this share of the id column's
+ * range (INT: ~107 million of 2.1 billion). Far below any risk, yet rare: the
+ * busiest sync (stock, ~600 rows every 10 min) needs decades to get here —
+ * so the table is almost never rebuilt while other code (ADS shares these
+ * tables) may be writing to it.
+ */
+export const POST_SYNC_RESET_THRESHOLD_PCT = 5;
+
+/**
+ * Run right after a SAP/HANA sync rewrote `table`: when its ids have passed
+ * POST_SYNC_RESET_THRESHOLD_PCT of the column's range, renumbers them back to
  * 1..N so repeated syncs (DELETE + INSERT, or upserts — InnoDB burns an id
  * on every upsert attempt) never push the id column toward its limit.
- * Rows keep their current order, so rows that were already there keep the
- * same ids. Never throws — the sync itself already succeeded; a reset that
+ * Otherwise does nothing (one cheap MAX(id) query). Rows keep their current
+ * order. Never throws — the sync itself already succeeded; a reset that
  * can't run now (table busy, error) just waits for the next sync. Returns a
  * short status for the sync's result/summary.
+ *
+ * Not used for customer_groups / item_groups: they hold ADS rows too and
+ * are edited by admins — reset those from the ID Reset page when needed.
  */
 export async function resetIdsAfterSync(table: ResettableTable): Promise<string> {
   try {
+    const conn = await getPool().getConnection();
+    let maxId: number, limit: number;
+    try {
+      ({ maxId } = await countAndMax(conn, table));
+      const [meta] = await conn.query(
+        `SELECT column_type AS type FROM information_schema.columns
+          WHERE table_schema = DATABASE() AND table_name = ? AND column_name = 'id'`,
+        [table]
+      );
+      const type = String((meta as { type: string }[])[0]?.type ?? "int").toLowerCase().replace(/\(\d+\)/, "");
+      limit = INT_MAX[type] ?? INT_MAX.int;
+    } finally {
+      conn.release();
+    }
+    const thresholdId = Math.floor((limit * POST_SYNC_RESET_THRESHOLD_PCT) / 100);
+    if (maxId < thresholdId) return `not needed (max id ${maxId.toLocaleString("en-US")})`;
+
     const r = await resetTableIds(table);
     return `ids 1..${r.newMaxId} (was max ${r.oldMaxId})`;
   } catch (error) {

@@ -78,7 +78,7 @@ async function POSTHandler(
   // If full_name is somehow unset, leave sender_name null rather than
   // falling back to the email; the UI's own generic label covers that.
   const admin = await queryOne<{ full_name: string | null }>(
-    `SELECT full_name FROM users WHERE company_id = ? AND id = ?`,
+    `SELECT full_name FROM admin_users WHERE company_id = ? AND id = ?`,
     [companyId, guard.session.adminId]
   );
   await postOrderMessage(orderId, "admin", admin?.full_name || null, message);

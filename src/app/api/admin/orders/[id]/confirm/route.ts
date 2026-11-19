@@ -326,7 +326,7 @@ async function POSTHandler(
   // `sap` exists) follows the same "set it on Admin Users, or it's skipped
   // cleanly" rule.
   const admin = await queryOne<{ department_code: string | null; owner_code: string | null }>(
-    `SELECT department_code, owner_code FROM users WHERE company_id = ? AND id = ?`,
+    `SELECT department_code, owner_code FROM admin_users WHERE company_id = ? AND id = ?`,
     [companyId, guard.session.adminId]
   );
   const departmentCode = admin?.department_code || undefined;

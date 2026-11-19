@@ -35,7 +35,7 @@ export const config = {
   // Match all pathnames except for API routes, static files, etc.
   matcher: [
     "/",
-    "/(vi|vn|en)/:path*",
+    "/(vi|en)/:path*",
     // Exclude API routes, Next.js internals, and static files
     "/((?!api|_next|_vercel|.*\\..*).*)",
   ],
