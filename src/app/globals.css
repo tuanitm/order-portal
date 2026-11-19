@@ -754,7 +754,12 @@ ul, ol {
   transform: translate(-50%, calc(-100% - 8px));
   max-width: min(90vw, 320px);
   background: rgba(17, 24, 39, 0.5);
-  color: #FACC15;
+  color: #FFE600;
+  /* Dark halo + blurred backdrop keep the yellow crisp over the
+     semi-transparent background, whatever is underneath. */
+  text-shadow: 0 0 2px rgba(0, 0, 0, 0.9), 0 1px 2px rgba(0, 0, 0, 0.8);
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
   font-weight: var(--font-normal, 400);
   font-size: var(--text-sm);
   line-height: 1.4;
@@ -762,7 +767,7 @@ ul, ol {
   overflow-wrap: anywhere;
   text-align: center;
   padding: var(--space-2) var(--space-3);
-  border: 1px solid #FACC15;
+  border: 1px solid #FFE600;
   border-radius: var(--radius-md);
   box-shadow: var(--shadow-lg);
   z-index: var(--z-tooltip);
