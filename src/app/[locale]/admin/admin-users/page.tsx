@@ -227,8 +227,17 @@ export default function UsersPage() {
               </div>
               <div>
                 <span style={fieldLabel}>User ID {isStaff ? "*" : ""}</span>
-                <input style={{ ...styles.input, width: "100%" }} value={form.userid} onChange={(e) => setForm({ ...form, userid: e.target.value })} placeholder="e.g. nguyenvana" />
-                <div style={hint}>3–50 letters, digits, . _ - · unique</div>
+                {formKind === "customer" ? (
+                  <>
+                    <input style={{ ...styles.input, width: "100%", background: "var(--bg-secondary, #F8FAFC)" }} value={form.sapCardCode} readOnly placeholder="= SAP customer code" />
+                    <div style={hint}>Always the SAP customer code (set automatically)</div>
+                  </>
+                ) : (
+                  <>
+                    <input style={{ ...styles.input, width: "100%" }} value={form.userid} onChange={(e) => setForm({ ...form, userid: e.target.value })} placeholder="e.g. nguyenvana" />
+                    <div style={hint}>3–50 letters, digits, . _ - · unique</div>
+                  </>
+                )}
               </div>
               <div>
                 <span style={fieldLabel}>Name *</span>

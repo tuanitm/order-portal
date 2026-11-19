@@ -892,9 +892,9 @@ export class SapB1Client {
    * expression" / "mismatched input '*'"), confirmed empirically, so this
    * can only ever return raw columns.
    */
-  async getBatchStock(itemGroupFilter: string, warehouseFilter: string): Promise<SapBatchStockRow[]> {
+  async getBatchStock(itemGroupFilter: string, warehouseFilter: string, sqlCode = 'BatchStockSync'): Promise<SapBatchStockRow[]> {
     const sqlText = `SELECT Q."ItemCode" AS "item_code", Q."WhsCode" AS "warehouse_code", Q."Quantity" AS "qty", B."MnfDate" AS "mnf_date", B."ExpDate" AS "exp_date" FROM "OBTQ" Q INNER JOIN "OBTN" B ON B."ItemCode" = Q."ItemCode" AND B."SysNumber" = Q."SysNumber" INNER JOIN "OITM" I ON I."ItemCode" = Q."ItemCode" WHERE Q."Quantity" > 0 AND Q."WhsCode" IN (${warehouseFilter}) AND (I."U_ItemCat01" IN (${itemGroupFilter}) OR I."U_ItemCat02" IN (${itemGroupFilter})) ORDER BY Q."ItemCode", Q."WhsCode"`;
-    return this.runSqlQuery<SapBatchStockRow>('BatchStockSync', 'Batch Stock Sync', sqlText);
+    return this.runSqlQuery<SapBatchStockRow>(sqlCode, 'Batch Stock Sync', sqlText);
   }
 
   /**

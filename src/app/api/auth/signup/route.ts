@@ -116,6 +116,38 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // One portal account per SAP customer — its code becomes the account's
+    // User ID on approval (see POST /api/admin/customers/[id]/approve).
+    if (sapCardCode && typeof sapCardCode === "string" && sapCardCode.trim()) {
+      const existingCard = await queryOne<{ id: number }>(
+        "SELECT id FROM users WHERE company_id = ? AND (LOWER(sap_card_code) = LOWER(?) OR LOWER(userid) = LOWER(?)) LIMIT 1",
+        [companyId, sapCardCode.trim(), sapCardCode.trim()]
+      );
+      if (existingCard) {
+        return NextResponse.json(
+          { error: "This SAP customer already has a portal account" },
+          { status: 409 }
+        );
+      }
+    }
+
+    // users.userid is NOT NULL and unique per company. Until approval sets it
+    // to the SAP customer code, a pending account uses the SAP code it signed
+    // up for, or (new company, no code yet) its verified email.
+    const pendingUserid = (sapCardCode && typeof sapCardCode === "string" && sapCardCode.trim())
+      ? sapCardCode.trim()
+      : email.trim().toLowerCase();
+    if (pendingUserid.length > 100) {
+      return NextResponse.json({ error: "Email is too long (max 100 characters)" }, { status: 400 });
+    }
+    const existingUserid = await queryOne<{ id: number }>(
+      "SELECT id FROM users WHERE company_id = ? AND userid = ? LIMIT 1",
+      [companyId, pendingUserid]
+    );
+    if (existingUserid) {
+      return NextResponse.json({ error: "This account is already registered" }, { status: 409 });
+    }
+
     // New-company registration (no matched existing SAP BP): check SAP
     // LIVE for a duplicate FederalTaxID before creating the pending row —
     // the local `customers` cache (already checked client-side by
@@ -151,10 +183,11 @@ export async function POST(request: NextRequest) {
 
     // Insert user with pending approval status
     const result = await query<{ insertId: number }>(
-      `INSERT INTO users (company_id, role_id, email, phone, password_hash, full_name, mst_code, sap_card_code, sap_card_name, sap_price_list_num, sap_cus_grp01, sap_cus_grp02, sap_cus_grp03, registration_address, registration_shipping_address, registration_remark, registration_contact_person, declared_region_code, approval_status)
-       VALUES (?, (SELECT id FROM admin_roles WHERE company_id = ? AND kind = 'customer' ORDER BY id LIMIT 1), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
+      `INSERT INTO users (company_id, userid, role_id, email, phone, password_hash, full_name, mst_code, sap_card_code, sap_card_name, sap_price_list_num, sap_cus_grp01, sap_cus_grp02, sap_cus_grp03, registration_address, registration_shipping_address, registration_remark, registration_contact_person, declared_region_code, approval_status)
+       VALUES (?, ?, (SELECT id FROM admin_roles WHERE company_id = ? AND kind = 'customer' ORDER BY id LIMIT 1), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
       [
         companyId,
+        pendingUserid,
         companyId,
         email.trim().toLowerCase(),
         phone?.trim() || null,

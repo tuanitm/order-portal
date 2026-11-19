@@ -43,10 +43,10 @@ export async function findUserByIdentifier(identifier: string): Promise<LoginUse
        FROM users u
        LEFT JOIN admin_roles r ON r.id = u.role_id
       WHERE u.company_id = ?
-        AND (LOWER(u.userid) = ? OR LOWER(u.email) = ? OR u.phone = ? OR u.mst_code = ?)
-      ORDER BY (LOWER(u.userid) = ?) DESC, (LOWER(u.email) = ?) DESC, u.id
+        AND (LOWER(u.userid) = ? OR LOWER(u.sap_card_code) = ? OR LOWER(u.email) = ? OR u.phone = ? OR u.mst_code = ?)
+      ORDER BY (LOWER(u.userid) = ?) DESC, (LOWER(u.sap_card_code) = ?) DESC, (LOWER(u.email) = ?) DESC, u.id
       LIMIT 1`,
-    [getCompanyId(), lower, lower, phone, value, lower, lower]
+    [getCompanyId(), lower, lower, lower, phone, value, lower, lower, lower]
   );
 }
 

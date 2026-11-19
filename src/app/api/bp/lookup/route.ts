@@ -20,7 +20,7 @@ interface CustomerMatchRow {
  * syncSapCustomers in sap-b1/sync.ts) — never a live SAP call, so the signup
  * form can fire this on every field without hammering the Service Layer.
  *
- * Body: at least one of { email, phone, mstCode } — the signup form sends
+ * Body: at least one of { email, phone, mstCode, cardCode } — the signup form sends
  * whichever of the 3 the customer has typed so far, and this matches on
  * ANY of them (same normalization as POST /api/auth/identify, so the same
  * value finds the same row either place looks it up). Returns the first
@@ -33,16 +33,22 @@ export async function POST(request: NextRequest) {
     const email = typeof body?.email === "string" ? body.email.trim() : "";
     const phone = typeof body?.phone === "string" ? body.phone.trim() : "";
     const mstCode = typeof body?.mstCode === "string" ? body.mstCode.trim() : "";
+    // SAP customer code typed on the identify screen (no portal account yet).
+    const cardCode = typeof body?.cardCode === "string" ? body.cardCode.trim() : "";
 
-    if (!email && !phone && !mstCode) {
+    if (!email && !phone && !mstCode && !cardCode) {
       return NextResponse.json(
-        { error: "email, phone, or mstCode is required" },
+        { error: "email, phone, mstCode, or cardCode is required" },
         { status: 400 }
       );
     }
 
     const conditions: string[] = [];
     const params: string[] = [];
+    if (cardCode) {
+      conditions.push("LOWER(sap_card_code) = ?");
+      params.push(cardCode.toLowerCase());
+    }
     if (email) {
       conditions.push("email = ?");
       params.push(email.toLowerCase());

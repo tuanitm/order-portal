@@ -76,9 +76,12 @@ export default function SignupPage() {
   // MST typed, lookup settled, no existing BP matched — this is a
   // brand-new company, so collect the extra fields SAP BP creation needs.
   const showNewCompanyFields = mstLooksComplete && !bpMatch && !bpLookupLoading;
+  // A SAP customer code typed on the identify screen (no portal account yet) —
+  // the BP is looked up by it so the form opens pre-filled for that customer.
+  const prefilledCardCode = identifierType === "cardCode" ? prefilledIdentifier.trim() : "";
 
   useEffect(() => {
-    if (!emailLooksComplete && !phoneLooksComplete && !mstLooksComplete) {
+    if (!prefilledCardCode && !emailLooksComplete && !phoneLooksComplete && !mstLooksComplete) {
       setBpMatch(null);
       return;
     }
@@ -90,6 +93,7 @@ export default function SignupPage() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
+            cardCode: prefilledCardCode || undefined,
             email: emailLooksComplete ? email.trim() : undefined,
             phone: phoneLooksComplete ? phone.trim() : undefined,
             mstCode: mstLooksComplete ? mstCode.trim() : undefined,

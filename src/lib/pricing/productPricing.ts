@@ -1,5 +1,6 @@
 import { query } from "@/lib/db/connection";
 import { getCompanyId } from "@/lib/config";
+import { getStorefrontStockTable, type StockTable } from "@/lib/stock/liveStock";
 import type { ProductWithPricing, GiftRule, GiveawayOption } from "@/types/product";
 
 /**
@@ -232,13 +233,19 @@ export function promotionMatchSql(alias: string): { bpSql: string; fromSql: stri
     // can only turn this form into a lookup on idx_company_item_bp — with the
     // OR chain every product scanned all of the customer's promotion rows
     // (~8k each; measured 2.3 s vs 46 ms per 100 products).
+    // FORCE INDEX: as promotion_discount grew (~260k rows) MySQL started
+    // driving this join from idx_bp_code instead — reading every promotion
+    // row aimed at the customer (~1,000) for EACH product and only then
+    // matching the item. Pinning idx_company_item_bp makes it look up the
+    // item's 7 codes instead (measured 1.3 s -> 0.13 s for 165 products,
+    // identical results).
     fromSql: `(
       SELECT i.sap_item_code AS code, '4' AS it_type
       UNION ALL SELECT i.item_cat01, 'IC1' UNION ALL SELECT i.item_cat02, 'IC2'
       UNION ALL SELECT i.item_cat03, 'IC3' UNION ALL SELECT i.item_cat04, 'IC4'
       UNION ALL SELECT i.item_cat05, 'IC5' UNION ALL SELECT i.item_cat06, 'IC6'
     ) ${alias}_codes
-    JOIN promotion_discount ${alias}
+    JOIN promotion_discount ${alias} FORCE INDEX (idx_company_item_bp)
       ON ${alias}.selling_item_code = ${alias}_codes.code AND ${alias}.it_type = ${alias}_codes.it_type`,
     scoreSql: `(
       (CASE ${alias}.it_type
@@ -400,6 +407,12 @@ export interface PricingContext {
   basePriceListNum: number;
   /** The customer's resolved visible warehouse codes — [] disables the stock gate/availableQty entirely (feature off). */
   stockWarehouseCodes: string[];
+  /**
+   * Which stock table to read: the scheduled-sync table or the live (on-demand
+   * from SAP) one — see src/lib/stock/liveStock.ts. Omitted = resolved from
+   * the Inventory Stock setting (getStorefrontStockTable).
+   */
+  stockTable?: StockTable;
 }
 
 /**
@@ -415,13 +428,14 @@ export function buildStockGateClause(
   companyId: string,
   cusGrp01: string,
   cusGrp02: string,
-  cusGrp03: string
+  cusGrp03: string,
+  stockTable: StockTable = "item_warehouse_stock"
 ): { clause: string | null; params: (string | number)[] } {
   if (stockWarehouseCodes.length === 0) return { clause: null, params: [] };
   const shelfLifeOkSql = shelfLifeOkSqlFor("iws");
   return {
     clause: `EXISTS (
-      SELECT 1 FROM item_warehouse_stock iws
+      SELECT 1 FROM ${stockTable} iws
       WHERE iws.company_id = ?
         AND iws.sap_item_code = i.sap_item_code
         AND iws.warehouse_code IN (${stockWarehouseCodes.map(() => "?").join(",")})
@@ -554,6 +568,7 @@ export async function queryPricedProducts(
 ): Promise<ProductWithPricing[]> {
   const { sapCardCode, cusGrp01, cusGrp02, cusGrp03, priceListNum, basePriceListNum, stockWarehouseCodes } = ctx;
   const companyId = getCompanyId();
+  const stockTable = stockWarehouseCodes.length > 0 ? (ctx.stockTable ?? (await getStorefrontStockTable())) : "item_warehouse_stock";
 
   const whereClauses = ["i.company_id = ?", "i.is_active = TRUE", "i.is_manually_hidden = FALSE", ...hiddenClauses];
   const params: (string | number | null)[] = [companyId, ...hiddenParams];
@@ -561,7 +576,7 @@ export async function queryPricedProducts(
   // Stock gate: only applies once an admin has marked at least one
   // warehouse "Included" — until then this is a no-op, so turning the
   // feature on is opt-in and never silently empties the result set.
-  const stockGate = buildStockGateClause(stockWarehouseCodes, companyId, cusGrp01, cusGrp02, cusGrp03);
+  const stockGate = buildStockGateClause(stockWarehouseCodes, companyId, cusGrp01, cusGrp02, cusGrp03, stockTable);
   if (stockGate.clause) {
     whereClauses.push(stockGate.clause);
     params.push(...stockGate.params);
@@ -587,7 +602,7 @@ export async function queryPricedProducts(
   // not tracked" apart from "really zero" and just not show a number.
   const availableQtySql =
     stockWarehouseCodes.length > 0
-      ? `(SELECT SUM(iws.in_stock - iws.committed) FROM item_warehouse_stock iws
+      ? `(SELECT SUM(iws.in_stock - iws.committed) FROM ${stockTable} iws
           WHERE iws.company_id = ?
             AND iws.sap_item_code = i.sap_item_code
             AND iws.warehouse_code IN (${stockWarehouseCodes.map(() => "?").join(",")})

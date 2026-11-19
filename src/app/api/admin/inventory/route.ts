@@ -1,12 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
-import { queryHana, getHanaSchema } from "@/lib/hana/client";
-import { loadConfig } from "@/lib/config";
+import { queryHanaInventoryByWarehouse } from "@/lib/hana/inventoryQuery";
 import { getAdminWarehouses } from "@/lib/adminWarehouses";
 import { computeBatchShelfLifePct } from "@/lib/sap-b1/sync";
 import { getSapClient } from "@/lib/sap-b1/client";
-
-const sqlString = (v: string) => `'${v.replace(/'/g, "''")}'`;
 
 /**
  * GET /api/admin/inventory?warehouses=1001,1003&page=1&limit=50&search=
@@ -41,82 +38,11 @@ export async function GET(request: NextRequest) {
   const allowed = new Set(warehouseRows.map((w) => w.code));
   const picked = requested.filter((c) => allowed.has(c));
   const selected = picked.length > 0 ? picked : warehouseRows.map((w) => w.code);
-  const selectedSql = selected.map(sqlString).join(",");
 
   // ── Run the SAP QRM_Inventory by Warehouse query against HANA ───────
   try {
-    const schema = getHanaSchema();
-    const itemGroupFilter = loadConfig().masterdata.itemGroup;   // e.g. 'D1','L1'
-
-    // SAP QRM_Inventory by Warehouse — Committed = Open SO + Transfer Requests + Production Order components
-    const sql = `
-      SELECT *
-      FROM (
-        SELECT
-          T3."WhsCode"  AS "whs_code",
-          T3."WhsName"  AS "whs_name",
-          T1."ItemCode"  AS "item_code",
-          T1."ItemName"  AS "item_name",
-          T1."InvntryUom" AS "uom",
-          T0."OnHand"    AS "on_hand",
-          IFNULL(T4."OpenQty",0) + IFNULL(T5."TRQty",0) + IFNULL(T6."POQty",0) AS "committed",
-          T0."OnHand" - (IFNULL(T4."OpenQty",0) + IFNULL(T5."TRQty",0) + IFNULL(T6."POQty",0)) AS "available"
-        FROM "${schema}"."OITW" T0
-        JOIN "${schema}"."OITM" T1 ON T0."ItemCode" = T1."ItemCode"
-        JOIN "${schema}"."OITB" T2 ON T1."ItmsGrpCod" = T2."ItmsGrpCod"
-        JOIN "${schema}"."OWHS" T3 ON T0."WhsCode" = T3."WhsCode"
-        LEFT JOIN (
-          -- Open Sales Orders
-          SELECT
-            l."ItemCode",
-            l."WhsCode",
-            SUM(l."OpenQty") AS "OpenQty"
-          FROM "${schema}"."RDR1" l
-          INNER JOIN "${schema}"."ORDR" h ON h."DocEntry" = l."DocEntry"
-          WHERE h."DocStatus" = 'O' AND h."CANCELED" = 'N'
-          GROUP BY l."ItemCode", l."WhsCode"
-        ) T4 ON T0."ItemCode" = T4."ItemCode" AND T0."WhsCode" = T4."WhsCode"
-        LEFT JOIN (
-          -- Transfer Requests
-          SELECT t1."ItemCode",
-                 t1."FromWhsCod" AS "WhsCode",
-                 SUM(t1."OpenQty") AS "TRQty"
-          FROM "${schema}"."OWTQ" t0
-          JOIN "${schema}"."WTQ1" t1 ON t0."DocEntry" = t1."DocEntry"
-          WHERE t0."DocStatus" = 'O'
-          GROUP BY t1."ItemCode", t1."FromWhsCod"
-        ) T5 ON T0."ItemCode" = T5."ItemCode" AND T0."WhsCode" = T5."WhsCode"
-        LEFT JOIN (
-          -- Production Order components
-          SELECT t1."ItemCode",
-                 t1."wareHouse" AS "WhsCode",
-                 SUM(GREATEST(t1."PlannedQty" - t1."IssuedQty", 0)) AS "POQty"
-          FROM "${schema}"."OWOR" t0
-          JOIN "${schema}"."WOR1" t1 ON t0."DocEntry" = t1."DocEntry"
-          WHERE t0."Status" IN ('P','R')
-          GROUP BY t1."ItemCode", t1."wareHouse"
-        ) T6 ON T0."ItemCode" = T6."ItemCode" AND T0."WhsCode" = T6."WhsCode"
-        WHERE T1."InvntItem" = 'Y'
-          AND (T1."U_ItemCat01" IN (${itemGroupFilter}) OR T1."U_ItemCat02" IN (${itemGroupFilter}))
-          AND T0."WhsCode" IN (${selectedSql})
-      ) X
-      WHERE (X."on_hand" <> 0 OR X."committed" <> 0)
-        ${search ? `AND (X."item_code" LIKE ${sqlString(`%${search}%`)} OR X."item_name" LIKE ${sqlString(`%${search}%`)})` : ""}
-      ORDER BY X."item_code", X."whs_code"
-    `;
-
-    interface HanaRow {
-      whs_code: string;
-      whs_name: string;
-      item_code: string;
-      item_name: string | null;
-      uom: string | null;
-      on_hand: number;
-      committed: number;
-      available: number;
-    }
-
-    const allRows = await queryHana<HanaRow>(sql);
+    // Shared with the storefront's live stock mode — see queryHanaInventoryByWarehouse.
+    const allRows = await queryHanaInventoryByWarehouse(selected, search);
     const total = allRows.length;
 
     // Apply pagination in JS (HANA hdb driver doesn't support LIMIT/OFFSET in all cases)

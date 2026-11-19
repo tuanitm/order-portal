@@ -18,7 +18,8 @@ import { syncOneOrderStatusFromSap } from "@/lib/orderStatusSync";
  * Everything scripts/daily-sync.mjs already did (SAP Customers, Items,
  * Price Lists, Contract Discount agreements, Promotions) PLUS Customer
  * Group, Item Group, Warehouse, Channel Price List, and Period Discount —
- * the ones that external script never covered. Run via POST
+ * the ones that external script never covered. Inventory Stock is NOT part
+ * of this run: it has its own, faster schedule (see stockSyncSchedule.ts). Run via POST
  * /api/admin/settings/sync-schedule/run-now (manual) or by the in-process
  * scheduler in src/instrumentation.ts (automatic, on the interval set on
  * the Admin Settings page).

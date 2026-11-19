@@ -188,6 +188,25 @@ export async function previewIdReset(): Promise<IdResetPreview[]> {
 }
 
 /**
+ * Run right after a SAP/HANA sync rewrote `table`: renumbers its ids back to
+ * 1..N so repeated syncs (DELETE + INSERT, or upserts — InnoDB burns an id
+ * on every upsert attempt) never push the id column toward its limit.
+ * Rows keep their current order, so rows that were already there keep the
+ * same ids. Never throws — the sync itself already succeeded; a reset that
+ * can't run now (table busy, error) just waits for the next sync. Returns a
+ * short status for the sync's result/summary.
+ */
+export async function resetIdsAfterSync(table: ResettableTable): Promise<string> {
+  try {
+    const r = await resetTableIds(table);
+    return `ids 1..${r.newMaxId} (was max ${r.oldMaxId})`;
+  } catch (error) {
+    console.warn(`[IdReset] Post-sync id reset of ${table} skipped:`, error);
+    return `skipped: ${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+
+/**
  * Renumbers `table`.id to 1..N in the current id order. Fails immediately
  * (TableLockBusyError) if a sync or another reset is working on the table.
  */

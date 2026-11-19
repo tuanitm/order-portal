@@ -5,6 +5,8 @@ import { getCustomerGroupPairsFromDB } from "@/lib/customerGroups";
 import { loadConfig, getCompanyId } from "@/lib/config";
 import type { PoolConnection } from "mysql2/promise";
 import { withTableLocks } from "@/lib/db/tableLock";
+import { resetIdsAfterSync } from "@/lib/db/idReset";
+import { queryHanaInventoryByWarehouse, configWarehouseCodes } from "@/lib/hana/inventoryQuery";
 
 /** Parse a ready-made SQL IN-list literal from config.json (e.g. "'1000','1001'") into plain codes. */
 function parseSqlInList(sqlInList: string): Set<string> {
@@ -225,8 +227,10 @@ export function computeBatchShelfLifePct(mnfDate: string | null, expDate: string
 }
 
 /**
- * Pull per-item, per-warehouse on-hand/committed/on-order stock from SAP
- * (OITW via SQLQueries — see client.getInventoryStock), scoped to
+ * Pull per-item, per-warehouse stock from SAP with the "QRM_Inventory by
+ * Warehouse" query (HANA — see queryHanaInventoryByWarehouse: Committed =
+ * open SO + open Transfer Requests + unissued Production Order components,
+ * the same numbers as Admin → Inventory and live stock), scoped to
  * config.json's masterdata.itemGroup/wareHouse, and replace the
  * `item_warehouse_stock` cache wholesale (full delete + re-insert — same
  * reasoning as syncWarehouses: stock for an item/warehouse dropped from
@@ -238,9 +242,11 @@ export function computeBatchShelfLifePct(mnfDate: string | null, expDate: string
  * computeBatchShelfLifePct and schema.sql's column comment for why MIN, and
  * why the % itself is computed here in JS rather than in the SAP query.
  */
-export async function syncInventoryStock(): Promise<{ rowsSynced: number }> {
+export async function syncInventoryStock(): Promise<{ rowsSynced: number; idReset: string }> {
   // Waits for an id reset of the same table to finish (see tableLock.ts).
-  return withTableLocks(["item_warehouse_stock"], () => syncInventoryStockUnlocked());
+  const result = await withTableLocks(["item_warehouse_stock"], () => syncInventoryStockUnlocked());
+  // Every sync renumbers the table's ids from 1 again (see resetIdsAfterSync).
+  return { ...result, idReset: await resetIdsAfterSync("item_warehouse_stock") };
 }
 
 async function syncInventoryStockUnlocked(): Promise<{ rowsSynced: number }> {
@@ -249,7 +255,7 @@ async function syncInventoryStockUnlocked(): Promise<{ rowsSynced: number }> {
   const companyId = getCompanyId();
   const masterdata = loadConfig().masterdata;
   const [rows, batchRows] = await Promise.all([
-    sap.getInventoryStock(masterdata.itemGroup, masterdata.wareHouse),
+    queryHanaInventoryByWarehouse(configWarehouseCodes()),
     sap.getBatchStock(masterdata.itemGroup, masterdata.wareHouse),
   ]);
 
@@ -273,8 +279,8 @@ async function syncInventoryStockUnlocked(): Promise<{ rowsSynced: number }> {
     for (let i = 0; i < rows.length; i += CHUNK) {
       const chunk = rows.slice(i, i + CHUNK);
       const values = chunk.map((r) => [
-        companyId, r.item_code, r.warehouse_code, r.in_stock, r.committed, r.ordered,
-        shelfLifeByKey.get(`${r.item_code}|${r.warehouse_code}`) ?? null,
+        companyId, r.item_code, r.whs_code, Number(r.on_hand), Number(r.committed), Number(r.ordered),
+        shelfLifeByKey.get(`${r.item_code}|${r.whs_code}`) ?? null,
       ]);
       await conn.query(
         `INSERT INTO item_warehouse_stock (company_id, sap_item_code, warehouse_code, in_stock, committed, ordered, shelf_life_pct, last_synced)
@@ -304,9 +310,10 @@ async function syncInventoryStockUnlocked(): Promise<{ rowsSynced: number }> {
  * admin UI, even though those levels aren't part of the SAP-side filter.
  * Which price lists are "tracked" comes from `price_lists` (admin-editable).
  */
-export async function syncItems(): Promise<{ itemsSynced: number }> {
+export async function syncItems(): Promise<{ itemsSynced: number; idReset: string }> {
   // Waits for an id reset of the same table to finish (see tableLock.ts).
-  return withTableLocks(["item_channel_prices"], () => syncItemsUnlocked());
+  const result = await withTableLocks(["item_channel_prices"], () => syncItemsUnlocked());
+  return { ...result, idReset: await resetIdsAfterSync("item_channel_prices") };
 }
 
 async function syncItemsUnlocked(): Promise<{ itemsSynced: number }> {
@@ -551,9 +558,10 @@ function expandSpecialPriceTiers(sp: {
  * calculation (see src/app/api/products/route.ts); this just caches what
  * SAP has.
  */
-export async function syncPeriodDiscounts(priceListNum: number): Promise<{ rowsSynced: number }> {
+export async function syncPeriodDiscounts(priceListNum: number): Promise<{ rowsSynced: number; idReset: string }> {
   // Waits for an id reset of the same table to finish (see tableLock.ts).
-  return withTableLocks(["period_discount"], () => syncPeriodDiscountsUnlocked(priceListNum));
+  const result = await withTableLocks(["period_discount"], () => syncPeriodDiscountsUnlocked(priceListNum));
+  return { ...result, idReset: await resetIdsAfterSync("period_discount") };
 }
 
 async function syncPeriodDiscountsUnlocked(priceListNum: number): Promise<{ rowsSynced: number }> {
@@ -677,9 +685,10 @@ export async function syncCustomerGroupsForCard(
  *   - Header U_Code IN (customer group codes + customer card codes from DB)
  *   - Line U_Code IN (item group codes + item codes from DB)
  */
-export async function syncContractDiscounts(): Promise<{ headersSynced: number; linesSynced: number; headersSkipped: number }> {
+export async function syncContractDiscounts(): Promise<{ headersSynced: number; linesSynced: number; headersSkipped: number; idReset: string }> {
   // Waits for an id reset of the same table to finish (see tableLock.ts).
-  return withTableLocks(["contract_discount"], () => syncContractDiscountsUnlocked());
+  const result = await withTableLocks(["contract_discount"], () => syncContractDiscountsUnlocked());
+  return { ...result, idReset: await resetIdsAfterSync("contract_discount") };
 }
 
 async function syncContractDiscountsUnlocked(): Promise<{ headersSynced: number; linesSynced: number; headersSkipped: number }> {

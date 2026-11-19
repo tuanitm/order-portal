@@ -13,6 +13,7 @@ import {
   queryPricedProducts,
   type PricingContext,
 } from "@/lib/pricing/productPricing";
+import { getStorefrontStockTable } from "@/lib/stock/liveStock";
 import type { ProductWithPricing } from "@/types/product";
 
 /**
@@ -54,22 +55,29 @@ export async function GET(request: NextRequest) {
     const cusGrp02 = user?.approvalStatus === "approved" ? user.sapCusGrp02 : null;
     const cusGrp03 = user?.approvalStatus === "approved" ? user.sapCusGrp03 : null;
 
-    const hiddenCategories = user?.approvalStatus === "approved"
-      ? await resolveHiddenItemCategories(user.sapCusGrp01, user.sapCusGrp02, user.sapCusGrp03)
-      : [];
-    const hidden = buildHiddenCategoryClauses(hiddenCategories);
-    // The customer's role: Brands / Product Groups limit the items (none set = no limit).
-    const roleScope = await getCustomerRoleScope(user?.id);
-    const roleItems = await customerItemScopeClauses(roleScope);
-    const hiddenClauses = [...hidden.clauses, ...roleItems.clauses];
-    const hiddenParams: (string | number | null)[] = [...hidden.params, ...roleItems.params];
-
+    // The setup lookups don't depend on each other — run them together.
     // WHICH warehouses count for THIS customer: if their level-2 customer
     // group has at least one mapping in `customer_group_warehouses` (set on
     // the Catalog Visibility page), only those warehouses count; otherwise
     // fall back to every globally Included warehouse — same fail-open rule,
-    // so an unmapped group never loses visibility.
-    const visibleWarehouses = await getVisibleWarehousesForCustomerGroup(cusGrp02);
+    // so an unmapped group never loses visibility. The stock table is the
+    // scheduled-sync one or the live one (refreshed from SAP if due) — see
+    // src/lib/stock/liveStock.ts.
+    const [hiddenCategories, roleScope, visibleWarehouses, basePriceListNum, stockTable] = await Promise.all([
+      user?.approvalStatus === "approved"
+        ? resolveHiddenItemCategories(user.sapCusGrp01, user.sapCusGrp02, user.sapCusGrp03)
+        : Promise.resolve([]),
+      // The customer's role: Brands / Product Groups limit the items (none set = no limit).
+      getCustomerRoleScope(user?.id),
+      getVisibleWarehousesForCustomerGroup(cusGrp02),
+      getBasePriceListNum(),
+      getStorefrontStockTable(),
+    ]);
+    const hidden = buildHiddenCategoryClauses(hiddenCategories);
+    const roleItems = await customerItemScopeClauses(roleScope);
+    const hiddenClauses = [...hidden.clauses, ...roleItems.clauses];
+    const hiddenParams: (string | number | null)[] = [...hidden.params, ...roleItems.params];
+
     // The role's Warehouses, when set, replace the customer group's.
     const stockWarehouseCodes = customerStockWarehouses(roleScope, visibleWarehouses.map((w) => w.code));
 
@@ -79,8 +87,9 @@ export async function GET(request: NextRequest) {
       cusGrp02: cusGrp02 ?? "",
       cusGrp03: cusGrp03 ?? "",
       priceListNum,
-      basePriceListNum: await getBasePriceListNum(),
+      basePriceListNum,
       stockWarehouseCodes,
+      stockTable,
     };
 
     // The COUNT(*) query can't reuse queryPricedProducts' full LATERAL-joined
@@ -90,7 +99,7 @@ export async function GET(request: NextRequest) {
     // disagree on what's visible.
     const countWhereClauses = ["i.company_id = ?", "i.is_active = TRUE", "i.is_manually_hidden = FALSE", ...hiddenClauses];
     const countParams: (string | number | null)[] = [companyId, ...hiddenParams];
-    const stockGate = buildStockGateClause(stockWarehouseCodes, companyId, ctx.cusGrp01, ctx.cusGrp02, ctx.cusGrp03);
+    const stockGate = buildStockGateClause(stockWarehouseCodes, companyId, ctx.cusGrp01, ctx.cusGrp02, ctx.cusGrp03, stockTable);
     if (stockGate.clause) {
       countWhereClauses.push(stockGate.clause);
       countParams.push(...stockGate.params);
@@ -120,14 +129,15 @@ export async function GET(request: NextRequest) {
     // count query doesn't have; its `total` is derived from the filtered/
     // sorted JS array length instead (see below).
     const promoOnly = searchParams.get("promoOnly") === "true";
-    let total = 0;
-    if (!promoOnly) {
-      const totalRows = await query<{ cnt: number }[]>(
-        `SELECT COUNT(*) as cnt FROM items i WHERE ${countWhereClauses.join(" AND ")}`,
-        countParams
-      );
-      total = totalRows[0]?.cnt ?? 0;
-    }
+    // Count, category chips and the product page are independent queries —
+    // started together and awaited below, so the page costs the slowest of
+    // them rather than their sum.
+    const totalPromise: Promise<number> = promoOnly
+      ? Promise.resolve(0)
+      : query<{ cnt: number }[]>(
+          `SELECT COUNT(*) as cnt FROM items i WHERE ${countWhereClauses.join(" AND ")}`,
+          countParams
+        ).then((rows) => rows[0]?.cnt ?? 0);
 
     // Ordered by brand code (items.brand_code — SAP's U_ProdBrand, e.g. "D1"
     // = PIGEON), not alphabetically by name, so the storefront's brand chips
@@ -140,14 +150,13 @@ export async function GET(request: NextRequest) {
       "company_id = ?", "is_active = TRUE", "is_manually_hidden = FALSE", "category IS NOT NULL", "category != ''", ...hiddenClauses,
       categoryPriceGate.clause,
     ];
-    const categoryRows = await query<{ category: string; brand_code: string | null }[]>(
+    const categoryRowsPromise = query<{ category: string; brand_code: string | null }[]>(
       `SELECT category, MIN(brand_code) AS brand_code FROM items i
        WHERE ${categoryWhereClauses.join(" AND ")}
        GROUP BY category
        ORDER BY (MIN(brand_code) IS NULL) ASC, MIN(brand_code) ASC, category ASC`,
       [companyId, ...hiddenParams, ...categoryPriceGate.params]
     );
-    const categories = categoryRows.map((c) => c.category);
 
     // promoOnly + sort=discount back the "Khuyến mãi" storefront tab: only
     // items with a currently-valid promotion (percent OR buy-give), ranked
@@ -164,9 +173,13 @@ export async function GET(request: NextRequest) {
     const orderLimitSql = `ORDER BY i.item_name_vi ASC LIMIT ?${sortByDiscount ? "" : " OFFSET ?"}`;
     const orderLimitParams = sortByDiscount ? [DISCOUNT_SORT_CAP] : [limit, offset];
 
-    const items: ProductWithPricing[] = await queryPricedProducts(
-      ctx, hiddenClauses, hiddenParams, extraWhereSql, extraWhereParams, orderLimitSql, orderLimitParams
-    );
+    const [items, categoryRows, countedTotal]: [ProductWithPricing[], { category: string }[], number] = await Promise.all([
+      queryPricedProducts(ctx, hiddenClauses, hiddenParams, extraWhereSql, extraWhereParams, orderLimitSql, orderLimitParams),
+      categoryRowsPromise,
+      totalPromise,
+    ]);
+    const categories = categoryRows.map((c) => c.category);
+    let total = countedTotal;
 
     // "Khuyến mãi" tab: rank by combined discount % descending (computed
     // inside queryPricedProducts, can't be expressed as a SQL ORDER BY — see

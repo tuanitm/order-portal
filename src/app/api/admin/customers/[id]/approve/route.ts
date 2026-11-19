@@ -78,9 +78,22 @@ async function POSTHandler(
       );
     }
 
+    // User ID and SAP customer code are both required on an approved customer,
+    // and always the same value — the customer can then sign in with it.
+    const userIdClash = await queryOne<{ id: number; email: string | null }>(
+      `SELECT id, email FROM users WHERE company_id = ? AND LOWER(userid) = LOWER(?) AND id <> ? LIMIT 1`,
+      [companyId, customer.sap_card_code, customerId]
+    );
+    if (userIdClash) {
+      return NextResponse.json(
+        { error: `User ID "${customer.sap_card_code}" is already used by another account (${userIdClash.email || `#${userIdClash.id}`}) — fix that account first` },
+        { status: 409 }
+      );
+    }
+
     // Approve
     await query(
-      `UPDATE users SET approval_status = 'approved', approved_at = NOW(), approved_by = ?
+      `UPDATE users SET userid = sap_card_code, approval_status = 'approved', approved_at = NOW(), approved_by = ?
        WHERE company_id = ? AND id = ?`,
       [session.email, companyId, customerId]
     );

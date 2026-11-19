@@ -64,10 +64,10 @@ async function POSTHandler(request: NextRequest) {
   if (!fullName) return NextResponse.json({ error: "Name is required" }, { status: 400 });
   if (password.length < 6) return NextResponse.json({ error: "Password must be at least 6 characters" }, { status: 400 });
   if (kind !== "customer" && !userid) return NextResponse.json({ error: "User ID is required for staff" }, { status: 400 });
-  if (!userid && !email) return NextResponse.json({ error: "Enter a User ID or an email" }, { status: 400 });
-  if (userid && !USERID_PATTERN.test(userid)) return NextResponse.json({ error: "User ID: 3–50 letters, digits, dot, dash or underscore" }, { status: 400 });
+  if (kind !== "customer" && !userid && !email) return NextResponse.json({ error: "Enter a User ID or an email" }, { status: 400 });
+  if (kind !== "customer" && userid && !USERID_PATTERN.test(userid)) return NextResponse.json({ error: "User ID: 3–50 letters, digits, dot, dash or underscore" }, { status: 400 });
   if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return NextResponse.json({ error: "Email is not valid" }, { status: 400 });
-  if (userid && (await findClash("userid", userid, null))) return NextResponse.json({ error: `User ID "${userid}" is already used` }, { status: 409 });
+  if (kind !== "customer" && userid && (await findClash("userid", userid, null))) return NextResponse.json({ error: `User ID "${userid}" is already used` }, { status: 409 });
   if (email && (await findClash("email", email, null))) return NextResponse.json({ error: `Email "${email}" is already used` }, { status: 409 });
 
   let customer = null;
@@ -78,14 +78,19 @@ async function POSTHandler(request: NextRequest) {
     if (!customer) return NextResponse.json({ error: `SAP customer ${cardCode} not found (SAP Customers)` }, { status: 400 });
     const misfit = await checkCustomerFitsRole(roleId, customer);
     if (misfit) return NextResponse.json({ error: misfit }, { status: 400 });
+    if (await findClash("userid", customer.sap_card_code, null)) {
+      return NextResponse.json({ error: `User ID "${customer.sap_card_code}" is already used` }, { status: 409 });
+    }
   }
+  // A Customer's User ID is always its SAP customer code (both required).
+  const finalUserid = customer ? customer.sap_card_code : userid;
 
   const result = await query<{ insertId: number }>(
     `INSERT INTO users (company_id, userid, role_id, email, phone, password_hash, full_name, must_change_password, is_active,
                         approval_status, approved_at, approved_by, sap_card_code, sap_card_name, mst_code, sap_price_list_num,
                         sap_cus_grp01, sap_cus_grp02, sap_cus_grp03, department_code, owner_code)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, TRUE, 'approved', NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [getCompanyId(), userid || null, roleId, email || null, (typeof body.phone === "string" && body.phone.trim()) || null,
+    [getCompanyId(), finalUserid || null, roleId, email || null, (typeof body.phone === "string" && body.phone.trim()) || null,
      await bcrypt.hash(password, 12), fullName, !!body.mustChangePassword, guard.session.email,
      customer?.sap_card_code ?? null, customer?.card_name ?? null, customer?.mst_code ?? null, customer?.price_list_num ?? null,
      customer?.cus_grp01 ?? null, customer?.cus_grp02 ?? null, customer?.cus_grp03 ?? null,
@@ -96,7 +101,7 @@ async function POSTHandler(request: NextRequest) {
   await logAuditEvent({
     actorType: "admin", actorId: guard.session.adminId, actorLabel: guard.session.email,
     action: "admin_user_create", entityType: "user", entityId: newId,
-    details: { userid, email, fullName, roleId, kind, sapCardCode: customer?.sap_card_code ?? null }, request,
+    details: { userid: finalUserid, email, fullName, roleId, kind, sapCardCode: customer?.sap_card_code ?? null }, request,
   });
   return NextResponse.json({ success: true, userId: newId });
 }

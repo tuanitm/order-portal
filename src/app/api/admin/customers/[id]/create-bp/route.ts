@@ -208,7 +208,7 @@ async function POSTHandler(
     try {
       await query(
         `UPDATE users SET
-           sap_card_code = ?, sap_card_name = ?, sap_price_list_num = ?,
+           userid = ?, sap_card_code = ?, sap_card_name = ?, sap_price_list_num = ?,
            sap_cus_grp01 = ?, sap_cus_grp02 = ?, sap_cus_grp03 = ?,
            sap_group_code = ?, pay_terms_grp_code = ?, currency = ?,
            mst_code = ?, email = ?, phone = ?, registration_address = ?, registration_shipping_address = ?,
@@ -216,7 +216,7 @@ async function POSTHandler(
            approval_status = 'approved', approved_at = NOW(), approved_by = ?
          WHERE company_id = ? AND id = ?`,
         [
-          cardCode, cardName, priceListNum,
+          cardCode, cardCode, cardName, priceListNum,
           ancestors.level1Code, ancestors.level2Code, cusGrp03,
           groupCode, payTermsGrpCode, currency,
           mstCode, email, phone, billingAddress || null, shippingAddress || null,
@@ -230,7 +230,7 @@ async function POSTHandler(
       // not look like the whole operation silently failed.
       console.error("[Admin] users update after BP creation failed:", error);
       return NextResponse.json(
-        { error: `Business Partner ${cardCode} was created in SAP, but saving it locally failed (likely the edited email is already used by another account): ${error instanceof Error ? error.message : String(error)}` },
+        { error: `Business Partner ${cardCode} was created in SAP, but saving it locally failed (likely the edited email, or the new code as User ID, is already used by another account): ${error instanceof Error ? error.message : String(error)}` },
         { status: 500 }
       );
     }

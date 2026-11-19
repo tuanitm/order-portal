@@ -50,11 +50,13 @@ async function PATCHHandler(request: NextRequest, { params }: { params: Promise<
     set("role_id", Number(body.roleId), "role");
   }
 
-  if (typeof body.userid === "string") {
+  // A Customer's User ID is always its SAP customer code — set below, never typed.
+  if (kind !== "customer" && typeof body.userid === "string") {
     const userid = body.userid.trim();
     if (userid && !USERID_PATTERN.test(userid)) return NextResponse.json({ error: "User ID: 3–50 letters, digits, dot, dash or underscore" }, { status: 400 });
     if (userid && (await findClash("userid", userid, userId))) return NextResponse.json({ error: `User ID "${userid}" is already used` }, { status: 409 });
-    set("userid", userid || null, "userid");
+    // Empty is rejected just below (userid is NOT NULL, required for staff).
+    if (userid) set("userid", userid, "userid");
   }
   const finalUserid = typeof body.userid === "string" ? body.userid.trim() : target.userid;
   if (kind !== "customer" && !finalUserid) return NextResponse.json({ error: "User ID is required for staff" }, { status: 400 });
@@ -71,6 +73,7 @@ async function PATCHHandler(request: NextRequest, { params }: { params: Promise<
   if (kind === "customer") {
     const cardCode = typeof body.sapCardCode === "string" ? body.sapCardCode.trim() : target.sap_card_code;
     if (!cardCode) return NextResponse.json({ error: "SAP customer code is required for a Customer role" }, { status: 400 });
+    let codeForUserid = cardCode;
     if (cardCode !== target.sap_card_code || body.roleId !== undefined) {
       const c = await getSapCustomer(cardCode);
       if (!c) return NextResponse.json({ error: `SAP customer ${cardCode} not found (SAP Customers)` }, { status: 400 });
@@ -78,11 +81,18 @@ async function PATCHHandler(request: NextRequest, { params }: { params: Promise<
       const misfit = roleId ? await checkCustomerFitsRole(roleId, c) : null;
       if (misfit) return NextResponse.json({ error: misfit }, { status: 400 });
       set("sap_card_code", c.sap_card_code, "sapCardCode");
+      codeForUserid = c.sap_card_code;
       set("sap_card_name", c.card_name, "sapCardName");
       set("sap_price_list_num", c.price_list_num, "priceList");
       set("sap_cus_grp01", c.cus_grp01, "cusGrp01");
       set("sap_cus_grp02", c.cus_grp02, "cusGrp02");
       set("sap_cus_grp03", c.cus_grp03, "cusGrp03");
+    }
+    if (target.userid !== codeForUserid) {
+      if (await findClash("userid", codeForUserid, userId)) {
+        return NextResponse.json({ error: `User ID "${codeForUserid}" is already used` }, { status: 409 });
+      }
+      set("userid", codeForUserid, "userid");
     }
   } else if (target.sap_card_code && body.roleId !== undefined) {
     // Now staff: no longer tied to a SAP customer.

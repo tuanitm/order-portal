@@ -31,7 +31,10 @@
 CREATE TABLE IF NOT EXISTS users (
   id INT AUTO_INCREMENT PRIMARY KEY,
   company_id VARCHAR(50) NOT NULL,
-  userid VARCHAR(100) NULL,
+  -- NOT NULL + unique per company (uk_company_userid). Customers: the SAP
+  -- customer code once approved; a pending signup holds its SAP code, or its
+  -- email for a new company (scripts/migrate_users_userid_not_null.mjs).
+  userid VARCHAR(100) NOT NULL,
   role_id INT NULL,
   email VARCHAR(255),
   phone VARCHAR(20),
@@ -81,6 +84,9 @@ CREATE TABLE IF NOT EXISTS users (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY uk_company_userid (company_id, userid),
+  -- One account per SAP customer; NULL (staff, new company before approval)
+  -- may repeat (scripts/migrate_users_sap_card_code_unique.mjs).
+  UNIQUE KEY uk_company_sap_card_code (company_id, sap_card_code),
   INDEX idx_role (role_id),
   UNIQUE KEY uk_company_email (company_id, email),
   UNIQUE KEY uk_company_phone (company_id, phone),
@@ -370,6 +376,23 @@ CREATE TABLE IF NOT EXISTS item_warehouse_stock (
   UNIQUE KEY uk_company_item_warehouse (company_id, sap_item_code, warehouse_code),
   INDEX idx_item_code (sap_item_code),
   INDEX idx_warehouse_code (warehouse_code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Live stock (Inventory Stock option 2): same stock columns as
+-- item_warehouse_stock, refreshed on demand from HANA (Admin Inventory's
+-- QRM query) — see src/lib/stock/liveStock.ts. Composite primary key and NO
+-- auto-increment id, so refreshing every ~30 s never grows an id.
+CREATE TABLE IF NOT EXISTS item_warehouse_stock_live (
+  company_id VARCHAR(50) NOT NULL,
+  sap_item_code VARCHAR(50) NOT NULL,
+  warehouse_code VARCHAR(20) NOT NULL,
+  in_stock DECIMAL(18,3) NOT NULL DEFAULT 0,
+  committed DECIMAL(18,3) NOT NULL DEFAULT 0,
+  shelf_life_pct DECIMAL(6,2) NULL,
+  refreshed_at TIMESTAMP NULL,
+  PRIMARY KEY (company_id, sap_item_code, warehouse_code),
+  INDEX idx_live_item_code (sap_item_code),
+  INDEX idx_live_warehouse_code (warehouse_code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Per-batch stock (SAP OBTQ/OBTN), refreshed with item_warehouse_stock by
@@ -1029,8 +1052,46 @@ CREATE TABLE IF NOT EXISTS sync_schedule_settings (
   last_run_at TIMESTAMP NULL,
   last_run_status ENUM('success', 'partial', 'failed') NULL,
   last_run_summary TEXT NULL,
+  -- Separate, faster Inventory Stock schedule (item_warehouse_stock only —
+  -- the storefront's stock gate). Runs on its own minute-based interval,
+  -- independent of the combined schedule above, so stock can refresh every
+  -- few minutes without re-running the heavy full sync. See
+  -- src/lib/sap-b1/stockSyncSchedule.ts and src/instrumentation.ts.
+  stock_sync_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+  -- Superseded by stock_sync_windows (kept: DB is shared, migrations are additive only).
+  stock_sync_interval_minutes INT NOT NULL DEFAULT 10,
+  -- JSON list of {start:"HH:MM", end:"HH:MM", intervalMinutes} in Vietnam
+  -- time; outside every window the stock sync doesn't run. See
+  -- src/lib/stockSyncWindows.ts.
+  stock_sync_windows JSON NULL,
+  -- How the storefront gets Available qty: 'sync' = item_warehouse_stock
+  -- (scheduled, windows above); 'live' = item_warehouse_stock_live, refreshed
+  -- on demand from HANA and shared for stock_live_cache_seconds (the
+  -- scheduled stock sync is off). See src/lib/stock/liveStock.ts.
+  stock_source ENUM('sync', 'live') NOT NULL DEFAULT 'sync',
+  stock_live_cache_seconds INT NOT NULL DEFAULT 30,
+  stock_live_refreshed_at TIMESTAMP NULL,
+  stock_live_shelf_refreshed_at TIMESTAMP NULL,
+  stock_live_last_status ENUM('success', 'failed') NULL,
+  stock_live_last_summary TEXT NULL,
+  stock_last_run_at TIMESTAMP NULL,
+  stock_last_run_status ENUM('success', 'failed') NULL,
+  stock_last_run_summary TEXT NULL,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+-- Migration for an existing DB (scripts/migrate_stock_sync_schedule.mjs):
+-- ALTER TABLE sync_schedule_settings ADD COLUMN stock_sync_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+-- ALTER TABLE sync_schedule_settings ADD COLUMN stock_sync_interval_minutes INT NOT NULL DEFAULT 10;
+-- ALTER TABLE sync_schedule_settings ADD COLUMN stock_last_run_at TIMESTAMP NULL;
+-- ALTER TABLE sync_schedule_settings ADD COLUMN stock_last_run_status ENUM('success', 'failed') NULL;
+-- ALTER TABLE sync_schedule_settings ADD COLUMN stock_last_run_summary TEXT NULL;
+-- ALTER TABLE sync_schedule_settings ADD COLUMN stock_sync_windows JSON NULL;
+-- ALTER TABLE sync_schedule_settings ADD COLUMN stock_source ENUM('sync', 'live') NOT NULL DEFAULT 'sync';
+-- ALTER TABLE sync_schedule_settings ADD COLUMN stock_live_cache_seconds INT NOT NULL DEFAULT 30;
+-- ALTER TABLE sync_schedule_settings ADD COLUMN stock_live_refreshed_at TIMESTAMP NULL;
+-- ALTER TABLE sync_schedule_settings ADD COLUMN stock_live_shelf_refreshed_at TIMESTAMP NULL;
+-- ALTER TABLE sync_schedule_settings ADD COLUMN stock_live_last_status ENUM('success', 'failed') NULL;
+-- ALTER TABLE sync_schedule_settings ADD COLUMN stock_live_last_summary TEXT NULL;
 
 -- Audit Logs — append-only trail of login/logout (success AND failure) for
 -- both admin and customer accounts, plus the highest-value business

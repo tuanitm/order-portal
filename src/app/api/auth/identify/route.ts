@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { findUserByIdentifier } from "@/lib/auth/login";
+import { queryOne } from "@/lib/db/connection";
+import { getCompanyId } from "@/lib/config";
 
 interface MatchRow {
   email: string | null;
@@ -8,9 +10,13 @@ interface MatchRow {
 }
 
 /**
- * POST /api/auth/identify — Check if an account exists by userid, email, phone
- * or MST (tax) code. Body: { identifier: string }
- * Returns: { exists: boolean, identifierType: 'email' | 'phone' | 'mst' }
+ * POST /api/auth/identify — Check if an account exists by userid, SAP customer
+ * code (sap_card_code), email, phone or MST (tax) code. Body: { identifier: string }
+ * Returns: { exists: boolean, identifierType: 'email' | 'phone' | 'mst' | 'cardCode' }
+ *
+ * Found → the screen asks for the password. Not found → the signup form,
+ * pre-filled from the existing SAP customer (BP) when the value is one of
+ * its identifiers ('cardCode' = a SAP customer code with no portal account yet).
  *
  * Scans all three columns in one query rather than pre-guessing which one
  * the identifier is by its shape — a tax code and a phone number are both
@@ -46,9 +52,17 @@ export async function POST(request: NextRequest) {
     // no account exists yet, never for the existence check itself.
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     const phoneRegex = /^[0-9]{9,15}$/;
-    let identifierType: "email" | "phone" | "mst";
+    let identifierType: "email" | "phone" | "mst" | "cardCode";
+    const sapCustomer = match
+      ? null
+      : await queryOne<{ sap_card_code: string }>(
+          "SELECT sap_card_code FROM customers WHERE company_id = ? AND LOWER(sap_card_code) = ? LIMIT 1",
+          [getCompanyId(), normalizedEmail]
+        );
     if (match) {
       identifierType = match.phone === normalizedPhone ? "phone" : match.mst_code === value ? "mst" : "email";
+    } else if (sapCustomer) {
+      identifierType = "cardCode";
     } else if (emailRegex.test(value)) {
       identifierType = "email";
     } else if (phoneRegex.test(normalizedPhone)) {
