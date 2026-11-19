@@ -463,10 +463,10 @@ export default function CheckoutPage() {
                   borderBottom: "1px solid var(--color-gray-100)",
                   ...(line.isGift ? { paddingLeft: "1rem" } : {}),
                 }}>
-                  <div>
-                    <div style={{ fontWeight: 500, display: "flex", alignItems: "center", gap: "0.375rem" }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 500, display: "flex", alignItems: "flex-start", flexWrap: "wrap", gap: "0.375rem" }}>
                       {line.isGift && <span aria-hidden>🎁</span>}
-                      {line.itemName}
+                      <span style={{ overflowWrap: "anywhere" }}>{line.itemName}</span>
                       {line.isGift && (
                         <span style={{
                           fontSize: "0.6875rem", fontWeight: 700, color: "#065F46",
@@ -481,7 +481,7 @@ export default function CheckoutPage() {
                       {line.quantity} × {formatPrice(line.unitPrice)}
                     </div>
                   </div>
-                  <div style={{ fontWeight: 600, color: line.isGift ? "var(--color-success)" : undefined }}>
+                  <div style={{ fontWeight: 600, whiteSpace: "nowrap", marginLeft: "0.75rem", color: line.isGift ? "var(--color-success)" : undefined }}>
                     {formatPrice(line.unitPrice * line.quantity)}
                   </div>
                 </div>

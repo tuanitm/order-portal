@@ -119,6 +119,8 @@
     "uom": "ĐVT",
     "packSize": "Quy cách",
     "itemCode": "Mã sản phẩm",
+    "itemName": "Tên sản phẩm",
+    "inCart": "Đã có trong giỏ: {qty} {uom}",
     "searchPlaceholder": "Tìm sản phẩm theo tên hoặc mã...",
     "noProducts": "Không có sản phẩm nào",
     "viewDetail": "Xem chi tiết",

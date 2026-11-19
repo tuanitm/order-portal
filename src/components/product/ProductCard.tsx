@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslations, useLocale } from "next-intl";
 import { useCart, CartItem, getCartLineKey } from "@/hooks/useCart";
@@ -40,6 +40,39 @@ export default function ProductCard({ product, giveawayOverride }: ProductCardPr
   // card's narrow width.
   const discountBadgeRef = useRef<HTMLSpanElement | null>(null);
   const [discountTooltipPos, setDiscountTooltipPos] = useState<{ top: number; left: number } | null>(null);
+
+  // Full-name hover tooltip for the photo and the 2-line-clamped name — a
+  // custom, high-contrast (dark bg / yellow text) tooltip instead of the
+  // browser's native `title` one, which can't be styled. Portal'd like the
+  // discount tooltip; flips below the element when there's no room above.
+  const [nameTooltip, setNameTooltip] = useState<{ top: number; left: number; below: boolean } | null>(null);
+  const showNameTooltip = (e: React.MouseEvent<HTMLElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const halfWidth = 160;
+    const left = Math.min(
+      Math.max(rect.left + rect.width / 2, halfWidth + 8),
+      window.innerWidth - halfWidth - 8
+    );
+    const below = rect.top < 80;
+    setNameTooltip({ top: below ? rect.bottom : rect.top, left, below });
+  };
+  const hideNameTooltip = () => setNameTooltip(null);
+
+  // Product detail pop-up — opened by clicking the photo or the name (the
+  // name itself is clamped to 2 lines on the card; hovering either shows the
+  // full name via the native `title` tooltip). Portal'd to document.body for
+  // the same overflow:hidden reason as the discount tooltip above.
+  const [showDetail, setShowDetail] = useState(false);
+  // Quantity the customer types in the pop-up before pressing Add to Cart —
+  // reset to 1 each time the pop-up opens.
+  const [detailQty, setDetailQty] = useState(1);
+  const openDetail = () => { setNameTooltip(null); setDetailQty(1); setShowDetail(true); };
+  useEffect(() => {
+    if (!showDetail) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setShowDetail(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [showDetail]);
 
   // Most items have 0 or 1 currently-valid promotion program; a picker only
   // renders when more than one genuinely competes for this item right now
@@ -90,14 +123,13 @@ export default function ProductCard({ product, giveawayOverride }: ProductCardPr
     (locale === "vi" ? product.itemNameVi : product.itemNameEn) ||
     product.itemNameVi || product.itemNameEn;
 
-  const handleAddToCart = (e: React.MouseEvent) => {
-    e.stopPropagation();
+  const addToCart = (quantity: number) => {
     const cartItem: CartItem = {
       sapItemCode: product.sapItemCode,
       itemName: name || product.sapItemCode,
       unitPrice: displayPrice,
       originalPrice: product.basePrice,
-      quantity: 1,
+      quantity,
       uom: product.uom || "PCS",
       imageUrl: product.imageUrl,
       discountPercent: discountPercent,
@@ -122,6 +154,17 @@ export default function ProductCard({ product, giveawayOverride }: ProductCardPr
     showToast(t("product.addedToCart"));
   };
 
+  const handleAddToCart = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    addToCart(1);
+  };
+
+  const handleDetailAddToCart = () => {
+    if (detailQty < 1) return;
+    addToCart(detailQty);
+    setShowDetail(false);
+  };
+
   // Decrementing to 0 auto-removes the line — updateQuantity's own
   // UPDATE_QUANTITY reducer case already filters out a quantity <= 0.
   const handleDecrement = (e: React.MouseEvent) => {
@@ -136,10 +179,65 @@ export default function ProductCard({ product, giveawayOverride }: ProductCardPr
     updateQuantity(lineKey, quantity);
   };
 
+  // Shared by the card body and the detail pop-up so both always show the
+  // same promotion choice and free-gift text (and switching the program in
+  // either place updates both).
+  const promoPicker = promoOptions.length > 1 && (
+    <select
+      className="input"
+      style={{ fontSize: "0.75rem", padding: "0.25rem 0.5rem", marginTop: "0.375rem", width: "100%" }}
+      value={selectedPromoCode}
+      onChange={(e) => setSelectedPromoCode(e.target.value)}
+      onClick={(e) => e.stopPropagation()}
+      aria-label={t("product.choosePromotion")}
+    >
+      {promoOptions.map((o) => (
+        <option key={o.code ?? o.name ?? Math.random()} value={o.code ?? ""}>
+          {(o.name || o.code || t("product.promotion"))} (-{o.pct}%)
+        </option>
+      ))}
+    </select>
+  );
+
+  const giftBlock = product.hasBuyGivePromo && selectedGiveaway && (
+    <div className="product-card__gift" style={{ flexDirection: "column", gap: "0.125rem" }}>
+      {/* One 🎁 per free item, so the customer sees how many gifts they get.
+          Promotion "case c": the bought item's own free qty first, then the other free item. */}
+      {[
+        ...(selectedGiveaway.extra
+          ? [t("product.buyGetSamePromo", { buyQty: selectedGiveaway.extra.buyQty, giveQty: selectedGiveaway.extra.giveQty })]
+          : []),
+        selectedGiveaway.giveItemCode === product.sapItemCode
+          ? t("product.buyGetSamePromo", {
+              buyQty: selectedGiveaway.buyQty ?? 1,
+              giveQty: selectedGiveaway.giveQty ?? 1,
+            })
+          : t("product.buyGetPromo", {
+              buyQty: selectedGiveaway.buyQty ?? 1,
+              giveQty: selectedGiveaway.giveQty ?? 1,
+              giveItem: selectedGiveaway.giveItemName || selectedGiveaway.giveItemCode || "",
+            }),
+      ].map((text, i) => (
+        <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: "var(--space-1)" }}>
+          <span aria-hidden>🎁</span>
+          <span>{text}</span>
+        </div>
+      ))}
+    </div>
+  );
+
   return (
     <article className="product-card animate-fade-in-up" id={`product-${lineKey}`}>
       {/* Image */}
-      <div className="product-card__image">
+      <div
+        className="product-card__image"
+        onMouseEnter={showNameTooltip}
+        onMouseLeave={hideNameTooltip}
+        onClick={openDetail}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openDetail(); } }}
+      >
         {product.imageUrl ? (
           <img src={product.imageUrl} alt={name || ""} loading="lazy" />
         ) : (
@@ -166,7 +264,14 @@ export default function ProductCard({ product, giveawayOverride }: ProductCardPr
 
       {/* Body */}
       <div className="product-card__body">
-        <h3 className="product-card__name">{name || product.sapItemCode}</h3>
+        <h3
+          className="product-card__name product-card__name--clickable"
+          onMouseEnter={showNameTooltip}
+          onMouseLeave={hideNameTooltip}
+          onClick={openDetail}
+        >
+          {name || product.sapItemCode}
+        </h3>
 
         <div className="product-card__meta-row">
           <span className="product-card__code">{product.sapItemCode}</span>
@@ -233,22 +338,7 @@ export default function ProductCard({ product, giveawayOverride }: ProductCardPr
             qualifies for more than one currently-valid program at once (the
             common case is 0 or 1, where this stays invisible and the server's
             own best-match default silently applies, unchanged from before). */}
-        {promoOptions.length > 1 && (
-          <select
-            className="input"
-            style={{ fontSize: "0.75rem", padding: "0.25rem 0.5rem", marginTop: "0.375rem", width: "100%" }}
-            value={selectedPromoCode}
-            onChange={(e) => setSelectedPromoCode(e.target.value)}
-            onClick={(e) => e.stopPropagation()}
-            aria-label={t("product.choosePromotion")}
-          >
-            {promoOptions.map((o) => (
-              <option key={o.code ?? o.name ?? Math.random()} value={o.code ?? ""}>
-                {(o.name || o.code || t("product.promotion"))} (-{o.pct}%)
-              </option>
-            ))}
-          </select>
-        )}
+        {promoPicker}
 
         {/* Available stock — only rendered once stock tracking is active for
             this customer (availableQty is null otherwise, e.g. no warehouse
@@ -266,32 +356,7 @@ export default function ProductCard({ product, giveawayOverride }: ProductCardPr
         {/* Buy-X-Get-Y bonus item — kept visually distinct (green "gift" box)
             from the orange percent-discount badge above, so both benefits
             are legible at a glance without being confused for one another. */}
-        {product.hasBuyGivePromo && selectedGiveaway && (
-          <div className="product-card__gift" style={{ flexDirection: "column", gap: "0.125rem" }}>
-            {/* One 🎁 per free item, so the customer sees how many gifts they get.
-                Promotion "case c": the bought item's own free qty first, then the other free item. */}
-            {[
-              ...(selectedGiveaway.extra
-                ? [t("product.buyGetSamePromo", { buyQty: selectedGiveaway.extra.buyQty, giveQty: selectedGiveaway.extra.giveQty })]
-                : []),
-              selectedGiveaway.giveItemCode === product.sapItemCode
-                ? t("product.buyGetSamePromo", {
-                    buyQty: selectedGiveaway.buyQty ?? 1,
-                    giveQty: selectedGiveaway.giveQty ?? 1,
-                  })
-                : t("product.buyGetPromo", {
-                    buyQty: selectedGiveaway.buyQty ?? 1,
-                    giveQty: selectedGiveaway.giveQty ?? 1,
-                    giveItem: selectedGiveaway.giveItemName || selectedGiveaway.giveItemCode || "",
-                  }),
-            ].map((text, i) => (
-              <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: "var(--space-1)" }}>
-                <span aria-hidden>🎁</span>
-                <span>{text}</span>
-              </div>
-            ))}
-          </div>
-        )}
+        {giftBlock}
 
         {/* Actions */}
         <div className="product-card__actions" style={{ marginTop: "0.75rem" }}>
@@ -335,6 +400,129 @@ export default function ProductCard({ product, giveawayOverride }: ProductCardPr
           )}
         </div>
       </div>
+
+      {nameTooltip && !showDetail && createPortal(
+        <div
+          className={`product-card__name-tooltip${nameTooltip.below ? " product-card__name-tooltip--below" : ""}`}
+          style={{ top: nameTooltip.top, left: nameTooltip.left }}
+          role="tooltip"
+        >
+          {name || product.sapItemCode}
+        </div>,
+        document.body
+      )}
+
+      {showDetail && createPortal(
+        <div className="product-detail-overlay" onClick={() => setShowDetail(false)}>
+          <div
+            className="product-detail-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={`product-detail-title-${lineKey}`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              className="product-detail-modal__close"
+              onClick={() => setShowDetail(false)}
+              aria-label={t("common.close")}
+            >
+              ×
+            </button>
+            {product.imageUrl && (
+              <div className="product-detail-modal__image">
+                <img src={product.imageUrl} alt={name || ""} />
+              </div>
+            )}
+            <h3 className="product-detail-modal__title" id={`product-detail-title-${lineKey}`}>
+              {name || product.sapItemCode}
+            </h3>
+            <dl className="product-detail-modal__list">
+              <dt>{t("product.itemCode")}</dt>
+              <dd>{product.sapItemCode}</dd>
+              <dt>{t("product.itemName")}</dt>
+              <dd>{name || "—"}</dd>
+              <dt>{t("product.uom")}</dt>
+              <dd>{product.uom || "PCS"}</dd>
+              {product.packSize && (
+                <>
+                  <dt>{t("product.packSize")}</dt>
+                  <dd>{product.packSize}</dd>
+                </>
+              )}
+            </dl>
+
+            {/* Price + discounts/promotions — same figures as the card. The
+                breakdown uses the generic "Discount 1"/"Discount 2" labels
+                and only when config.json's admin.showDiscounts allows it. */}
+            <div className="product-detail-modal__pricing">
+              <div className="product-card__pricing">
+                <span className="product-card__price">{formatPrice(displayPrice)}</span>
+                {hasDiscount && (
+                  <>
+                    <span className="product-card__original-price">{formatPrice(product.basePrice)}</span>
+                    <span className="product-card__discount">-{discountPercent}%</span>
+                  </>
+                )}
+              </div>
+              {showDiscounts && hasDiscount && (product.contractDiscPct > 0 || effectivePromoPct > 0) && (
+                <div className="product-detail-modal__discounts">
+                  {product.contractDiscPct > 0 && (
+                    <span>{t("product.discountN", { n: 1 })}: {product.contractDiscPct}%</span>
+                  )}
+                  {effectivePromoPct > 0 && (
+                    <span>{t("product.discountN", { n: 2 })}: {effectivePromoPct}%</span>
+                  )}
+                </div>
+              )}
+              {promoPicker}
+              {giftBlock}
+            </div>
+
+            {/* Add to Cart with a typed quantity — adds ON TOP of whatever is
+                already in the cart for this same line (ADD_ITEM sums qty). */}
+            <div className="product-detail-modal__actions">
+              <div className="product-card__qty-stepper">
+                <button
+                  type="button"
+                  className="product-card__qty-btn"
+                  onClick={() => setDetailQty((q) => Math.max(1, q - 1))}
+                  aria-label="Decrease"
+                >
+                  −
+                </button>
+                <QtyInput
+                  value={detailQty}
+                  onCommit={(q) => setDetailQty(Math.max(1, q))}
+                  className="product-card__qty-input"
+                  ariaLabel={t("cart.quantity")}
+                />
+                <button
+                  type="button"
+                  className="product-card__qty-btn"
+                  onClick={() => setDetailQty((q) => q + 1)}
+                  aria-label="Increase"
+                >
+                  +
+                </button>
+              </div>
+              <button type="button" className="product-card__add-btn" onClick={handleDetailAddToCart}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="12" y1="5" x2="12" y2="19" />
+                  <line x1="5" y1="12" x2="19" y2="12" />
+                </svg>
+                {t("product.addToCart")}
+              </button>
+            </div>
+            {cartQty > 0 && (
+              <div className="product-detail-modal__in-cart">
+                {t("product.inCart", { qty: cartQty, uom: product.uom || "PCS" })}
+              </div>
+            )}
+          </div>
+        </div>,
+        document.body
+      )}
     </article>
   );
 }

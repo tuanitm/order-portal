@@ -119,6 +119,8 @@
     "uom": "UOM",
     "packSize": "Pack Size",
     "itemCode": "Item Code",
+    "itemName": "Item Name",
+    "inCart": "Already in cart: {qty} {uom}",
     "searchPlaceholder": "Search products by name or code...",
     "noProducts": "No products available",
     "viewDetail": "View Details",
