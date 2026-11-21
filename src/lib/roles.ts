@@ -3,7 +3,7 @@ import { getCompanyId } from "@/lib/config";
 import { ASSIGNABLE_ADMIN_PERMISSIONS, jsonCodeList, type RoleKind } from "@/lib/auth/adminSession";
 import { masterdataWarehouseCodes } from "@/lib/adminWarehouses";
 
-export const ROLE_KINDS: RoleKind[] = ["super_admin", "admin", "sales", "customer"];
+export const ROLE_KINDS: RoleKind[] = ["super_admin", "admin", "sales", "account", "customer"];
 
 /** The data-permission fields of a role, in DB column order. */
 export const SCOPE_FIELDS = ["brands", "channels", "customer_groups", "item_groups", "warehouses"] as const;
@@ -53,19 +53,26 @@ export async function parseRoleDefinition(body: Record<string, unknown>): Promis
   { ok: true; kind: RoleKind; permissions: string[]; scope: RoleScopeInput } | { ok: false; error: string }
 > {
   const kind = String(body.kind ?? "") as RoleKind;
-  if (!ROLE_KINDS.includes(kind)) return { ok: false, error: "kind must be one of super_admin, admin, sales, customer" };
+  if (!ROLE_KINDS.includes(kind)) return { ok: false, error: "kind must be one of super_admin, admin, sales, account, customer" };
   const empty: RoleScopeInput = { brands: [], channels: [], customer_groups: [], item_groups: [], warehouses: [] };
   if (kind === "super_admin") return { ok: true, kind, permissions: [], scope: empty };
+  const isAccount = kind === "account";
 
   // Customer: no functions; data permissions optional (empty = no restriction — see customerRoleScope.ts).
-  const permissions = kind === "customer" ? [] : codes(body.permissions).filter((p) => (ASSIGNABLE_ADMIN_PERMISSIONS as readonly string[]).includes(p));
+  // Accountant: any assignable functions, and SO Approval always.
+  const picked = kind === "customer" ? [] : codes(body.permissions).filter((p) => (ASSIGNABLE_ADMIN_PERMISSIONS as readonly string[]).includes(p));
+  const permissions = isAccount && !picked.includes("so-approval") ? ["so-approval", ...picked] : picked;
   const raw = (body.scope ?? {}) as Record<string, unknown>;
   const scope = Object.fromEntries(SCOPE_FIELDS.map((f) => [f, codes(raw[f])])) as RoleScopeInput;
   // A Customer role's user is one SAP customer — no Customer Groups for it.
   if (kind === "customer") scope.customer_groups = [];
 
-  const missing = kind === "customer" ? [] : REQUIRED_FOR_STAFF.filter((f) => scope[f].length === 0);
-  if (missing.length) return { ok: false, error: `${missing.map((f) => LABEL[f]).join(", ")} must be configured for ${kind === "sales" ? "a Sales" : "an Admin"} role` };
+  // Accountant: Channels + Brands required — whose orders it approves and whose
+  // AR it sees (SO Approval, AR Aging); Customer Groups (levels 1–3) optional
+  // to narrow further. The rest only matter for the extra functions it's given.
+  const required: ScopeField[] = kind === "customer" ? [] : isAccount ? ["channels", "brands"] : REQUIRED_FOR_STAFF;
+  const missing = required.filter((f) => scope[f].length === 0);
+  if (missing.length) return { ok: false, error: `${missing.map((f) => LABEL[f]).join(", ")} must be configured for ${kind === "sales" ? "a Sales" : isAccount ? "an Accountant" : "an Admin"} role` };
 
   const opts = await getRoleOptions();
   const known: Record<ScopeField, Set<string>> = {
@@ -99,7 +106,7 @@ export async function listRoles(): Promise<RoleRow[]> {
             (SELECT COUNT(*) FROM users u WHERE u.company_id = r.company_id AND u.role_id = r.id)
               + (SELECT COUNT(*) FROM admin_users a WHERE a.company_id = r.company_id AND a.role_id = r.id) AS user_count
        FROM admin_roles r WHERE r.company_id = ?
-      ORDER BY FIELD(r.kind, 'super_admin', 'admin', 'sales', 'customer'), r.name`,
+      ORDER BY FIELD(r.kind, 'super_admin', 'admin', 'sales', 'account', 'customer'), r.name`,
     [getCompanyId()]
   );
   return rows.map((r) => ({

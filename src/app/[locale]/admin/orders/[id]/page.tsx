@@ -568,6 +568,13 @@ export default function AdminOrderDetailPage() {
                     loadingLabel="Pushing to SAP..."
                     onDone={(data) => {
                       if (data.dataStatusWarning) alert(String(data.dataStatusWarning));
+                      // SAP opened an approval request (Approval Templates) — the SO stays I until the stage approves.
+                      const appr = data.sapApproval as { requestNo: number | null; template: string | null; waitingFor: string[]; portal?: boolean } | null;
+                      if (appr) {
+                        alert(`Credit approval required${appr.template ? ` (SAP template ${appr.template})` : ""}${appr.requestNo ? ` — SAP request #${appr.requestNo}` : ""}.
+` +
+                          `The Sales Order stays U_DataStatus = I until approved in SO Approval by: ${appr.waitingFor.join(", ") || "the stage authorizers"}.`);
+                      }
                       // The server re-checks live stock right before pushing
                       // and caps any line that no longer has enough — flag it
                       // clearly rather than letting it pass silently in the

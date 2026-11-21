@@ -4,7 +4,7 @@ import { getCompanyId } from "@/lib/config";
 
 export type AuditActorType = "admin" | "customer";
 /** The actor's role kind at the time — Root/Super Admin, Admin, Sales or Customer. */
-export type AuditActorRole = "super_admin" | "admin" | "sales" | "customer";
+export type AuditActorRole = "super_admin" | "admin" | "sales" | "account" | "customer";
 
 /**
  * One row written to `audit_logs` (see schema.sql for the table's own

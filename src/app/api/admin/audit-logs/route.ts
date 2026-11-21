@@ -32,7 +32,7 @@ export async function GET(request: NextRequest) {
     whereClauses.push("actor_type = ?");
     params.push(actorType);
   }
-  if (["super_admin", "admin", "sales", "customer"].includes(actorRole)) {
+  if (["super_admin", "admin", "sales", "account", "customer"].includes(actorRole)) {
     whereClauses.push("actor_role = ?");
     params.push(actorRole);
   }

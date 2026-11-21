@@ -1,0 +1,31 @@
+
+
+The OrdersService_GetApprovalTemplates check ran, and SAP says no approval template applies, even for a GT customer, with U_DataStatus = C, asked by sa02 (an originator of SO01). Nothing was saved: OWDD still has 10,668 requests and the newest SO is still 21770.
+
+So, to your question:
+
+The Service Layer can raise a real approval request. You ask OrdersService_GetApprovalTemplates for the new SO, and SAP returns the templates that apply. You add them to the SO's Document_ApprovalRequests and create it. SAP then saves it as a draft plus a request in OWDD, which appears in the Approval Status Report, exactly as from the SAP client.
+It doesn't work with your current templates. SAP's own check returns nothing for SO01, so there is nothing to submit.
+The reason is in SO01's condition query. It identifies the customer with $[$4.0.0], which means "field 4 on the open Sales Order screen". Through the Service Layer there is no screen, so SAP can't evaluate the condition and treats it as not applying. That's also why updating to C as sa02 raised nothing.
+What would make it work: your SAP consultant changes the condition queries (OUQR 616 for SO01 GT, and 617–620 for the others) to read the document's fields instead of the screen's. For example:
+
+
+select 'TRUE' from OCRD T1
+ where T1."CardCode" = $[ORDR."CardCode"]
+   and $[ORDR."U_DataStatus"] in ('C')
+   and ifnull(T1."U_CusGrp01",'') in ('GT')
+It's $[ORDR."CardCode"] instead of $[$4.0.0]. The consultant must confirm that this form also works in the SAP client, so salespeople's approvals keep working.
+
+Suggested next steps
+
+The consultant makes that change in the test company only.
+
+I run the same check again (it saves nothing). If SAP then returns SO01, the approach is proven.
+
+I change the push to use this approval check. Two things change with it:
+
+The SO is created with U_DataStatus C, and SAP holds it as a draft until approved, instead of creating it as I and then updating.
+The portal's approval list has to handle requests for SOs that don't exist yet (draft only, SO created after approval).
+Both are moderate changes.
+
+If the consultant can't change the conditions, the fallback is Option B from before: the portal runs the approval for portal orders itself, using SAP's templates and approvers.

@@ -8,7 +8,7 @@ import { VN_TIME_ZONE } from "@/lib/vnTime";
 interface AuditLogRow {
   id: number;
   actor_type: "admin" | "customer";
-  actor_role: "super_admin" | "admin" | "sales" | "customer" | null;
+  actor_role: "super_admin" | "admin" | "sales" | "account" | "customer" | null;
   actor_id: number | null;
   actor_label: string | null;
   action: string;
@@ -43,8 +43,8 @@ function formatAction(action: string): string {
   return action.split("_").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
 }
 
-const ROLE_LABEL: Record<string, string> = { super_admin: "Root / Super Admin", admin: "Admin", sales: "Sales", customer: "Customer" };
-const ROLE_TONE: Record<string, "error" | "success" | "warning" | "neutral"> = { super_admin: "error", admin: "success", sales: "warning", customer: "neutral" };
+const ROLE_LABEL: Record<string, string> = { super_admin: "Root / Super Admin", admin: "Admin", sales: "Sales", account: "Accountant", customer: "Customer" };
+const ROLE_TONE: Record<string, "error" | "success" | "warning" | "neutral"> = { super_admin: "error", admin: "success", sales: "warning", account: "success", customer: "neutral" };
 
 function isFailureAction(action: string): boolean {
   return /failed|reject|delete|cancel/.test(action);

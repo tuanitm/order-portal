@@ -397,3 +397,36 @@ export async function buildPromotionScopeFilter(
   };
 }
 
+
+/**
+ * SQL for "this order is in the role's Brands": a sold (non-gift) line whose
+ * item brand is allowed — an order is one brand (checkout brand split).
+ * `orderAlias` is the orders table alias. null = unrestricted.
+ */
+export function orderBrandScopeClause(codes: AllowedCodes, orderAlias = "o"): { sql: string; params: string[] } {
+  if (codes === null) return { sql: "TRUE", params: [] };
+  if (codes.size === 0) return { sql: "1=0", params: [] };
+  const list = [...codes];
+  return {
+    sql: `EXISTS (SELECT 1 FROM order_lines bl JOIN items bi ON bi.company_id = bl.company_id AND bi.sap_item_code = bl.sap_item_code
+      WHERE bl.company_id = ${orderAlias}.company_id AND bl.order_id = ${orderAlias}.id AND bl.is_gift_line = 0
+        AND bi.brand_code IN (${list.map(() => "?").join(",")}))`,
+    params: list,
+  };
+}
+
+/**
+ * SO Approval scope: the order's customer in the role's Channels / Customer
+ * Groups (levels 1–3, see isOrderInAdminScope) AND the order's brand in the
+ * role's Brands.
+ */
+export async function isOrderInApprovalScope(session: AdminSession, orderId: number): Promise<boolean> {
+  if (!(await isOrderInAdminScope(session, orderId))) return false;
+  const brand = orderBrandScopeClause(getAllowedBrandCodes(session));
+  if (brand.sql === "TRUE") return true;
+  const row = await queryOne<{ ok: number }>(
+    `SELECT 1 AS ok FROM orders o WHERE o.company_id = ? AND o.id = ? AND ${brand.sql}`,
+    [getCompanyId(), orderId, ...brand.params]
+  );
+  return !!row;
+}

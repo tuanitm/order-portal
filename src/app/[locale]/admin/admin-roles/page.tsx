@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, type CSSProperties } from "react";
 import { styles, btn, Badge, LoadingOrEmpty } from "../adminUi";
 
-type RoleKind = "super_admin" | "admin" | "sales" | "customer";
+type RoleKind = "super_admin" | "admin" | "sales" | "account" | "customer";
 type ScopeField = "brands" | "channels" | "customer_groups" | "item_groups" | "warehouses";
 
 interface Role {
@@ -26,12 +26,13 @@ interface Options {
   warehouses: string[];
 }
 
-const KIND_LABEL: Record<RoleKind, string> = { super_admin: "Super Admin", admin: "Admin", sales: "Sales", customer: "Customer" };
-const KIND_TONE: Record<RoleKind, "error" | "success" | "warning" | "neutral"> = { super_admin: "error", admin: "success", sales: "warning", customer: "neutral" };
+const KIND_LABEL: Record<RoleKind, string> = { super_admin: "Super Admin", admin: "Admin", sales: "Sales", account: "Accountant", customer: "Customer" };
+const KIND_TONE: Record<RoleKind, "error" | "success" | "warning" | "neutral"> = { super_admin: "error", admin: "success", sales: "warning", account: "success", customer: "neutral" };
 const KIND_HELP: Record<RoleKind, string> = {
   super_admin: "Every function and all data — nothing to configure.",
   admin: "Signs in to /admin. Choose its functions and data permissions.",
   sales: "Signs in to /sales (Orders, Inventory, My Profile). Choose its functions and data permissions.",
+  account: "Signs in to /account — AR / Credit Control: approves Sales Orders pushed from the portal, as the SAP user set on each Accountant. SO Approval is always on; add any other functions. Channels and Brands (and optionally Customer Groups, levels 1–3) decide whose orders it approves and whose AR it sees in SO Approval and AR Aging.",
   customer: "Signs in to the storefront for the SAP customer set on the user. No admin functions; data permissions are optional (empty = no limit), no Customer Groups.",
 };
 const SCOPE_FIELDS: { key: ScopeField; label: string; required: boolean }[] = [
@@ -46,6 +47,7 @@ const FUNCTION_LABEL: Record<string, string> = {
   dashboard: "Dashboard", customers: "Customer Approval", "sap-customers": "SAP Customers", "customer-groups": "Customer Groups",
   "catalog-visibility": "Catalog Visibility", items: "Items", "item-groups": "Item Groups", "price-lists": "Price Lists",
   warehouses: "Warehouses", "contract-discounts": "Contract Discount", promotions: "Promotion Discount", orders: "Orders", inventory: "Inventory",
+  "so-approval": "SO Approval", "ar-aging": "AR Aging",
 };
 
 interface Draft {
@@ -172,8 +174,11 @@ export default function RolesPage() {
     await load();
   };
 
-  const staffKind = draft && (draft.kind === "admin" || draft.kind === "sales");
   const isCustomer = draft?.kind === "customer";
+  const isAccount = draft?.kind === "account";
+  const staffKind = draft && (draft.kind === "admin" || draft.kind === "sales" || isAccount);
+  /** Which data-permission lists must be filled for the role type. */
+  const scopeRequired = (key: ScopeField) => (isAccount ? key === "channels" || key === "brands" : !isCustomer && SCOPE_FIELDS.find((f) => f.key === key)?.required);
 
   return (
     <div style={styles.page}>
@@ -214,15 +219,25 @@ export default function RolesPage() {
                 <div style={{ marginBottom: "1rem" }}>
                   <span style={label}>Functions</span>
                   <div style={chipBox}>
-                    {options.permissions.map((p) => (
-                      <Chip key={p} on={draft.permissions.has(p)} onClick={() => setDraft({ ...draft, permissions: toggle(draft.permissions, p) })}>
-                        {FUNCTION_LABEL[p] ?? p}
-                      </Chip>
-                    ))}
+                    {options.permissions.map((p) => {
+                      // An Accountant role always has SO Approval.
+                      const locked = isAccount && p === "so-approval";
+                      return (
+                        <Chip key={p} on={locked || draft.permissions.has(p)}
+                          onClick={() => { if (!locked) setDraft({ ...draft, permissions: toggle(draft.permissions, p) }); }}>
+                          {FUNCTION_LABEL[p] ?? p}{locked ? " 🔒" : ""}
+                        </Chip>
+                      );
+                    })}
                   </div>
                   {draft.kind === "sales" && (
                     <div style={{ fontSize: "0.75rem", color: "var(--text-tertiary, #94A3B8)", marginTop: 4 }}>
                       The Sales area shows Orders and Inventory — give it at least Orders.
+                    </div>
+                  )}
+                  {isAccount && (
+                    <div style={{ fontSize: "0.75rem", color: "var(--text-tertiary, #94A3B8)", marginTop: 4 }}>
+                      SO Approval is always included. Every function ticked here appears in the Accountant&apos;s /account menu.
                     </div>
                   )}
                 </div>
@@ -235,7 +250,7 @@ export default function RolesPage() {
                     const setSel = (code: string) => setDraft({ ...draft, scope: { ...draft.scope, [f.key]: toggle(sel, code) } });
                     return (
                       <div key={f.key}>
-                        <span style={label}>{f.label}{f.required && !isCustomer ? " *" : ""} <span style={{ fontWeight: 500, textTransform: "none" }}>({sel.size})</span></span>
+                        <span style={label}>{f.label}{scopeRequired(f.key) ? " *" : ""} <span style={{ fontWeight: 500, textTransform: "none" }}>({sel.size})</span></span>
                         {f.key === "brands" && <div style={chipBox}>{options.brands.map((b) => <Chip key={b.code} on={sel.has(b.code)} onClick={() => setSel(b.code)} title={b.name ?? undefined}>{b.code}{b.name ? ` · ${b.name}` : ""}</Chip>)}</div>}
                         {f.key === "channels" && <div style={chipBox}>{options.channels.map((c) => <Chip key={c.code} on={sel.has(c.code)} onClick={() => setSel(c.code)} title={c.name ?? undefined}>{c.code}</Chip>)}</div>}
                         {f.key === "warehouses" && <div style={chipBox}>{options.warehouses.map((w) => <Chip key={w} on={sel.has(w)} onClick={() => setSel(w)}>{w}</Chip>)}</div>}

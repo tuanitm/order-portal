@@ -16,6 +16,8 @@ interface SyncSchedule {
   is_enabled: number;
   interval_hours: number;
   post_so_mode: "draft" | "sales_order";
+  so_approval_required?: number;
+  so_approval_from_date?: string | null;
   last_run_at: string | null;
   last_run_status: "success" | "partial" | "failed" | null;
   last_run_summary: string | null;
@@ -47,6 +49,9 @@ export default function SettingsPage() {
   const [isEnabled, setIsEnabled] = useState(false);
   const [intervalHours, setIntervalHours] = useState(24);
   const [postSoMode, setPostSoMode] = useState<"draft" | "sales_order">("draft");
+  // Accountant (AR / Credit Control) approval of pushed Sales Orders.
+  const [soApprovalRequired, setSoApprovalRequired] = useState(false);
+  const [soApprovalFromDate, setSoApprovalFromDate] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const [message, setMessage] = useState("");
@@ -154,6 +159,8 @@ export default function SettingsPage() {
       setIsEnabled(!!data.schedule.is_enabled);
       setIntervalHours(data.schedule.interval_hours);
       setPostSoMode(data.schedule.post_so_mode === "sales_order" ? "sales_order" : "draft");
+      setSoApprovalRequired(!!data.schedule.so_approval_required);
+      setSoApprovalFromDate(data.schedule.so_approval_from_date || "");
     }
     setIsLoading(false);
   }, []);
@@ -169,7 +176,7 @@ export default function SettingsPage() {
       const res = await fetch("/api/admin/settings/sync-schedule", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ isEnabled, intervalHours, postSoMode }),
+        body: JSON.stringify({ isEnabled, intervalHours, postSoMode, soApprovalFromDate: soApprovalFromDate || null }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to save");
@@ -271,6 +278,37 @@ export default function SettingsPage() {
                   </div>
                 </div>
               </label>
+
+              {/* SO approval is SAP's own Approval Procedure — information only, nothing to switch */}
+              <div style={{
+                padding: "1rem", borderRadius: "var(--radius-lg, 8px)", border: "1px dashed var(--color-gray-200, #E2E8F0)",
+                opacity: postSoMode === "sales_order" ? 1 : 0.5,
+              }}>
+                <div style={{ fontSize: "0.875rem", fontWeight: 700, color: "var(--text-primary, #0F172A)", marginBottom: "0.25rem" }}>
+                  💳 Accountant approval (AR / Credit Control) — follows SAP
+                </div>
+                <div style={{ fontSize: "0.8125rem", color: "var(--text-secondary, #64748B)" }}>
+                  Every pushed Sales Order is created with <strong>U_DataStatus = I</strong> and then updated to <strong>C</strong>.
+                  When an SAP Approval Template applies, SAP keeps it at I and opens an approval request; the stage&apos;s
+                  authorizers (Accountants, by their SAP user) approve it in SO Approval (/account) or in SAP&apos;s Approval
+                  Status Report, and SAP then applies C. Admin / Sales users push as their own SAP user (My Profile → SAP account, e.g. sa01),
+                  which must be an originator of the templates; Super Admin pushes as the portal&apos;s integration user.
+                </div>
+                <label style={{ display: "flex", alignItems: "center", gap: "0.75rem", marginTop: "0.875rem", flexWrap: "wrap" }}>
+                  <span style={{ fontSize: "0.8125rem", fontWeight: 700, color: "var(--text-primary, #0F172A)" }}>📅 Approve SO from date</span>
+                  <input type="date" value={soApprovalFromDate} onChange={(e) => setSoApprovalFromDate(e.target.value)}
+                    style={{ padding: "0.4rem 0.6rem", border: "1px solid var(--color-gray-200, #E2E8F0)", borderRadius: 6, fontSize: "0.8125rem" }} />
+                  {soApprovalFromDate && (
+                    <button type="button" onClick={() => setSoApprovalFromDate("")}
+                      style={{ border: "none", background: "none", color: "var(--color-primary, #2BBCB3)", cursor: "pointer", fontSize: "0.75rem", fontWeight: 700 }}>
+                      Clear
+                    </button>
+                  )}
+                  <span style={{ fontSize: "0.75rem", color: "var(--text-secondary, #64748B)" }}>
+                    SO Approval lists only Sales Orders with DocDate on or after this date{soApprovalFromDate ? "" : " (empty = all)"}. Saved with the settings below.
+                  </span>
+                </label>
+              </div>
 
               <div style={{ paddingTop: "0.5rem" }}>
                 <button onClick={save} disabled={isSaving} style={btn("primary", isSaving)}>

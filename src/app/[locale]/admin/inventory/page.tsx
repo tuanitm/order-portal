@@ -139,6 +139,33 @@ export default function InventoryPage() {
     }, 400);
   };
 
+  // Excel of what the table shows (all pages): same warehouses + search.
+  const [exporting, setExporting] = useState(false);
+  const exportExcel = async () => {
+    setExporting(true);
+    setError("");
+    try {
+      const sp = new URLSearchParams({ warehouses: selectedWarehouses.join(","), search, format: "xlsx" });
+      const res = await fetch(`/api/admin/inventory?${sp}`);
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.message || data.error || "Export failed");
+      }
+      const blob = await res.blob();
+      const name = /filename="([^"]+)"/.exec(res.headers.get("Content-Disposition") || "")?.[1] || "Inventory.xlsx";
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = name;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Export failed");
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const totalPages = Math.ceil(total / limit) || 1;
   const warehouseName = (code: string) => warehouses.find((w) => w.code === code)?.name ?? null;
 
@@ -173,6 +200,16 @@ export default function InventoryPage() {
           <span style={{ fontSize: "0.8125rem", color: "var(--text-secondary, #64748B)", whiteSpace: "nowrap" }}>
             {total.toLocaleString()} row{total !== 1 ? "s" : ""}
           </span>
+
+          <button
+            type="button"
+            disabled={isLoading || total === 0 || exporting}
+            onClick={exportExcel}
+            title="Every row matching the warehouses and search (all pages), same columns + batches"
+            style={btn("secondary", isLoading || total === 0 || exporting)}
+          >
+            {exporting ? "Exporting…" : "⬇ Export Excel"}
+          </button>
         </div>
 
         {/* ── Error ──────────────────────────────────────────── */}

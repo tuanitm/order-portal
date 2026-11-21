@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef, type CSSProperties } from "react";
 import { styles, btn, Badge, LoadingOrEmpty } from "../adminUi";
 
-type RoleKind = "super_admin" | "admin" | "sales" | "customer";
+type RoleKind = "super_admin" | "admin" | "sales" | "account" | "customer";
 
 /** Staff live in admin_users, customers in users — ids can repeat, so rows carry their table. */
 type Account = "staff" | "customer";
@@ -22,6 +22,8 @@ interface UserRow {
   approval_status: "pending" | "approved" | "rejected";
   department_code: string | null;
   owner_code: string | null;
+  sap_user_code: string | null;
+  sap_password_updated_at: string | null;
   role_id: number | null;
   role_name: string | null;
   role_kind: RoleKind | null;
@@ -47,10 +49,14 @@ interface Form {
   isActive: boolean;
   departmentCode: string;
   ownerCode: string;
+  sapUserCode: string;
+  /** Typed here only to (re)save it — verified by SAP, stored encrypted. */
+  sapPassword: string;
+  sapPasswordSavedAt: string | null;
 }
 
-const KIND_LABEL: Record<RoleKind, string> = { super_admin: "Super Admin", admin: "Admin", sales: "Sales", customer: "Customer" };
-const KIND_TONE: Record<RoleKind, "error" | "success" | "warning" | "neutral"> = { super_admin: "error", admin: "success", sales: "warning", customer: "neutral" };
+const KIND_LABEL: Record<RoleKind, string> = { super_admin: "Super Admin", admin: "Admin", sales: "Sales", account: "Accountant", customer: "Customer" };
+const KIND_TONE: Record<RoleKind, "error" | "success" | "warning" | "neutral"> = { super_admin: "error", admin: "success", sales: "warning", account: "success", customer: "neutral" };
 const TABS: { key: string; label: string }[] = [
   { key: "", label: "All" }, { key: "staff", label: "Staff" }, { key: "super_admin", label: "Super Admin" },
   { key: "admin", label: "Admin" }, { key: "sales", label: "Sales" }, { key: "customer", label: "Customers" },
@@ -61,7 +67,7 @@ const hint: CSSProperties = { fontSize: "0.6875rem", color: "var(--text-tertiary
 
 const blankForm = (): Form => ({
   id: null, account: null, userid: "", fullName: "", email: "", phone: "", roleId: "", sapCardCode: "", sapCardName: "",
-  password: "", mustChangePassword: true, isActive: true, departmentCode: "", ownerCode: "",
+  password: "", mustChangePassword: true, isActive: true, departmentCode: "", ownerCode: "", sapUserCode: "", sapPassword: "", sapPasswordSavedAt: null,
 });
 
 const userUrl = (u: { id: number | null; account: Account | null }) => `/api/admin/users/${u.id}?account=${u.account ?? "customer"}`;
@@ -142,6 +148,8 @@ export default function UsersPage() {
 
   const formKind: RoleKind | null = form ? roles.find((r) => String(r.id) === form.roleId)?.kind ?? null : null;
   const isStaff = formKind !== null && formKind !== "customer";
+  // Accountants approve as their SAP user; Admin / Sales users push orders as it (Super Admin uses admin02).
+  const hasSapAccount = formKind === "account" || formKind === "admin" || formKind === "sales";
 
   const edit = (u: UserRow | null) => {
     setError("");
@@ -149,7 +157,8 @@ export default function UsersPage() {
       id: u.id, account: u.account, userid: u.userid ?? "", fullName: u.full_name, email: u.email ?? "", phone: u.phone ?? "",
       roleId: u.role_id ? String(u.role_id) : "", sapCardCode: u.sap_card_code ?? "", sapCardName: u.sap_card_name ?? "",
       password: "", mustChangePassword: !!u.must_change_password, isActive: !!u.is_active,
-      departmentCode: u.department_code ?? "", ownerCode: u.owner_code ?? "",
+      departmentCode: u.department_code ?? "", ownerCode: u.owner_code ?? "", sapUserCode: u.sap_user_code ?? "",
+      sapPassword: "", sapPasswordSavedAt: u.sap_password_updated_at ?? null,
     } : blankForm());
   };
 
@@ -164,6 +173,7 @@ export default function UsersPage() {
       };
       if (formKind === "customer") body.sapCardCode = form.sapCardCode;
       if (isStaff) { body.departmentCode = form.departmentCode; body.ownerCode = form.ownerCode; }
+      if (hasSapAccount) body.sapUserCode = form.sapUserCode;
       if (form.password) body.password = form.password;
       if (form.id) body.isActive = form.isActive;
       const res = await fetch(form.id ? userUrl(form) : "/api/admin/users", {
@@ -173,6 +183,19 @@ export default function UsersPage() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Save failed");
+      // Accountant's SAP password: its own call (verified by an SAP login, never in the audit log).
+      if (hasSapAccount && form.sapPassword) {
+        const userId = form.id ?? data.userId;
+        const r2 = await fetch(`/api/admin/users/${userId}/sap-account`, {
+          method: "PUT", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sapUserCode: form.sapUserCode, password: form.sapPassword }),
+        });
+        const d2 = await r2.json().catch(() => ({}));
+        if (!r2.ok) {
+          await load(tab, search);
+          throw new Error(`User saved, but the SAP password was not: ${d2.error || "SAP check failed"}`);
+        }
+      }
       setForm(null);
       await load(tab, search);
     } catch (e) {
@@ -198,7 +221,8 @@ export default function UsersPage() {
   };
 
   const canSave = !!form && !!form.fullName.trim() && !!form.roleId && (form.id !== null || form.password.length >= 6)
-    && (formKind !== "customer" || !!form.sapCardCode.trim()) && (!isStaff || (!!form.userid.trim() && !!form.email.trim()));
+    && (formKind !== "customer" || !!form.sapCardCode.trim()) && (!isStaff || (!!form.userid.trim() && !!form.email.trim()))
+    && (!hasSapAccount || !form.sapPassword || !!form.sapUserCode.trim());
 
   return (
     <div style={styles.page}>
@@ -222,7 +246,7 @@ export default function UsersPage() {
                 <span style={fieldLabel}>Role *</span>
                 <select style={{ ...styles.input, width: "100%" }} value={form.roleId} onChange={(e) => setForm({ ...form, roleId: e.target.value })}>
                   <option value="">— Choose a role —</option>
-                  {(["super_admin", "admin", "sales", "customer"] as RoleKind[])
+                  {(["super_admin", "admin", "sales", "account", "customer"] as RoleKind[])
                     // Editing: only roles of the same table (staff ↔ customer can't be switched).
                     .filter((k) => !form.account || (form.account === "customer") === (k === "customer"))
                     .map((k) => {
@@ -285,6 +309,28 @@ export default function UsersPage() {
                     <input style={{ ...styles.input, width: "100%" }} value={form.ownerCode} onChange={(e) => setForm({ ...form, ownerCode: e.target.value })} />
                     <div style={hint}>Employee external no. → SO Owner</div>
                   </div>
+                  {hasSapAccount && (
+                    <>
+                      <div>
+                        <span style={fieldLabel}>SAP user code</span>
+                        <input style={{ ...styles.input, width: "100%" }} value={form.sapUserCode} placeholder="e.g. acc01"
+                          onChange={(e) => setForm({ ...form, sapUserCode: e.target.value })} />
+                        <div style={hint}>{formKind === "account"
+                          ? "SAP B1 user this Accountant approves as (SAP Approval Stages)."
+                          : "SAP B1 user this user pushes orders to SAP as (SAP creator / approval originator, e.g. sa01). Empty = pushes as the default SAP user admin02."} The user can also set it in My Profile.</div>
+                      </div>
+                      <div>
+                        <span style={fieldLabel}>SAP password</span>
+                        <input type="password" autoComplete="new-password" style={{ ...styles.input, width: "100%" }} value={form.sapPassword}
+                          placeholder={form.sapPasswordSavedAt ? "•••••• saved — type to replace" : "not saved"}
+                          onChange={(e) => setForm({ ...form, sapPassword: e.target.value })} />
+                        <div style={hint}>
+                          {form.sapPasswordSavedAt ? `Saved ${form.sapPasswordSavedAt.slice(0, 16).replace("T", " ")}. ` : ""}
+                          Checked with an SAP login, stored encrypted (Fernet). Changing the SAP user code clears it.
+                        </div>
+                      </div>
+                    </>
+                  )}
                 </>
               )}
               <div>

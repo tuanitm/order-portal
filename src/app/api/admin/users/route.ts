@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
+import { hasSapAccountKind } from "@/lib/sap-b1/userCredentials";
 import { isSingleEmail } from "@/lib/emailFormat";
 import bcrypt from "bcryptjs";
-import { query } from "@/lib/db/connection";
+import { query, queryOne } from "@/lib/db/connection";
 import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { audited, logAuditEvent } from "@/lib/auditLog";
@@ -23,21 +24,21 @@ export async function GET(request: NextRequest) {
   const search = (sp.get("search") || "").trim();
   const companyId = getCompanyId();
   const like = `%${search}%`;
-  const staffKind = ["super_admin", "admin", "sales"].includes(kind) ? kind : null;
+  const staffKind = ["super_admin", "admin", "sales", "account"].includes(kind) ? kind : null;
   const wantStaff = kind === "" || kind === "staff" || staffKind !== null;
   const wantCustomers = kind === "" || kind === "customer";
 
   const staff = wantStaff
     ? await query<Record<string, unknown>[]>(
         `SELECT 'staff' AS account, a.id, a.userid, a.email, a.phone, a.full_name, NULL AS sap_card_code, NULL AS sap_card_name,
-                a.is_active, a.must_change_password, 'approved' AS approval_status, a.department_code, a.owner_code, a.created_at,
+                a.is_active, a.must_change_password, 'approved' AS approval_status, a.department_code, a.owner_code, a.sap_user_code, a.sap_password_updated_at, a.created_at,
                 r.id AS role_id, r.name AS role_name, r.kind AS role_kind, 0 AS order_count
            FROM admin_users a
            JOIN admin_roles r ON r.id = a.role_id AND r.company_id = a.company_id AND r.kind <> 'customer'
           WHERE a.company_id = ?
             ${staffKind ? "AND r.kind = ?" : ""}
             ${search ? "AND (a.userid LIKE ? OR a.email LIKE ? OR a.full_name LIKE ? OR a.phone LIKE ?)" : ""}
-          ORDER BY FIELD(r.kind, 'super_admin', 'admin', 'sales'), a.userid IS NULL, a.userid, a.email
+          ORDER BY FIELD(r.kind, 'super_admin', 'admin', 'sales', 'account'), a.userid IS NULL, a.userid, a.email
           LIMIT 500`,
         [companyId, ...(staffKind ? [staffKind] : []), ...(search ? [like, like, like, like] : [])]
       )
@@ -45,7 +46,7 @@ export async function GET(request: NextRequest) {
   const customers = wantCustomers
     ? await query<Record<string, unknown>[]>(
         `SELECT 'customer' AS account, u.id, u.userid, u.email, u.phone, u.full_name, u.sap_card_code, u.sap_card_name, u.is_active,
-                u.must_change_password, u.approval_status, NULL AS department_code, NULL AS owner_code, u.created_at,
+                u.must_change_password, u.approval_status, NULL AS department_code, NULL AS owner_code, NULL AS sap_user_code, NULL AS sap_password_updated_at, u.created_at,
                 r.id AS role_id, r.name AS role_name, COALESCE(r.kind, 'customer') AS role_kind,
                 (SELECT COUNT(*) FROM orders o WHERE o.company_id = u.company_id AND o.user_id = u.id) AS order_count
            FROM users u
@@ -82,6 +83,11 @@ async function POSTHandler(request: NextRequest) {
   if (password.length < 6) return NextResponse.json({ error: "Password must be at least 6 characters" }, { status: 400 });
   if (kind !== "customer" && !userid) return NextResponse.json({ error: "User ID is required for staff" }, { status: 400 });
   if (kind !== "customer" && !email) return NextResponse.json({ error: "Email is required for staff" }, { status: 400 });
+  // Accountant's SAP user: optional here — the Accountant can set it (with its password) in My Profile.
+  if (hasSapAccountKind(kind) && typeof body.sapUserCode === "string" && body.sapUserCode.trim()) {
+    const clash = await queryOne<{ id: number }>(`SELECT id FROM admin_users WHERE company_id = ? AND LOWER(sap_user_code) = LOWER(?)`, [getCompanyId(), body.sapUserCode.trim()]);
+    if (clash) return NextResponse.json({ error: `SAP user ${body.sapUserCode.trim()} is already linked to another portal user` }, { status: 409 });
+  }
   if (kind !== "customer" && !userid && !email) return NextResponse.json({ error: "Enter a User ID or an email" }, { status: 400 });
   if (kind !== "customer" && userid && !USERID_PATTERN.test(userid)) return NextResponse.json({ error: "User ID: 3–50 letters, digits, dot, dash or underscore" }, { status: 400 });
   if (email && !isSingleEmail(email)) return NextResponse.json({ error: "Email: enter one valid address (used to sign in)" }, { status: 400 });
@@ -113,11 +119,13 @@ async function POSTHandler(request: NextRequest) {
   if (accountTableForKind(kind) === "staff") {
     const staffResult = await query<{ insertId: number }>(
       `INSERT INTO admin_users (company_id, userid, role_id, is_root, email, phone, password_hash, full_name,
-                                must_change_password, is_active, department_code, owner_code)
-       VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, TRUE, ?, ?)`,
+                                must_change_password, is_active, department_code, owner_code, sap_user_code)
+       VALUES (?, ?, ?, 0, ?, ?, ?, ?, ?, TRUE, ?, ?, ?)`,
       [getCompanyId(), finalUserid, roleId, email, phone, passwordHash, fullName, !!body.mustChangePassword,
        (typeof body.departmentCode === "string" && body.departmentCode.trim()) || null,
-       (typeof body.ownerCode === "string" && body.ownerCode.trim()) || null]
+       (typeof body.ownerCode === "string" && body.ownerCode.trim()) || null,
+       // The SAP B1 user an Accountant approves Sales Orders as.
+       hasSapAccountKind(kind) ? (typeof body.sapUserCode === "string" && body.sapUserCode.trim()) || null : null]
     );
     const staffId = (staffResult as unknown as { insertId: number }).insertId;
     await logAuditEvent({

@@ -24,6 +24,10 @@ export const ALL_ADMIN_PERMISSIONS = [
   "settings",
   "id-reset",
   "audit-logs",
+  // Accountant (AR / Credit Control): the Sales Order approval queue (/account).
+  "so-approval",
+  // Credit Control: SAP AR aging report (QRM_Q504_AR_Aging2, live from HANA).
+  "ar-aging",
 ] as const;
 
 export type AdminPermission = (typeof ALL_ADMIN_PERMISSIONS)[number];
@@ -45,7 +49,7 @@ export const ASSIGNABLE_ADMIN_PERMISSIONS = ALL_ADMIN_PERMISSIONS.filter(
 ) as AdminPermission[];
 
 /** Role kinds (admin_roles.kind). Every user has exactly one role. */
-export type RoleKind = "super_admin" | "admin" | "sales" | "customer";
+export type RoleKind = "super_admin" | "admin" | "sales" | "customer" | "account";
 export type StaffKind = Exclude<RoleKind, "customer">;
 
 /**
@@ -184,8 +188,8 @@ export function signStaffToken(staffId: number): string {
 }
 
 /** Where a role kind lands after login. */
-export function homePathForKind(kind: RoleKind): "/admin" | "/sales" | "/customer" {
-  return kind === "customer" ? "/customer" : kind === "sales" ? "/sales" : "/admin";
+export function homePathForKind(kind: RoleKind): "/admin" | "/sales" | "/customer" | "/account" {
+  return kind === "customer" ? "/customer" : kind === "sales" ? "/sales" : kind === "account" ? "/account" : "/admin";
 }
 
 export function hasPermission(session: AdminSession, permission: AdminPermission): boolean {

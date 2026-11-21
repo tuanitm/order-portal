@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import { useLocale } from "next-intl";
 import { styles, SyncButton } from "./adminUi";
-import { useAdminSession } from "./layout";
+import { useAdminSession, useStaffBase } from "./layout";
 
 interface DashboardCounts {
   pendingCustomers: number;
@@ -18,6 +18,7 @@ interface DashboardCounts {
 export default function AdminDashboardPage() {
   const session = useAdminSession();
   const locale = useLocale();
+  const base = useStaffBase() || `/${locale}/admin`;
   const [counts, setCounts] = useState<DashboardCounts | null>(null);
 
   const loadCounts = async () => {
@@ -69,7 +70,7 @@ export default function AdminDashboardPage() {
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: "1rem", marginBottom: "1.5rem" }}>
           {tiles.map((tile) => (
-            <a key={tile.label} href={`/${locale}/admin/${tile.href}`} style={{ ...styles.cardPadded, marginBottom: 0, textDecoration: "none", display: "block" }}>
+            <a key={tile.label} href={`${base}/${tile.href}`} style={{ ...styles.cardPadded, marginBottom: 0, textDecoration: "none", display: "block" }}>
               <div style={{ fontSize: "1.75rem", fontWeight: 800, color: "var(--text-primary, #0F172A)" }}>{tile.value}</div>
               <div style={{ fontSize: "0.8125rem", color: "var(--text-tertiary, #94A3B8)", marginTop: "0.25rem" }}>{tile.label}</div>
             </a>

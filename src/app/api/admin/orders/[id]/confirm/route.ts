@@ -1,8 +1,12 @@
 import { sortOrderLines } from "@/lib/orderLineSort";
+import { queryHana } from "@/lib/hana/client";
+import { getSapCredentialStatus, ensureUserSapSession, sapRequestAsUser, SapPasswordInvalidError } from "@/lib/sap-b1/userCredentials";
+import { getSoApprovalRequests, progressFromRequest } from "@/lib/soApproval/sapApprovalRequests";
+import { templatesForPush } from "@/lib/soApproval/sapProcedure";
 import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "crypto";
 import { query, queryOne } from "@/lib/db/connection";
-import { getCompanyId, isFillOwnerEnabled } from "@/lib/config";
+import { getCompanyId, isFillOwnerEnabled, loadConfig } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { getSapClient } from "@/lib/sap-b1/client";
 import { recordOrderStatus, notifyCustomerOfStatusChange } from "@/lib/orderHistory";
@@ -191,6 +195,19 @@ async function POSTHandler(
   const orderId = parseInt(id, 10);
   if (isNaN(orderId)) {
     return NextResponse.json({ error: "Invalid order ID" }, { status: 400 });
+  }
+
+  // Who the Sales Order is created / updated as in SAP: an Admin / Sales user
+  // with a SAP account saved (My Profile → SAP account) pushes as THEIR OWN
+  // SAP user, so SAP's creator (UserSign), last updater (UserSign2) and the
+  // approval originator are the real person. Super Admin, and anyone without
+  // a saved SAP account, push with the portal's integration login (config
+  // sapb1.userId, admin02). A saved login that SAP refuses stops the push
+  // (update it in My Profile) rather than silently switching to admin02.
+  let pushAsUser = false;
+  if (!guard.session.isSuperAdmin && guard.session.adminId) {
+    const cred = await getSapCredentialStatus(guard.session.adminId);
+    pushAsUser = !!cred.sapUserCode && cred.hasPassword;
   }
 
   const warehouseCode = new URL(request.url).searchParams.get("warehouseCode")?.trim();
@@ -621,7 +638,14 @@ async function POSTHandler(
   // now, not scheduling a future delivery, so there's no real lead time to
   // reflect here. Vietnam local date (UTC+7), same convention as the order
   // number's own date stamp in POST /api/orders.
-  const vnToday = new Date(Date.now() + 7 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  // Never later than SAP's own date: SAP refuses a posting date after its
+  // system date (error 10000104), and the SAP server's clock can lag the
+  // portal's (seen: ~4.5 min) — a push just after midnight would fail.
+  const portalToday = new Date(Date.now() + 7 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const sapToday = await queryHana<{ d: string }>(`SELECT TO_VARCHAR(CURRENT_DATE, 'YYYY-MM-DD') AS "d" FROM DUMMY`)
+    .then((r) => (/^\d{4}-\d{2}-\d{2}$/.test(String(r[0]?.d)) ? String(r[0].d) : null))
+    .catch(() => null);
+  const vnToday = sapToday && sapToday < portalToday ? sapToday : portalToday;
 
   // Header U_ProdBrand: the one brand every pushed line shares, or the
   // fixed "Inventory Brand" fallback if they don't all agree (a line with
@@ -944,11 +968,25 @@ async function POSTHandler(
   };
 
   let sapResult: { DocEntry: number; DocNum: number };
+  let pushedAs: string = loadConfig().sapb1.userId;
   try {
-    sapResult = postSoMode === "sales_order"
-      ? await sap.createSalesOrder(sapPayload)
-      : await sap.createDraftSalesOrder(sapPayload);
+    if (pushAsUser) {
+      // As the admin's own SAP user (same payloads as SapB1Client.createSalesOrder / createDraftSalesOrder).
+      const session = await ensureUserSapSession(guard.session.adminId!);
+      if (!session) throw new SapPasswordInvalidError("No SAP user and password saved — set them in My Profile");
+      pushedAs = session.sapUser;
+      sapResult = postSoMode === "sales_order"
+        ? await sapRequestAsUser<{ DocEntry: number; DocNum: number }>(guard.session.adminId!, "POST", "/Orders", sapPayload)
+        : await sapRequestAsUser<{ DocEntry: number; DocNum: number }>(guard.session.adminId!, "POST", "/Drafts", { DocObjectCode: "oOrders", ...sapPayload });
+    } else {
+      sapResult = postSoMode === "sales_order"
+        ? await sap.createSalesOrder(sapPayload)
+        : await sap.createDraftSalesOrder(sapPayload);
+    }
   } catch (error) {
+    if (error instanceof SapPasswordInvalidError) {
+      return NextResponse.json({ error: error.message, code: "sap_password_invalid" }, { status: 428 });
+    }
     console.error("[Admin] Failed to push order to SAP B1:", error);
     const label = postSoMode === "sales_order" ? "SAP B1 sales order" : "SAP B1 draft order";
     return NextResponse.json(
@@ -986,12 +1024,60 @@ async function POSTHandler(
   // exists by then, so this is reported, never treated as a failed push
   // (a retry of the push would create a duplicate order).
   let dataStatusWarning: string | null = null;
+  // SAP approval, run by the portal (SAP doesn't raise approval requests for
+  // Service Layer updates with query-based templates): the SO is created with
+  // U_DataStatus = I; when an SAP Approval Template applies — its condition is
+  // TRUE for this SO and the pushing SAP user is one of its originators — the
+  // SO STAYS at I and waits in SO Approval for the template's stage
+  // authorizers (C is set when the last stage approves). Otherwise it's
+  // updated to C right away, as SAP would.
+  let sapApproval: { requestNo: number | null; template: string | null; waitingFor: string[]; portal: boolean } | null = null;
   if (postSoMode === "sales_order") {
+    let needsApproval: { codes: number[]; names: string[]; waitingFor: string[] } | null = null;
+    let matchError: unknown = null;
     try {
-      await sap.updateSalesOrderDataStatus(sapResult.DocEntry, "C");
+      const { templates, warnings } = await templatesForPush(sapResult.DocEntry, pushedAs);
+      if (warnings.length) console.warn(`[Admin] SO ${sapResult.DocNum} approval-condition warnings:`, warnings);
+      if (templates.length) {
+        needsApproval = {
+          codes: templates.map((t) => t.wtmCode), names: templates.map((t) => t.name),
+          waitingFor: [...new Set(templates.flatMap((t) => [...t.stages].sort((a, b) => a.sortId - b.sortId)[0]?.authorizers.map((a) => a.userCode) ?? []))],
+        };
+      }
     } catch (err) {
-      console.error(`[Admin] SO ${sapResult.DocNum} created but U_DataStatus could not be set to C:`, err);
-      dataStatusWarning = `Sales Order ${sapResult.DocNum} was created, but U_DataStatus could not be set to C — it is still I. Please update it in SAP. (${err instanceof Error ? err.message : String(err)})`;
+      matchError = err;
+    }
+
+    if (matchError) {
+      // Can't tell whether approval is needed — leave it at I rather than release it unchecked.
+      console.error(`[Admin] SO ${sapResult.DocNum}: approval templates could not be checked:`, matchError);
+      dataStatusWarning = `Sales Order ${sapResult.DocNum} was created with U_DataStatus = I, but its SAP approval templates could not be checked, so it was NOT released (C). Check it in SAP. (${matchError instanceof Error ? matchError.message : String(matchError)})`;
+    } else if (needsApproval) {
+      await query(
+        `UPDATE orders SET ar_status = 'pending', ar_decided_at = NULL, ar_decided_by = NULL, sap_approval_templates = ? WHERE company_id = ? AND id = ?`,
+        [JSON.stringify(needsApproval.codes), companyId, orderId]
+      );
+      sapApproval = { requestNo: null, template: needsApproval.names.join(", "), waitingFor: needsApproval.waitingFor, portal: true };
+    } else {
+      try {
+        if (pushAsUser) await sapRequestAsUser(guard.session.adminId!, "PATCH", `/Orders(${sapResult.DocEntry})`, { U_DataStatus: "C" });
+        else await sap.updateSalesOrderDataStatus(sapResult.DocEntry, "C");
+        await query(`UPDATE orders SET ar_status = NULL, sap_approval_templates = NULL WHERE company_id = ? AND id = ?`, [companyId, orderId]);
+      } catch (err) {
+        console.error(`[Admin] SO ${sapResult.DocNum} created but U_DataStatus could not be set to C:`, err);
+        dataStatusWarning = `Sales Order ${sapResult.DocNum} was created, but U_DataStatus could not be set to C — it is still I. Please update it in SAP. (${err instanceof Error ? err.message : String(err)})`;
+      }
+      // Should SAP itself have opened an approval request on that update, follow it.
+      try {
+        const req = (await getSoApprovalRequests([sapResult.DocEntry])).get(sapResult.DocEntry);
+        if (req && req.status === "W") {
+          sapApproval = { requestNo: req.wddCode, template: req.templateName, waitingFor: progressFromRequest(req).waitingFor, portal: false };
+          await query(`UPDATE orders SET ar_status = 'pending', ar_decided_at = NULL, ar_decided_by = NULL WHERE company_id = ? AND id = ?`, [companyId, orderId]);
+          dataStatusWarning = null;
+        }
+      } catch (err) {
+        console.warn(`[Admin] Could not read the SAP approval request of SO ${sapResult.DocNum}:`, err);
+      }
     }
 
     try {
@@ -1015,7 +1101,7 @@ async function POSTHandler(
     action: "order_confirm", entityType: "order", entityId: orderId,
     details: {
       orderNumber, warehouseCode, postSoMode,
-      sapDocEntry: sapResult.DocEntry, sapDocNum: sapResult.DocNum, sapSoNumber, dataStatusWarning,
+      sapDocEntry: sapResult.DocEntry, sapDocNum: sapResult.DocNum, sapSoNumber, dataStatusWarning, sapApproval, pushedAsSapUser: pushedAs,
     },
     request,
   });
@@ -1026,6 +1112,10 @@ async function POSTHandler(
     sapDocNum: sapResult.DocNum,
     sapSoNumber,
     dataStatusWarning,
+    // SAP approval request opened by the C update (null = no approval needed in SAP).
+    sapApproval,
+    // The SAP user the Sales Order was created and updated as.
+    pushedAsSapUser: pushedAs,
     // Any line the live pre-confirm check capped below its last saved
     // Confirm Qty — empty on the common path where nothing changed.
     adjustments,

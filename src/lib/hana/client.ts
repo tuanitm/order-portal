@@ -63,3 +63,27 @@ export async function queryHana<T = Record<string, unknown>>(sql: string): Promi
 export function getHanaSchema(): string {
   return getConnectionParams().schema;
 }
+
+/**
+ * Like queryHana, but with the configured schema as the session's current
+ * schema (SET SCHEMA) — for SQL written with unqualified table names, e.g.
+ * SAP's own saved queries (OUQR) such as approval-template conditions.
+ */
+export async function queryHanaInSchema<T = Record<string, unknown>>(sql: string): Promise<T[]> {
+  const { host, port, user, password, schema } = getConnectionParams();
+  return new Promise<T[]>((resolve, reject) => {
+    const client = hdb.createClient({ host, port, user, password });
+    client.on("error", (err) => reject(new Error(`[HANA] Connection error: ${err.message}`)));
+    client.connect((connectErr) => {
+      if (connectErr) { reject(new Error(`[HANA] Connect failed: ${connectErr.message}`)); return; }
+      client.exec(`SET SCHEMA "${schema.replace(/"/g, '""')}"`, (schemaErr) => {
+        if (schemaErr) { client.end(); reject(new Error(`[HANA] SET SCHEMA failed: ${schemaErr.message}`)); return; }
+        client.exec(sql, (queryErr, rows) => {
+          client.end();
+          if (queryErr) { reject(new Error(`[HANA] Query failed: ${queryErr.message}`)); return; }
+          resolve(rows as T[]);
+        });
+      });
+    });
+  });
+}

@@ -46,7 +46,11 @@ export async function queryHanaInventoryByWarehouse(
    * On Order qty; their Available is 0, so the storefront is unaffected.
    * Off (default) = exactly the .sql file's filter, as Admin → Inventory.
    */
-  options: { includeOnOrderOnly?: boolean } = {}
+  options: {
+    includeOnOrderOnly?: boolean;
+    /** Just these items, whatever their item group (SO Approval of a Sales Order made in SAP). */
+    itemCodes?: string[];
+  } = {}
 ): Promise<HanaInventoryRow[]> {
   if (warehouseCodes.length === 0) return [];
   const schema = getHanaSchema();
@@ -102,7 +106,9 @@ export async function queryHanaInventoryByWarehouse(
         GROUP BY t1."ItemCode", t1."wareHouse"
       ) T6 ON T0."ItemCode" = T6."ItemCode" AND T0."WhsCode" = T6."WhsCode"
       WHERE T1."InvntItem" = 'Y'
-        AND (T1."U_ItemCat01" IN (${itemGroupFilter}) OR T1."U_ItemCat02" IN (${itemGroupFilter}))
+        AND ${options.itemCodes?.length
+          ? `T1."ItemCode" IN (${options.itemCodes.map(sqlString).join(",")})`
+          : `(T1."U_ItemCat01" IN (${itemGroupFilter}) OR T1."U_ItemCat02" IN (${itemGroupFilter}))`}
         AND T0."WhsCode" IN (${whsSql})
     ) X
     WHERE (X."on_hand" <> 0 OR X."committed" <> 0${options.includeOnOrderOnly ? ` OR X."ordered" <> 0` : ""})

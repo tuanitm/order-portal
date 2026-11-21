@@ -12,7 +12,7 @@ interface AdminSessionInfo {
   isSuperAdmin: boolean;
   permissions: AdminPermission[];
   userid: string | null;
-  kind: "super_admin" | "admin" | "sales";
+  kind: "super_admin" | "admin" | "sales" | "account";
   roleName: string;
   mustChangePassword: boolean;
 }
@@ -23,7 +23,7 @@ export function useAdminSession() {
 }
 
 /** "admin" for /admin, "sales" for /sales — both areas share this layout. */
-export type StaffArea = "admin" | "sales";
+export type StaffArea = "admin" | "sales" | "account";
 const StaffBaseContext = createContext<string>("");
 /** The current staff area's base path, e.g. "/vi/admin" or "/vi/sales" — for links between its pages. */
 export function useStaffBase() {
@@ -32,6 +32,8 @@ export function useStaffBase() {
 
 /** Pages that exist under /sales (Sales users see only these, within their role's functions). */
 const SALES_AREA_PAGES = new Set(["orders", "inventory", "change-password"]);
+// /account — the Accountant (AR / Credit Control) area: its menu is whatever
+// functions the Accountant role has (SO Approval always), like /admin.
 
 interface UnreadOrderSummary {
   order_id: number;
@@ -233,6 +235,13 @@ const NAV_GROUPS: NavGroup[] = [
     items: [{ key: "orders", label: "Orders", href: "orders", icon: "🧾" }],
   },
   {
+    label: "Credit Control", icon: "💳",
+    items: [
+      { key: "so-approval", label: "SO Approval", href: "approvals", icon: "✅" },
+      { key: "ar-aging", label: "AR Aging", href: "ar-aging", icon: "⏳" },
+    ],
+  },
+  {
     label: "Inventory", icon: "📊",
     items: [{ key: "inventory", label: "Inventory", href: "inventory", icon: "📊" }],
   },
@@ -311,15 +320,21 @@ export function StaffShell({ children, area }: { children: React.ReactNode; area
     ? null
     : !session
       ? `/${locale}/login`
-      : session.kind === "sales" && area === "admin"
+      : session.kind === "sales" && area !== "sales"
         ? `/${locale}/sales`
-        : session.kind !== "sales" && area === "sales"
-          ? `/${locale}/admin`
-          : session.mustChangePassword && !pathname.endsWith("/change-password")
-            ? `${base}/change-password`
-            : area === "sales" && pathname === base
-              ? `${base}/orders`
-              : null;
+        : session.kind === "account" && area !== "account"
+          ? `/${locale}/account`
+          : session.kind !== "sales" && area === "sales"
+            ? `/${locale}/admin`
+            : session.kind !== "account" && area === "account"
+              ? `/${locale}/admin`
+              : session.mustChangePassword && !pathname.endsWith("/change-password")
+                ? `${base}/change-password`
+                : area === "sales" && pathname === base
+                  ? `${base}/orders`
+                  : area === "account" && pathname === base && !session.permissions.includes("dashboard")
+                    ? `${base}/approvals`
+                    : null;
   useEffect(() => {
     if (redirectTo) window.location.replace(redirectTo);
   }, [redirectTo]);

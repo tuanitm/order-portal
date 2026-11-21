@@ -120,6 +120,8 @@ export interface SapBatchStockRow {
   qty: number;
   mnf_date: string | null;
   exp_date: string | null;
+  /** OBTN.DistNumber — only returned by getLiveBatchStock (per-order batch check). */
+  batch_no?: string | null;
 }
 
 
@@ -417,6 +419,19 @@ export interface CreateBusinessPartnerPayload {
 }
 
 // ── SAP B1 Service Layer Client ──
+
+/**
+ * Runs SQLQueries saves (POST/PATCH /SQLQueries) one at a time in this server
+ * process — concurrent saves make SAP answer -2035. Kept on globalThis so dev
+ * hot reloads share one queue.
+ */
+const sqlLockHolder = globalThis as typeof globalThis & { __sapSqlQuerySaveChain?: Promise<unknown> };
+function saveSqlQueryLock<T>(fn: () => Promise<T>): Promise<T> {
+  const prev = sqlLockHolder.__sapSqlQuerySaveChain ?? Promise.resolve();
+  const run = prev.catch(() => undefined).then(fn);
+  sqlLockHolder.__sapSqlQuerySaveChain = run.catch(() => undefined);
+  return run;
+}
 
 export class SapB1Client {
   private baseUrl: string;
@@ -824,23 +839,31 @@ export class SapB1Client {
   private async runSqlQuery<T>(sqlCode: string, sqlName: string, sqlText: string): Promise<T[]> {
     await this.ensureSession();
     try {
-      try {
-        await this.request('POST', '/SQLQueries', { SqlCode: sqlCode, SqlName: sqlName, SqlText: sqlText });
-        console.log('[SAP] Created SQLQuery', sqlCode);
-      } catch (createErr: any) {
-        // Whatever the exact reason the create failed (SAP's own "already
-        // exists" error doesn't always come back with a message containing
-        // "400" — e.g. under the concurrent-caller race this SqlCode reuse
-        // can produce), fall back to PATCH rather than only on that one
-        // specific substring match. Only if the PATCH itself also fails is
-        // this truly unrecoverable.
-        try {
-          await this.request('PATCH', `/SQLQueries('${sqlCode}')`, { SqlText: sqlText });
-          console.log('[SAP] Updated SQLQuery', sqlCode);
-        } catch {
-          throw createErr;
+      // Saving two new SQLQueries at the same moment (e.g. the stock and batch
+      // checks of one order, or one batch query per warehouse) makes SAP answer
+      // -2035 "This entry already exists" for some of them. So saving is done
+      // one at a time across this server process (reading the results below
+      // still runs in parallel), with a few retries on top.
+      await saveSqlQueryLock(async () => {
+        for (let attempt = 1; ; attempt++) {
+          try {
+            await this.request('POST', '/SQLQueries', { SqlCode: sqlCode, SqlName: sqlName, SqlText: sqlText });
+            console.log('[SAP] Created SQLQuery', sqlCode);
+            return;
+          } catch (createErr: any) {
+            // Whatever the exact reason the create failed (usually: it exists
+            // already), fall back to PATCH; only if that fails too, retry.
+            try {
+              await this.request('PATCH', `/SQLQueries('${sqlCode}')`, { SqlText: sqlText });
+              console.log('[SAP] Updated SQLQuery', sqlCode);
+              return;
+            } catch {
+              if (attempt >= 4) throw createErr;
+              await new Promise((r) => setTimeout(r, 300 * attempt));
+            }
+          }
         }
-      }
+      });
 
       const allRows: T[] = [];
       let skip = 0;
@@ -926,7 +949,7 @@ export class SapB1Client {
    */
   async getLiveBatchStock(warehouseCode: string, itemCodes: string[], sqlCodeSuffix: string | number): Promise<SapBatchStockRow[]> {
     if (itemCodes.length === 0) return [];
-    const sqlText = `SELECT Q."ItemCode" AS "item_code", Q."WhsCode" AS "warehouse_code", Q."Quantity" AS "qty", B."MnfDate" AS "mnf_date", B."ExpDate" AS "exp_date" FROM "OBTQ" Q INNER JOIN "OBTN" B ON B."ItemCode" = Q."ItemCode" AND B."SysNumber" = Q."SysNumber" WHERE Q."Quantity" > 0 AND Q."WhsCode" = ${toSqlLiteral(warehouseCode)} AND Q."ItemCode" IN (${toSqlList(itemCodes)})`;
+    const sqlText = `SELECT Q."ItemCode" AS "item_code", Q."WhsCode" AS "warehouse_code", Q."Quantity" AS "qty", B."MnfDate" AS "mnf_date", B."ExpDate" AS "exp_date", B."DistNumber" AS "batch_no" FROM "OBTQ" Q INNER JOIN "OBTN" B ON B."ItemCode" = Q."ItemCode" AND B."SysNumber" = Q."SysNumber" WHERE Q."Quantity" > 0 AND Q."WhsCode" = ${toSqlLiteral(warehouseCode)} AND Q."ItemCode" IN (${toSqlList(itemCodes)}) ORDER BY Q."ItemCode", B."ExpDate"`;
     return this.runSqlQuery<SapBatchStockRow>(`OBC${sqlCodeSuffix}`, 'Order Review Batch Check', sqlText);
   }
 

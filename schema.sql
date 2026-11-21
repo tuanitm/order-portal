@@ -581,11 +581,21 @@ CREATE TABLE IF NOT EXISTS orders (
   language ENUM('vi', 'en') DEFAULT 'vi',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  -- SAP approval of the pushed Sales Order (mirrors its SAP approval request,
+  -- OWDD): pending / approved / rejected; NULL = no approval was needed.
+  ar_status ENUM('pending','approved','rejected') NULL,
+  ar_decided_at TIMESTAMP NULL,
+  ar_decided_by INT NULL,  -- admin_users.id
+  -- SAP approval templates (OWTM codes) that applied when the order was pushed —
+  -- the portal then runs those templates' stages (SAP doesn't raise approval
+  -- requests for Service Layer updates). NULL = none applied.
+  sap_approval_templates JSON NULL,
   FOREIGN KEY (user_id) REFERENCES users(id),
   UNIQUE KEY uk_company_order_number (company_id, order_number),
   INDEX idx_user (user_id),
   INDEX idx_card_code (company_id, sap_card_code),
-  INDEX idx_status (status)
+  INDEX idx_status (status),
+  INDEX idx_company_ar_status (company_id, ar_status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 -- Migration for an existing DB:
 -- ALTER TABLE orders MODIFY user_id INT NULL,
@@ -785,7 +795,8 @@ CREATE TABLE IF NOT EXISTS admin_roles (
   -- super_admin: everything; admin -> /admin, sales -> /sales (functions in
   -- permissions, data limited to the code lists below — default deny);
   -- customer -> storefront, no permissions/scope.
-  kind ENUM('super_admin','admin','sales','customer') NOT NULL DEFAULT 'admin',
+  -- account = Accountant (AR / Credit Control) -> /account, SO Approval.
+  kind ENUM('super_admin','admin','sales','customer','account') NOT NULL DEFAULT 'admin',
   description VARCHAR(255),
   permissions JSON NOT NULL,
   brands JSON NULL,           -- items.brand_code
@@ -846,6 +857,14 @@ CREATE TABLE IF NOT EXISTS admin_users (
   -- DocumentsOwner (the Employee's numeric EmployeeID) and U_OwnerName
   -- (LastName + " " + FirstName) header fields.
   owner_code VARCHAR(50) NULL,
+  -- Accountant (role kind "account"): the SAP B1 user they approve Sales
+  -- Orders as (SAP Approval Stages authorizer), and its password —
+  -- Fernet-encrypted ("FERNET:gAAAA…", key scripts/.encryption_key, same as
+  -- .env secrets; src/lib/fernet.ts). Set by the Accountant in My Profile or
+  -- by Super Admin on the Users page, verified by an SAP login first.
+  sap_user_code VARCHAR(50) NULL,
+  sap_password_enc TEXT NULL,
+  sap_password_updated_at TIMESTAMP NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (role_id) REFERENCES admin_roles(id),
   UNIQUE KEY uk_company_email (company_id, email),
@@ -1061,6 +1080,10 @@ CREATE TABLE IF NOT EXISTS sync_schedule_settings (
   is_enabled BOOLEAN NOT NULL DEFAULT FALSE,
   interval_hours INT NOT NULL DEFAULT 24,
   post_so_mode ENUM('draft','sales_order') NOT NULL DEFAULT 'draft',
+  -- Legacy (no longer changes the push — SAP's approval procedure decides).
+  so_approval_required BOOLEAN NOT NULL DEFAULT FALSE,
+  -- SO Approval lists only Sales Orders with DocDate on/after this (NULL = all).
+  so_approval_from_date DATE NULL,
   last_run_at TIMESTAMP NULL,
   last_run_status ENUM('success', 'partial', 'failed') NULL,
   last_run_summary TEXT NULL,
@@ -1140,4 +1163,27 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   INDEX idx_company_created (company_id, created_at),
   INDEX idx_company_actor (company_id, actor_type, actor_id),
   INDEX idx_company_entity (company_id, entity_type, entity_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- SO Approval decisions made in the portal on SAP's approval requests
+-- (scripts/migrate_so_approval*.mjs). One row per decision, with the six
+-- check results and the notes; order_id NULL = a Sales Order made in SAP.
+CREATE TABLE IF NOT EXISTS so_approvals (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  company_id VARCHAR(50) NOT NULL,
+  order_id INT NULL,
+  sap_doc_entry INT NULL,
+  decision ENUM('approved','rejected') NOT NULL,
+  admin_user_id INT NOT NULL,
+  admin_label VARCHAR(255) NULL,
+  sap_user_code VARCHAR(50) NULL,
+  wtm_code INT NULL,    -- SAP approval template (OWTM)
+  wst_code INT NULL,    -- SAP approval stage (OWST)
+  superseded TINYINT(1) NOT NULL DEFAULT 0,
+  checks JSON NULL,
+  step_notes JSON NULL,
+  notes TEXT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_company_order (company_id, order_id),
+  INDEX idx_company_doc_entry (company_id, sap_doc_entry)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

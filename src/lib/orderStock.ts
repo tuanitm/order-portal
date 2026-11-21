@@ -3,7 +3,7 @@ import { getCompanyId } from "@/lib/config";
 import { getSapClient } from "@/lib/sap-b1/client";
 import { computeBatchShelfLifePct } from "@/lib/sap-b1/sync";
 
-interface OrderCustomer {
+export interface OrderCustomer {
   sap_cus_grp01: string | null;
   sap_cus_grp02: string | null;
   sap_cus_grp03: string | null;
@@ -40,6 +40,24 @@ export interface LiveItemAvailability {
    * qualifies (that's availableQty's job, not this one's). */
   requiredShelfLifeFrom: number | null;
   requiredShelfLifeTo: number | null;
+  /** Raw SAP figures behind availableQty (OITW OnHand / IsCommited in this warehouse). */
+  inStock: number;
+  committed: number;
+  /** False when the worst batch's shelf life is outside this customer's required range (availableQty is then 0). */
+  shelfLifeOk: boolean;
+  /** Every batch in this warehouse (qty > 0), earliest expiry first, checked against the required range. */
+  batches: BatchShelfLife[];
+}
+
+export interface BatchShelfLife {
+  batchNo: string | null;
+  qty: number;
+  mnfDate: string | null;
+  expDate: string | null;
+  /** Remaining shelf life % (null when the batch has no manufacture/expiry date). */
+  shelfLifePct: number | null;
+  /** Inside this customer's required range (true when no rule applies or the dates are missing). */
+  meetsRequirement: boolean;
 }
 
 /**
@@ -73,13 +91,28 @@ export async function getLiveAvailabilityForOrder(
     `SELECT DISTINCT sap_item_code FROM order_lines WHERE company_id = ? AND order_id = ?`,
     [companyId, orderId]
   );
-  const itemCodes = lineItemCodes.map((r) => r.sap_item_code);
+  return getLiveAvailability(lineItemCodes.map((r) => r.sap_item_code), warehouseCode, customer, orderId);
+}
+
+/**
+ * The same live availability for any list of items and a customer's groups —
+ * used for Sales Orders that exist only in SAP (SO Approval). `sqlKey` names
+ * the SAP saved queries (one per caller, so parallel callers don't clash).
+ */
+export async function getLiveAvailability(
+  itemCodesIn: string[],
+  warehouseCode: string,
+  customer: OrderCustomer,
+  sqlKey: string | number
+): Promise<LiveItemAvailability[]> {
+  const companyId = getCompanyId();
+  const itemCodes = [...new Set(itemCodesIn.filter(Boolean))];
   if (itemCodes.length === 0) return [];
 
   const sap = getSapClient();
   const [stockRows, batchRows, categoryRows, rules] = await Promise.all([
-    sap.getLiveItemStock(warehouseCode, itemCodes, orderId),
-    sap.getLiveBatchStock(warehouseCode, itemCodes, orderId),
+    sap.getLiveItemStock(warehouseCode, itemCodes, sqlKey),
+    sap.getLiveBatchStock(warehouseCode, itemCodes, sqlKey),
     query<ItemCategoryRow[]>(
       `SELECT sap_item_code, item_cat01, item_cat02, item_cat03, item_cat04, item_cat05, item_cat06
        FROM items WHERE company_id = ? AND sap_item_code IN (${itemCodes.map(() => "?").join(",")})`,
@@ -133,10 +166,23 @@ export async function getLiveAvailabilityForOrder(
 
     const froms = applicableRules.map((r) => r.shelf_life_from).filter((v): v is number => v !== null);
     const tos = applicableRules.map((r) => r.shelf_life_to).filter((v): v is number => v !== null);
+    const batches: BatchShelfLife[] = batchRows
+      .filter((b) => b.item_code === sapItemCode)
+      .map((b) => {
+        const pct = computeBatchShelfLifePct(b.mnf_date, b.exp_date);
+        const meets = pct === null || !applicableRules.some(
+          (r) => (r.shelf_life_from !== null && pct < r.shelf_life_from) || (r.shelf_life_to !== null && pct > r.shelf_life_to)
+        );
+        return { batchNo: b.batch_no ?? null, qty: Number(b.qty), mnfDate: b.mnf_date, expDate: b.exp_date, shelfLifePct: pct, meetsRequirement: meets };
+      });
 
     return {
       sapItemCode,
       availableQty: qualifies ? inStock - committed : 0,
+      inStock,
+      committed,
+      shelfLifeOk: qualifies,
+      batches,
       shelfLifePct,
       requiredShelfLifeFrom: froms.length > 0 ? Math.max(...froms) : null,
       requiredShelfLifeTo: tos.length > 0 ? Math.min(...tos) : null,

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { hasSapAccountKind } from "@/lib/sap-b1/userCredentials";
 import { isSingleEmail } from "@/lib/emailFormat";
 import bcrypt from "bcryptjs";
 import { query, queryOne } from "@/lib/db/connection";
@@ -10,6 +11,7 @@ import {
   accountTableForKind, type AccountTable,
 } from "@/lib/userAdmin";
 import { checkCustomerFitsRole } from "@/lib/customerRoleScope";
+import { logoutUserSapSession } from "@/lib/sap-b1/userSession";
 
 interface TargetRow { id: number; userid: string | null; email: string | null; role_id: number | null; kind: RoleKind | null; sap_card_code: string | null }
 
@@ -140,6 +142,25 @@ async function PATCHHandler(request: NextRequest, { params }: { params: Promise<
   if (typeof body.mustChangePassword === "boolean") set("must_change_password", body.mustChangePassword, "mustChangePassword");
   // SO Department (OcrCode2) and SAP Owner are staff-only.
   if (account === "staff" && typeof body.departmentCode === "string") set("department_code", body.departmentCode.trim() || null, "departmentCode");
+  // The SAP B1 user an Accountant approves Sales Orders as. Its password is set
+  // separately (PUT ./sap-account, verified by SAP); changing the user forgets it.
+  // Only Super Admin, and only for an Accountant (it decides whose SO approvals they see and make).
+  let sapLoginChanged = false;
+  if (account === "staff" && typeof body.sapUserCode === "string" && guard.session.isSuperAdmin && hasSapAccountKind(kind)) {
+    const code = body.sapUserCode.trim();
+    if (code.length > 50) return NextResponse.json({ error: "SAP user code must be 50 characters or fewer" }, { status: 400 });
+    const cur = await queryOne<{ sap_user_code: string | null }>(`SELECT sap_user_code FROM admin_users WHERE company_id = ? AND id = ?`, [getCompanyId(), userId]);
+    if ((cur?.sap_user_code ?? "").toLowerCase() !== code.toLowerCase()) {
+      if (code) {
+        const clash = await queryOne<{ id: number }>(`SELECT id FROM admin_users WHERE company_id = ? AND LOWER(sap_user_code) = LOWER(?) AND id <> ?`, [getCompanyId(), code, userId]);
+        if (clash) return NextResponse.json({ error: `SAP user ${code} is already linked to another portal user` }, { status: 409 });
+      }
+      set("sap_user_code", code || null, "sapUserCode");
+      set("sap_password_enc", null, "sapPasswordCleared");
+      set("sap_password_updated_at", null, "sapPasswordUpdatedAt");
+      sapLoginChanged = true;
+    }
+  }
   if (account === "staff" && typeof body.ownerCode === "string") {
     if (body.ownerCode.trim().length > 50) return NextResponse.json({ error: "Owner code must be 50 characters or fewer" }, { status: 400 });
     set("owner_code", body.ownerCode.trim() || null, "ownerCode");
@@ -157,6 +178,10 @@ async function PATCHHandler(request: NextRequest, { params }: { params: Promise<
     if ((error as { code?: string })?.code === "ER_DUP_ENTRY") return NextResponse.json({ error: "User ID, email or SAP customer already in use" }, { status: 409 });
     console.error("[Admin] Update user failed:", error);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
+  }
+  // The user's live SAP session (SO Approval) must not outlive a change of SAP user, deactivation or a role change.
+  if (account === "staff" && (sapLoginChanged || body.isActive === false || (body.roleId !== undefined && Number(body.roleId) !== target.role_id))) {
+    await logoutUserSapSession(userId).catch(() => undefined);
   }
   await logAuditEvent({
     actorType: "admin", actorId: guard.session.adminId, actorLabel: guard.session.email,
@@ -187,6 +212,7 @@ async function DELETEHandler(request: NextRequest, { params }: { params: Promise
       return NextResponse.json({ error: "Cannot delete the last active Super Admin" }, { status: 400 });
     }
     await query(`DELETE FROM admin_users WHERE company_id = ? AND id = ?`, [getCompanyId(), userId]);
+    await logoutUserSapSession(userId).catch(() => undefined);
   } else {
     const orders = await queryOne<{ cnt: number }>(`SELECT COUNT(*) AS cnt FROM orders WHERE company_id = ? AND user_id = ?`, [getCompanyId(), userId]);
     if (orders && orders.cnt > 0) {
