@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { NewBadge, NOTIFICATIONS_EVENT } from "../../admin/StaffInbox";
 import { styles, btn, Badge, LoadingOrEmpty } from "../../admin/adminUi";
 import { useStaffBase } from "../../admin/layout";
 
@@ -23,6 +24,10 @@ interface Row {
     state: "approved" | "pending" | "rejected"; templates: string[]; stage: string | null;
     waitingFor: string[]; waitingOnMe: boolean; noTemplate: boolean; warning: string | null; requestNo: number | null;
   };
+  /** Its approval was undone earlier (approved manually only). */
+  reopened?: boolean;
+  /** Unread notification for me about this SO (flashing NEW until opened). */
+  isNew?: boolean;
 }
 interface Result {
   rows: Row[]; fromDate: string | null; me: string | null; sapReady: boolean;
@@ -106,6 +111,12 @@ export default function ApprovalQueuePage() {
     }
   }, []);
   useEffect(() => { load(applied); }, [applied, load]);
+  // A notification just arrived (staff inbox) → refresh, so the new SO shows with its NEW marker.
+  useEffect(() => {
+    const onNew = () => load(applied);
+    window.addEventListener(NOTIFICATIONS_EVENT, onNew);
+    return () => window.removeEventListener(NOTIFICATIONS_EVENT, onNew);
+  }, [applied, load]);
 
   const search = (next: typeof BLANK = f) => { setF(next); setApplied(next); setSelected(new Set()); };
 
@@ -154,7 +165,7 @@ export default function ApprovalQueuePage() {
     try {
       const res = await fetch(`/api/admin/approvals/${d}/decision`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ decision, notes }),
+        body: JSON.stringify({ decision, notes, method: "bulk" }),
       });
       const j = await res.json();
       if (!res.ok) return { ok: false, text: j.error || "Failed", stop: res.status === 428 };
@@ -392,7 +403,7 @@ export default function ApprovalQueuePage() {
                         <td style={td()}>{r.brands.join(", ") || "—"}</td>
                         <td style={{ ...td(), whiteSpace: "nowrap" }}>{fmtDate(r.docDate)}</td>
                         <td style={td()}>
-                          <div style={{ fontWeight: 700 }}>{r.docNo || "—"}</div>
+                          <div style={{ fontWeight: 700 }}>{r.docNo || "—"}{r.isNew && <NewBadge title="New — not opened yet" />}</div>
                           <div style={{ fontSize: "0.72rem", color: "var(--text-tertiary, #94A3B8)" }}>
                             DocNum {r.docNum} · DocEntry {r.docEntry}
                             {r.portalOrder && <> · <span style={{ color: "var(--color-primary, #2BBCB3)", fontWeight: 700 }}>Portal {r.portalOrder.orderNumber}</span></>}
@@ -412,6 +423,7 @@ export default function ApprovalQueuePage() {
                         </td>
                         <td style={td()}>
                           <Badge label={st.label} tone={st.tone} />
+                          {r.reopened && <div style={{ marginTop: 4 }} title="Its approval was undone earlier — approve it manually"><Badge label="↶ undone" tone="warning" /></div>}
                           {checks.get(r.docEntry) && (
                             <div style={{ marginTop: 4 }} title={checks.get(r.docEntry)!.error ?? checks.get(r.docEntry)!.notPass.join("\n")}>
                               {checks.get(r.docEntry)!.status === "loading"

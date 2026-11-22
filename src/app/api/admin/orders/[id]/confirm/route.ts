@@ -16,6 +16,7 @@ import { isOrderInAdminScope } from "@/lib/adminScope";
 import { getAdminWarehouseCodes } from "@/lib/adminWarehouses";
 import { audited, logAuditEvent } from "@/lib/auditLog";
 import { recalculateOrderTotals } from "@/lib/orderTotals";
+import { notifyApprovalNeeded, notifySafely } from "@/lib/staffNotifications";
 
 interface OrderRow {
   id: number;
@@ -1000,8 +1001,8 @@ async function POSTHandler(
   const newPortalStatus = postSoMode === "sales_order" ? "approved" : "sap_draft_created";
 
   await query(
-    `UPDATE orders SET status = ?, sap_doc_entry = ?, sap_doc_num = ?, warehouse_code = ? WHERE company_id = ? AND id = ?`,
-    [newPortalStatus, sapResult.DocEntry, sapResult.DocNum, warehouseCode, companyId, orderId]
+    `UPDATE orders SET status = ?, sap_doc_entry = ?, sap_doc_num = ?, warehouse_code = ?, sap_pushed_by_admin_id = ? WHERE company_id = ? AND id = ?`,
+    [newPortalStatus, sapResult.DocEntry, sapResult.DocNum, warehouseCode, guard.session.adminId ?? null, companyId, orderId]
   );
   await recordOrderStatus(orderId, newPortalStatus);
   await notifyCustomerOfStatusChange(orderId, newPortalStatus);
@@ -1094,6 +1095,15 @@ async function POSTHandler(
       // Non-fatal: the scheduled sync will pick it up later
       console.warn(`[Admin] Could not read back U_DocNo after SO create:`, err);
     }
+  }
+
+  // Notify the approvers the SO now waits for (inbox bell + NEW marker in their SO Approval).
+  if (sapApproval?.waitingFor.length) {
+    const approval = sapApproval;
+    notifySafely(`push of SO ${sapResult.DocNum}`, () => notifyApprovalNeeded(sapResult.DocEntry, approval.waitingFor, {
+      actor: `${guard.session.userid || guard.session.email} (SAP ${pushedAs})`,
+      reason: approval.template ? `Approval template ${approval.template}` : undefined,
+    }));
   }
 
   await logAuditEvent({

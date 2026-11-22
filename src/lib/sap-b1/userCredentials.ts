@@ -17,6 +17,13 @@ import {
  * as this user) and Admin / Sales users (kinds "admin", "sales" — they push
  * orders to SAP as this user, so SAP's creator / originator is the real
  * person). Super Admin pushes with the portal's integration login (admin02).
+ *
+ * Sales accounts (Salesman): several Sales accounts may share ONE SAP user
+ * (e.g. a sales team on sa01) — only System Admin sets it (Users page), the
+ * Salesman sees it read only. Its password is the same SAP login for all of
+ * them, so saving it on one copies it to every Sales account on that SAP
+ * user, and a Sales account newly given that SAP user adopts it. Accountant
+ * and Admin SAP users stay one-to-one.
  */
 export const SAP_ACCOUNT_KINDS = ["account", "admin", "sales"] as const;
 export const hasSapAccountKind = (kind: string | null | undefined) => (SAP_ACCOUNT_KINDS as readonly string[]).includes(kind ?? "");
@@ -48,6 +55,41 @@ export async function getSapCredentialStatus(adminUserId: number): Promise<SapCr
   return { sapUserCode: u?.sap_user_code ?? null, hasPassword: !!u?.sap_password_enc, updatedAt: u?.sap_password_updated_at ?? null };
 }
 
+/**
+ * Can `adminUserId` (role kind `kind`) use SAP user `code`? Returns the error
+ * message, or null. Shared only when this AND every other holder is a Sales account.
+ */
+export async function sapUserCodeClash(code: string, adminUserId: number | null, kind: string | null | undefined): Promise<string | null> {
+  const holders = await query<{ id: number; userid: string | null; kind: string | null }[]>(
+    `SELECT a.id, a.userid, r.kind FROM admin_users a LEFT JOIN admin_roles r ON r.company_id = a.company_id AND r.id = a.role_id
+      WHERE a.company_id = ? AND LOWER(a.sap_user_code) = LOWER(?) AND a.id <> ?`,
+    [getCompanyId(), code.trim(), adminUserId ?? 0]
+  );
+  if (holders.length === 0) return null;
+  if (kind === "sales" && holders.every((h) => h.kind === "sales")) return null;
+  const h = holders.find((x) => kind !== "sales" || x.kind !== "sales") ?? holders[0];
+  return `SAP user ${code.trim()} is already linked to ${h.userid ?? `user ${h.id}`} — only Sales accounts can share one SAP user`;
+}
+
+/**
+ * A Sales account just given a SAP user that other Sales accounts already
+ * have a saved password for: take that saved (encrypted) password over.
+ */
+export async function adoptSharedSapPassword(adminUserId: number): Promise<boolean> {
+  const u = await accountUser(adminUserId);
+  if (!u || u.kind !== "sales" || !u.sap_user_code || u.sap_password_enc) return false;
+  const sib = await queryOne<{ sap_password_enc: string; sap_password_updated_at: string | null }>(
+    `SELECT a.sap_password_enc, a.sap_password_updated_at FROM admin_users a JOIN admin_roles r ON r.company_id = a.company_id AND r.id = a.role_id AND r.kind = 'sales'
+      WHERE a.company_id = ? AND LOWER(a.sap_user_code) = LOWER(?) AND a.id <> ? AND a.sap_password_enc IS NOT NULL
+      ORDER BY a.sap_password_updated_at DESC LIMIT 1`,
+    [getCompanyId(), u.sap_user_code, adminUserId]
+  );
+  if (!sib) return false;
+  await query(`UPDATE admin_users SET sap_password_enc = ?, sap_password_updated_at = ? WHERE company_id = ? AND id = ?`,
+    [sib.sap_password_enc, sib.sap_password_updated_at, getCompanyId(), adminUserId]);
+  return true;
+}
+
 /** Is this staff user an Accountant (role kind "account")? */
 export async function isAccountantUser(adminUserId: number): Promise<boolean> {
   return (await accountUser(adminUserId))?.kind === "account";
@@ -70,11 +112,8 @@ export async function saveSapCredentials(adminUserId: number, sapUserCodeRaw: st
   const u = await accountUser(adminUserId);
   if (!u) throw new SapCredentialError("User not found", 404);
   if (!hasSapAccountKind(u.kind)) throw new SapCredentialError("SAP credentials are only for Admin, Sales and Accountant users", 403);
-  const clash = await queryOne<{ id: number }>(
-    `SELECT id FROM admin_users WHERE company_id = ? AND LOWER(sap_user_code) = LOWER(?) AND id <> ?`,
-    [getCompanyId(), sapUserCode, adminUserId]
-  );
-  if (clash) throw new SapCredentialError(`SAP user ${sapUserCode} is already linked to another portal user`, 409);
+  const clash = await sapUserCodeClash(sapUserCode, adminUserId, u.kind);
+  if (clash) throw new SapCredentialError(clash, 409);
 
   try {
     await loginUserSapSession(adminUserId, sapUserCode, password);
@@ -82,10 +121,24 @@ export async function saveSapCredentials(adminUserId: number, sapUserCodeRaw: st
     if (e instanceof SapLoginError) throw new SapCredentialError(`SAP refused the login for ${sapUserCode}: ${e.message}`, 422, "sap_login_failed");
     throw e;
   }
+  const enc = fernetEncrypt(password);
   await query(
     `UPDATE admin_users SET sap_user_code = ?, sap_password_enc = ?, sap_password_updated_at = NOW() WHERE company_id = ? AND id = ?`,
-    [sapUserCode, fernetEncrypt(password), getCompanyId(), adminUserId]
+    [sapUserCode, enc, getCompanyId(), adminUserId]
   );
+  if (u.kind === "sales") {
+    // The same SAP login for every Sales account sharing this SAP user; their old sessions are dropped.
+    const sibs = await query<{ id: number }[]>(
+      `SELECT a.id FROM admin_users a JOIN admin_roles r ON r.company_id = a.company_id AND r.id = a.role_id AND r.kind = 'sales'
+        WHERE a.company_id = ? AND LOWER(a.sap_user_code) = LOWER(?) AND a.id <> ?`,
+      [getCompanyId(), sapUserCode, adminUserId]
+    );
+    if (sibs.length) {
+      await query(`UPDATE admin_users SET sap_password_enc = ?, sap_password_updated_at = NOW() WHERE company_id = ? AND id IN (${sibs.map(() => "?").join(",")})`,
+        [enc, getCompanyId(), ...sibs.map((x) => x.id)]);
+      await Promise.all(sibs.map((x) => logoutUserSapSession(x.id).catch(() => undefined)));
+    }
+  }
   return getSapCredentialStatus(adminUserId);
 }
 

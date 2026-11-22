@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { unreadOrderIds } from "@/lib/staffNotifications";
 import { query } from "@/lib/db/connection";
 import { getCompanyId } from "@/lib/config";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
@@ -88,7 +89,7 @@ export async function GET(request: NextRequest) {
 
   const orders = await query(
     `SELECT o.id, o.order_number, o.customer_name, o.subtotal, o.discount_total, o.grand_total,
-            o.status, o.sap_doc_entry, o.sap_doc_num, o.sap_so_number, o.created_at,
+            o.status, o.sap_doc_entry, o.sap_doc_num, o.sap_so_number, o.created_at, o.ar_status,
             u.email AS customer_email, COALESCE(o.sap_card_code, u.sap_card_code) AS sap_card_code,
             c.card_name AS sap_card_name,
             (SELECT GROUP_CONCAT(DISTINCT COALESCE(cc2.ocr_name, i2.brand_code) ORDER BY 1 SEPARATOR ', ')
@@ -106,6 +107,13 @@ export async function GET(request: NextRequest) {
      LIMIT ? OFFSET ?`,
     [...params, ...brandParam, limit, offset]
   );
+
+  // NEW marker: an unread SO Approval notification (approved / rejected / undone …) for this viewer.
+  const list = orders as { id: number; is_new?: boolean }[];
+  if (guard.session.adminId && list.length) {
+    const fresh = await unreadOrderIds(guard.session.adminId, list.map((o) => o.id)).catch(() => new Set<number>());
+    for (const o of list) o.is_new = fresh.has(o.id);
+  }
 
   return NextResponse.json({ orders, total, page, totalPages: Math.ceil(total / limit) });
 }

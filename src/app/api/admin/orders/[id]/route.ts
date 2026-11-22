@@ -1,4 +1,5 @@
 import { sortOrderLines } from "@/lib/orderLineSort";
+import { markNotificationsRead } from "@/lib/staffNotifications";
 import { NextRequest, NextResponse } from "next/server";
 import { query, queryOne } from "@/lib/db/connection";
 import { getCompanyId } from "@/lib/config";
@@ -59,6 +60,8 @@ export async function GET(
   const vatRates = await getVatRates();
   const lines = sortOrderLines(rawLines).map((l) => ({ ...l, vat_rate: l.vat_group ? vatRates.get(l.vat_group) ?? null : null }));
 
+  // Opened → this order's NEW marker / inbox notifications (approved / rejected …) are read.
+  if (guard.session.adminId) await markNotificationsRead(guard.session.adminId, { orderId }).catch(() => undefined);
   return NextResponse.json({ order, lines });
 }
 

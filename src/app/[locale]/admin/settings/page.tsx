@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
-import { styles, btn, Section } from "../adminUi";
+import { useState, useEffect, useCallback, Fragment } from "react";
+import { styles, btn, Section, Badge } from "../adminUi";
+import { AutoApprovalPanel } from "../AutoApprovalPanel";
 import { VN_TIME_ZONE } from "@/lib/vnTime";
 import {
   validateStockSyncWindows,
@@ -596,6 +597,95 @@ export default function SettingsPage() {
             </>
           )}
         </Section>
+
+        {/* ── Auto SO Approval (each Accountant's own) ───────────────────── */}
+        <Section title="Auto SO Approval — Accountants">
+          <AccountantsAutoApproval />
+        </Section>
+      </div>
+    </div>
+  );
+}
+
+interface AccountantAutoRow {
+  adminUserId: number; userid: string | null; fullName: string | null; isActive: boolean; roleName: string | null;
+  sapUserCode: string | null; hasSapPassword: boolean; enabled: boolean; windows: StockSyncWindow[];
+  lastRunAt: string | null; lastRunStatus: string | null; lastRunSummary: string | null;
+}
+
+/** Every Accountant's Auto SO Approval setting; System Admin can open and change any of them. */
+function AccountantsAutoApproval() {
+  const [rows, setRows] = useState<AccountantAutoRow[] | null>(null);
+  const [openId, setOpenId] = useState<number | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const load = useCallback(async () => {
+    try {
+      const r = await fetch("/api/admin/settings/auto-approval", { cache: "no-store" });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || `Error ${r.status}`);
+      setLoadError(null);
+      setRows(j.accountants ?? []);
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : "Failed to load");
+      setRows((prev) => prev ?? []);
+    }
+  }, []);
+  useEffect(() => { void load(); }, [load]);
+  if (loadError) {
+    return (
+      <div style={{ ...styles.empty, color: "var(--color-error, #DC2626)" }}>
+        Couldn&apos;t load the Accountants&apos; settings: {loadError}{" "}
+        <button type="button" style={btn("secondary", false)} onClick={() => void load()}>Retry</button>
+      </div>
+    );
+  }
+  if (!rows) return <div style={styles.empty}>Loading...</div>;
+  if (rows.length === 0) return <div style={styles.empty}>No Accountant users (role kind Accountant).</div>;
+  return (
+    <div>
+      <p style={{ fontSize: "0.8125rem", color: "var(--text-tertiary, #94A3B8)", marginBottom: "1rem" }}>
+        Each Accountant sets their own on Credit Control → Auto SO Approval: on their time windows the SOs waiting for
+        their approval whose 6 checks all pass are approved as their SAP user; the rest stay for manual review, with the reason logged.
+        You can change anyone&apos;s here — a run still covers only that Accountant&apos;s own queue.
+      </p>
+      <div style={{ overflowX: "auto" }}>
+        <table style={styles.table}>
+          <thead><tr>
+            {["Accountant", "Role", "SAP user", "Auto SO Approval", "Time windows", "Last run", ""].map((h, i) => <th key={i} style={styles.th}>{h}</th>)}
+          </tr></thead>
+          <tbody>
+            {rows.map((r) => (
+              <Fragment key={r.adminUserId}>
+                <tr style={{ opacity: r.isActive ? 1 : 0.5 }}>
+                  <td style={styles.td}><strong>{r.userid}</strong>{r.fullName ? ` — ${r.fullName}` : ""}{!r.isActive && " (inactive)"}</td>
+                  <td style={styles.td}>{r.roleName}</td>
+                  <td style={styles.td}>{r.sapUserCode ?? "—"}{r.sapUserCode && !r.hasSapPassword && <span style={{ color: "#B45309" }}> (no password)</span>}</td>
+                  <td style={styles.td}><Badge label={r.enabled ? "On" : "Off"} tone={r.enabled ? "success" : "neutral"} /></td>
+                  <td style={{ ...styles.td, whiteSpace: "normal" }}>
+                    {r.windows.length ? r.windows.map((w) => `${w.start}–${w.end} every ${w.intervalMinutes} min`).join(" · ") : "—"}
+                  </td>
+                  <td style={{ ...styles.td, whiteSpace: "normal", minWidth: 200 }}>
+                    {r.lastRunAt ? new Date(r.lastRunAt).toLocaleString(undefined, { timeZone: VN_TIME_ZONE }) : "never"}
+                    {r.lastRunStatus && <> · {r.lastRunStatus}</>}
+                    {r.lastRunSummary && <div style={{ fontSize: "0.75rem", color: "var(--text-tertiary, #94A3B8)" }}>{r.lastRunSummary}</div>}
+                  </td>
+                  <td style={styles.td}>
+                    <button style={btn("secondary", false)} onClick={() => { if (openId === r.adminUserId) void load(); setOpenId(openId === r.adminUserId ? null : r.adminUserId); }}>
+                      {openId === r.adminUserId ? "Close" : "Manage"}
+                    </button>
+                  </td>
+                </tr>
+                {openId === r.adminUserId && (
+                  <tr>
+                    <td colSpan={7} style={{ ...styles.td, whiteSpace: "normal", background: "var(--bg-secondary, #F8FAFC)", padding: "1rem" }}>
+                      <AutoApprovalPanel apiUrl={`/api/admin/settings/auto-approval/${r.adminUserId}`} who={r.userid ?? `user ${r.adminUserId}`} />
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );

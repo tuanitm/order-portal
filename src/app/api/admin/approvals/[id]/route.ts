@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { getApprovalDetail } from "@/lib/soApproval/service";
+import { markNotificationsRead } from "@/lib/staffNotifications";
 
 /**
  * GET /api/admin/approvals/[id]?recheck=1 — [id] = SAP Sales Order DocEntry. One SO for approval: SAP
@@ -15,6 +16,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
   try {
     const detail = await getApprovalDetail(guard.session, docEntry, request.nextUrl.searchParams.get("recheck") === "1");
     if (!detail) return NextResponse.json({ error: "Sales Order not found" }, { status: 404 });
+    // Opened → its NEW marker / inbox notifications are read.
+    if (guard.session.adminId) await markNotificationsRead(guard.session.adminId, { docEntry }).catch(() => undefined);
     return NextResponse.json(detail);
   } catch (error) {
     console.error("[Approvals] Detail failed:", error);

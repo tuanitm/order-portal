@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { hasSapAccountKind } from "@/lib/sap-b1/userCredentials";
+import { hasSapAccountKind, sapUserCodeClash, adoptSharedSapPassword } from "@/lib/sap-b1/userCredentials";
 import { isSingleEmail } from "@/lib/emailFormat";
 import bcrypt from "bcryptjs";
 import { query, queryOne } from "@/lib/db/connection";
@@ -85,8 +85,9 @@ async function POSTHandler(request: NextRequest) {
   if (kind !== "customer" && !email) return NextResponse.json({ error: "Email is required for staff" }, { status: 400 });
   // Accountant's SAP user: optional here — the Accountant can set it (with its password) in My Profile.
   if (hasSapAccountKind(kind) && typeof body.sapUserCode === "string" && body.sapUserCode.trim()) {
-    const clash = await queryOne<{ id: number }>(`SELECT id FROM admin_users WHERE company_id = ? AND LOWER(sap_user_code) = LOWER(?)`, [getCompanyId(), body.sapUserCode.trim()]);
-    if (clash) return NextResponse.json({ error: `SAP user ${body.sapUserCode.trim()} is already linked to another portal user` }, { status: 409 });
+    // One-to-one, except Sales accounts, which may share a SAP user (sapUserCodeClash).
+    const clash = await sapUserCodeClash(body.sapUserCode.trim(), null, kind);
+    if (clash) return NextResponse.json({ error: clash }, { status: 409 });
   }
   if (kind !== "customer" && !userid && !email) return NextResponse.json({ error: "Enter a User ID or an email" }, { status: 400 });
   if (kind !== "customer" && userid && !USERID_PATTERN.test(userid)) return NextResponse.json({ error: "User ID: 3–50 letters, digits, dot, dash or underscore" }, { status: 400 });
@@ -128,6 +129,8 @@ async function POSTHandler(request: NextRequest) {
        hasSapAccountKind(kind) ? (typeof body.sapUserCode === "string" && body.sapUserCode.trim()) || null : null]
     );
     const staffId = (staffResult as unknown as { insertId: number }).insertId;
+    // A Sales account on a SAP user other Sales accounts share: it uses their saved password.
+    if (kind === "sales") await adoptSharedSapPassword(staffId).catch(() => false);
     await logAuditEvent({
       actorType: "admin", actorId: guard.session.adminId, actorLabel: guard.session.email,
       action: "admin_user_create", entityType: "staff", entityId: staffId,

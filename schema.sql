@@ -552,6 +552,7 @@ CREATE TABLE IF NOT EXISTS orders (
   sap_card_code VARCHAR(50) NULL,
   -- Set when an admin created the order on the customer's behalf (admin_users.id).
   created_by_admin_id INT NULL,
+  sap_pushed_by_admin_id INT NULL,  -- who pushed it to SAP (SO Approval notifications)
   -- Header choices made in the admin "Self create" dialog (NULL for
   -- storefront orders): SAP warehouse, bill-to/ship-to address names
   -- (customer_addresses.address_name -> PayToCode/ShipToCode) and the
@@ -1084,6 +1085,7 @@ CREATE TABLE IF NOT EXISTS sync_schedule_settings (
   so_approval_required BOOLEAN NOT NULL DEFAULT FALSE,
   -- SO Approval lists only Sales Orders with DocDate on/after this (NULL = all).
   so_approval_from_date DATE NULL,
+  notif_last_wdd_code INT NULL,  -- last SAP approval request (OWDD) the notification poller has seen
   last_run_at TIMESTAMP NULL,
   last_run_status ENUM('success', 'partial', 'failed') NULL,
   last_run_summary TEXT NULL,
@@ -1174,16 +1176,101 @@ CREATE TABLE IF NOT EXISTS so_approvals (
   order_id INT NULL,
   sap_doc_entry INT NULL,
   decision ENUM('approved','rejected') NOT NULL,
+  method VARCHAR(10) NOT NULL DEFAULT 'manual', -- manual | bulk | auto | sap (decided in the SAP client, recorded when undone)
   admin_user_id INT NOT NULL,
   admin_label VARCHAR(255) NULL,
   sap_user_code VARCHAR(50) NULL,
   wtm_code INT NULL,    -- SAP approval template (OWTM)
   wst_code INT NULL,    -- SAP approval stage (OWST)
+  wdd_code INT NULL,    -- SAP approval request (OWDD), when the SO has one
   superseded TINYINT(1) NOT NULL DEFAULT 0,
   checks JSON NULL,
   step_notes JSON NULL,
   notes TEXT NULL,
+  -- Undo approval: the decision was taken back (SO back to U_DataStatus I, waiting again)
+  undone_at DATETIME NULL,
+  undone_by INT NULL,
+  undone_by_label VARCHAR(255) NULL,
+  undo_reason VARCHAR(1000) NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   INDEX idx_company_order (company_id, order_id),
   INDEX idx_company_doc_entry (company_id, sap_doc_entry)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Staff notifications (inbox bell, NEW markers): SO waiting for an
+-- approver; approved / rejected / undone for whoever created / pushed it.
+-- read_at NULL = new. (Also: orders.sap_pushed_by_admin_id,
+-- sync_schedule_settings.notif_last_wdd_code — see migrate_staff_notifications.mjs.)
+CREATE TABLE IF NOT EXISTS staff_notifications (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  company_id VARCHAR(50) NOT NULL,
+  admin_user_id INT NOT NULL,
+  kind VARCHAR(30) NOT NULL,   -- so_approval_request | so_approved | so_rejected | so_stage_approved | so_undone
+  title VARCHAR(255) NOT NULL,
+  body TEXT NULL,
+  url VARCHAR(500) NULL,       -- path without locale, e.g. /account/approvals/21775
+  sap_doc_entry INT NULL,
+  order_id INT NULL,
+  actor_label VARCHAR(255) NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  read_at DATETIME NULL,
+  processed_at DATETIME NULL,  -- so_approval_request: the SO no longer waits for this user (bell counts it until then)
+  INDEX idx_recipient (company_id, admin_user_id, read_at, id),
+  INDEX idx_recipient_doc (company_id, admin_user_id, sap_doc_entry),
+  INDEX idx_recipient_order (company_id, admin_user_id, order_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Auto SO Approval: one row per Accountant — on these time windows (Vietnam
+-- time, each with its interval in minutes), approve the SOs waiting for them
+-- whose six checks all pass.
+CREATE TABLE IF NOT EXISTS so_auto_approval_settings (
+  company_id VARCHAR(50) NOT NULL,
+  admin_user_id INT NOT NULL,
+  is_enabled TINYINT(1) NOT NULL DEFAULT 0,
+  windows JSON NULL,
+  last_run_at DATETIME NULL,
+  last_run_status VARCHAR(20) NULL,
+  last_run_summary TEXT NULL,
+  updated_by INT NULL,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (company_id, admin_user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE IF NOT EXISTS so_auto_approval_runs (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  company_id VARCHAR(50) NOT NULL,
+  admin_user_id INT NOT NULL,
+  trigger_type VARCHAR(10) NOT NULL,  -- schedule | manual
+  triggered_by INT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'running',
+  checked_count INT NOT NULL DEFAULT 0,
+  approved_count INT NOT NULL DEFAULT 0,
+  skipped_count INT NOT NULL DEFAULT 0,
+  failed_count INT NOT NULL DEFAULT 0,
+  summary TEXT NULL,
+  started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  finished_at DATETIME NULL,
+  INDEX idx_company_user (company_id, admin_user_id, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Per run, per SO: approved / skipped (why) / failed, with the six checks.
+-- An identical repeated "skipped" bumps last_checked_at / check_count.
+CREATE TABLE IF NOT EXISTS so_auto_approval_log (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  company_id VARCHAR(50) NOT NULL,
+  admin_user_id INT NOT NULL,
+  run_id INT NOT NULL,
+  sap_doc_entry INT NOT NULL,
+  doc_no VARCHAR(50) NULL,
+  card_code VARCHAR(50) NULL,
+  card_name VARCHAR(255) NULL,
+  outcome VARCHAR(20) NOT NULL,       -- approved | skipped | failed
+  reason TEXT NULL,
+  checks JSON NULL,
+  approval_outcome VARCHAR(20) NULL,  -- approved | stage_approved
+  check_count INT NOT NULL DEFAULT 1,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  last_checked_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_company_user (company_id, admin_user_id, id),
+  INDEX idx_company_doc (company_id, sap_doc_entry, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

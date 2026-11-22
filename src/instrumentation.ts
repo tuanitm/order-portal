@@ -14,6 +14,14 @@
  * long full sync never delays a stock refresh (and vice versa); concurrent
  * writes to item_warehouse_stock are serialized by syncInventoryStock's own
  * table lock.
+ *
+ * A THIRD poller runs Auto SO Approval: each Accountant who enabled it has
+ * their own time windows + intervals (so_auto_approval_settings, set on
+ * Credit Control → Auto SO Approval or by System Admin on Settings); due
+ * ones run one after another — see pollAutoApprovals. Own `running` flag.
+ *
+ * A FOURTH poller notifies Accountants of SAP approval requests raised in
+ * the SAP client (pollSapApprovalRequests — staff inbox bell).
  */
 export async function register() {
   if (process.env.NEXT_RUNTIME === "edge") return;
@@ -96,6 +104,42 @@ export async function register() {
       console.error("[Scheduler] Stock sync poll failed:", error);
     } finally {
       stockRunning = false;
+    }
+  }, POLL_INTERVAL_MS);
+
+  // SAP approval requests raised in the SAP client → notify their approvers (staff inbox).
+  let notifPollRunning = false;
+  let lastToDoSyncAll = 0;
+  setInterval(async () => {
+    if (notifPollRunning) return;
+    notifPollRunning = true;
+    try {
+      const { pollSapApprovalRequests } = await import("@/lib/staffNotifications");
+      await pollSapApprovalRequests();
+      // Every 5 minutes: each Accountant's "to approve" on the bell = their live Pending queue.
+      if (Date.now() - lastToDoSyncAll >= 5 * 60 * 1000) {
+        lastToDoSyncAll = Date.now();
+        const { syncAllApprovalToDo } = await import("@/lib/soApproval/service");
+        await syncAllApprovalToDo();
+      }
+    } catch (error) {
+      console.error("[Scheduler] SAP approval request notification poll failed:", error);
+    } finally {
+      notifPollRunning = false;
+    }
+  }, POLL_INTERVAL_MS);
+
+  let autoApprovalRunning = false;
+  setInterval(async () => {
+    if (autoApprovalRunning) return;
+    autoApprovalRunning = true;
+    try {
+      const { pollAutoApprovals } = await import("@/lib/soApproval/autoApproval");
+      await pollAutoApprovals();
+    } catch (error) {
+      console.error("[Scheduler] Auto SO Approval poll failed:", error);
+    } finally {
+      autoApprovalRunning = false;
     }
   }, POLL_INTERVAL_MS);
 }

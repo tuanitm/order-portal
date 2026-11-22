@@ -6,7 +6,7 @@ import { SapSessionExpiredError } from "@/lib/sap-b1/userSession";
 
 /**
  * POST /api/admin/approvals/[id]/decision — [id] = SAP Sales Order DocEntry
- * Body: { decision: "approved" | "rejected", notes?, stepNotes?: { [checkKey]: note } }
+ * Body: { decision: "approved" | "rejected", notes?, stepNotes?: { [checkKey]: note }, method?: "bulk" }
  * Approve: every check that isn't "pass" needs a step note; sets the SAP
  * Sales Order's U_DataStatus to C as the Accountant's own SAP user (428
  * sap_login_required when there's no SAP session). Reject: notes required.
@@ -32,7 +32,9 @@ async function POSTHandler(request: NextRequest, { params }: { params: Promise<{
   try {
     // Every step that isn't a pass needs its own checking note — so a multi-SO approval only goes through
     // for SOs whose six checks all pass; the others are reviewed one by one.
-    const r = await decideApproval(guard.session, docEntry, decision, notes, stepNotes);
+    // "bulk" = from the multi-SO bar (recorded as such); "auto" is only for Auto SO Approval itself.
+    const method = body.method === "bulk" ? "bulk" : "manual";
+    const r = await decideApproval(guard.session, docEntry, decision, notes, stepNotes, method);
     return NextResponse.json({ success: true, decision, sapUser: r.sapUser, outcome: r.outcome, waitingFor: r.waitingFor, requestNo: r.requestNo, warning: r.warning });
   } catch (error) {
     if (error instanceof SapSessionExpiredError) {

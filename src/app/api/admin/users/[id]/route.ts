@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { hasSapAccountKind } from "@/lib/sap-b1/userCredentials";
+import { hasSapAccountKind, sapUserCodeClash, adoptSharedSapPassword } from "@/lib/sap-b1/userCredentials";
 import { isSingleEmail } from "@/lib/emailFormat";
 import bcrypt from "bcryptjs";
 import { query, queryOne } from "@/lib/db/connection";
@@ -152,8 +152,9 @@ async function PATCHHandler(request: NextRequest, { params }: { params: Promise<
     const cur = await queryOne<{ sap_user_code: string | null }>(`SELECT sap_user_code FROM admin_users WHERE company_id = ? AND id = ?`, [getCompanyId(), userId]);
     if ((cur?.sap_user_code ?? "").toLowerCase() !== code.toLowerCase()) {
       if (code) {
-        const clash = await queryOne<{ id: number }>(`SELECT id FROM admin_users WHERE company_id = ? AND LOWER(sap_user_code) = LOWER(?) AND id <> ?`, [getCompanyId(), code, userId]);
-        if (clash) return NextResponse.json({ error: `SAP user ${code} is already linked to another portal user` }, { status: 409 });
+        // One-to-one, except Sales accounts, which may share a SAP user.
+        const clash = await sapUserCodeClash(code, userId, kind);
+        if (clash) return NextResponse.json({ error: clash }, { status: 409 });
       }
       set("sap_user_code", code || null, "sapUserCode");
       set("sap_password_enc", null, "sapPasswordCleared");
@@ -183,6 +184,8 @@ async function PATCHHandler(request: NextRequest, { params }: { params: Promise<
   if (account === "staff" && (sapLoginChanged || body.isActive === false || (body.roleId !== undefined && Number(body.roleId) !== target.role_id))) {
     await logoutUserSapSession(userId).catch(() => undefined);
   }
+  // A Sales account moved onto a SAP user other Sales accounts share: it uses their saved password.
+  if (account === "staff" && sapLoginChanged && kind === "sales") await adoptSharedSapPassword(userId).catch(() => false);
   await logAuditEvent({
     actorType: "admin", actorId: guard.session.adminId, actorLabel: guard.session.email,
     action: "admin_user_update", entityType: account === "staff" ? "staff" : "user", entityId: userId,

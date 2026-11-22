@@ -52,7 +52,12 @@ interface Detail {
   ar: Ar | null;
   checks: Check[];
   checkedAt: string;
-  history: { decision: string; by: string | null; sapUser: string | null; stage: string | null; superseded: boolean; notes: string | null; stepNotes: Record<string, string> | null; at: string }[];
+  history: {
+    decision: string; method?: string; by: string | null; sapUser: string | null; stage: string | null; superseded: boolean; notes: string | null;
+    stepNotes: Record<string, string> | null; at: string; undone?: { at: string; by: string | null; reason: string | null } | null;
+  }[];
+  undo?: { canUndo: boolean; reason: string | null; approvedBy: string | null; invoices: number[] };
+  reopened?: boolean;
   procedure: Procedure;
   decide: { canDecide: boolean; reason: string | null; stages: { templateName: string; stageName: string }[]; completes: boolean; override: boolean; requestNo: number | null };
   sapSession: { sapUser: string; expiresAt: number } | null;
@@ -315,6 +320,7 @@ export default function ApprovalDetailPage() {
   const [finalNote, setFinalNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [undoReason, setUndoReason] = useState("");
 
   const load = useCallback(async (recheck = false) => {
     setLoading(true);
@@ -379,6 +385,29 @@ export default function ApprovalDetailPage() {
           : "Rejected — the Sales Order stays at I in SAP."
       );
       await load();
+    } catch (e) {
+      setMessage(e instanceof Error ? e.message : "Failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const undo = async () => {
+    if (!undoReason.trim()) { setMessage("Write why you undo the approval."); return; }
+    if (!confirm(`Undo the approval of ${d?.sap?.docNo ?? "this Sales Order"}?
+
+It goes back to U_DataStatus I in SAP (not released) and waits for approval again.`)) return;
+    setBusy(true);
+    setMessage("");
+    try {
+      const res = await fetch(`/api/admin/approvals/${id}/undo`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reason: undoReason }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed");
+      setUndoReason("");
+      setMessage(`↶ Approval undone — U_DataStatus is I again in SAP; waiting for ${(data.waitingFor ?? []).join(", ") || "approval"}.`);
+      await load(true);
     } catch (e) {
       setMessage(e instanceof Error ? e.message : "Failed");
     } finally {
@@ -494,7 +523,27 @@ export default function ApprovalDetailPage() {
             {/* ── Decision ── */}
             <Card title="Decision">
               {decided ? (
-                <div style={{ fontSize: "0.875rem", color: "#047857", fontWeight: 600 }}>This Sales Order is approved (U_DataStatus = C in SAP).</div>
+                <>
+                  <div style={{ fontSize: "0.875rem", color: "#047857", fontWeight: 600 }}>
+                    This Sales Order is approved (U_DataStatus = C in SAP){d.undo?.approvedBy ? ` — by ${d.undo.approvedBy}` : ""}.
+                  </div>
+                  {d.undo && (d.undo.canUndo ? (
+                    <div style={{ marginTop: "0.875rem", paddingTop: "0.875rem", borderTop: "1px dashed var(--color-gray-200, #E2E8F0)" }}>
+                      <div style={label}>Undo approval — reason (required)</div>
+                      <textarea style={{ ...styles.input, width: "100%", minHeight: 60, marginTop: 4, fontFamily: "inherit" }} value={undoReason}
+                        onChange={(e) => setUndoReason(e.target.value)} placeholder="Why the approval was wrong — kept in the approval history" />
+                      <button style={{ ...btn("danger", busy || !undoReason.trim()), marginTop: 8 }} disabled={busy || !undoReason.trim()} onClick={undo}>
+                        {busy ? "Working…" : "↶ Undo approval"}
+                      </button>
+                      <div style={{ fontSize: "0.72rem", color: "var(--text-tertiary)", marginTop: 6 }}>
+                        Sets U_DataStatus back to I in SAP{sapAs ? ` as ${sapAs}` : ""} and puts the SO back in the queue, waiting in the same stage.
+                        Possible until it&apos;s copied to an AR Invoice. Auto SO Approval won&apos;t approve it again.
+                      </div>
+                    </div>
+                  ) : d.undo.reason ? (
+                    <div style={{ marginTop: "0.75rem", fontSize: "0.75rem", color: "var(--text-tertiary)" }}>↶ Undo not available: {d.undo.reason}</div>
+                  ) : null)}
+                </>
               ) : (
                 <>
                   <div style={{ padding: "0.6rem 0.75rem", borderRadius: 8, background: STATUS_META[overall].bg, color: STATUS_META[overall].color, fontSize: "0.8125rem", fontWeight: 700, marginBottom: "0.75rem" }}>
@@ -578,11 +627,20 @@ export default function ApprovalDetailPage() {
                 {d.history.map((h, i) => (
                   <div key={i} style={{ padding: "0.5rem 0", borderBottom: "1px dashed var(--color-gray-200, #E2E8F0)", fontSize: "0.8125rem" }}>
                     <Badge label={h.decision === "approved" ? "Approved" : "Rejected"} tone={h.decision === "approved" ? "success" : "error"} />{" "}
-                    <strong>{h.by}</strong>{h.sapUser ? ` (SAP ${h.sapUser})` : ""} · {h.at?.slice(0, 16).replace("T", " ")}
+                    {h.method === "auto" && <><Badge label="Auto SO Approval" tone="neutral" />{" "}</>}
+                    {h.method === "bulk" && <><Badge label="Multi-SO" tone="neutral" />{" "}</>}
+                    {h.method === "sap" && <><Badge label="In SAP" tone="neutral" />{" "}</>}
+                    {h.undone && <><Badge label="Undone" tone="warning" />{" "}</>}
+                    <strong style={h.undone ? { textDecoration: "line-through" } : undefined}>{h.by}</strong>{h.sapUser ? ` (SAP ${h.sapUser})` : ""} · {h.at?.slice(0, 16).replace("T", " ")}
                     <div style={{ fontSize: "0.72rem", color: "var(--text-tertiary)", marginTop: 2 }}>
                       {h.stage ?? "Super Admin decision (outside SAP stages)"}{h.superseded ? " · previous round" : ""}
                     </div>
                     {h.notes && <div style={{ marginTop: 4 }}>{h.notes}</div>}
+                    {h.undone && (
+                      <div style={{ marginTop: 4, padding: "0.35rem 0.5rem", borderRadius: 6, background: "#FEF3C7", color: "#92400E", fontSize: "0.75rem" }}>
+                        ↶ Undone by <strong>{h.undone.by}</strong> · {String(h.undone.at).slice(0, 16).replace("T", " ")}{h.undone.reason ? ` — ${h.undone.reason}` : ""}
+                      </div>
+                    )}
                     {h.stepNotes && Object.entries(h.stepNotes).map(([k, v]) => (
                       <div key={k} style={{ fontSize: "0.75rem", color: "var(--text-secondary)", marginTop: 2 }}>• {checks.find((c) => c.key === k)?.title ?? k}: {v}</div>
                     ))}

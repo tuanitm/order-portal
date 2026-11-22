@@ -37,8 +37,8 @@
     "passWrd": "ENV:HANA_PASSWORD"
   },
   "masterdata": {
-    "customerGroup": "'GT'",
-    "itemGroup": "'D1','L1'",
+    "customerGroup": "'GT','MT'",
+    "itemGroup": "'D1','L1','A1','A2'",
     "priceList": "'S01. IMV Price List','S02. GT Price List'",
     "wareHouse": "'1001','1003','1002','1010'"
   },

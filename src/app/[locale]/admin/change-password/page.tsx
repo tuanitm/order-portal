@@ -90,8 +90,13 @@ function SapAccountCard({ kind }: { kind: string }) {
         {kind === "account"
           ? "The SAP B1 user you approve Sales Orders as — it decides which orders you see (SAP Approval Stages)."
           : "The SAP B1 user your orders are pushed to SAP as (Confirm & Push): SAP shows it as the Sales Order's creator and the approval originator. Without one, your pushes use the portal's default SAP user (admin02)."}
-        {" "}Enter it once: it&apos;s checked with an SAP login and the password is stored encrypted. If you change your password in SAP, enter the new one here.
+        {kind === "sales" ? null : <>{" "}Enter it once: it&apos;s checked with an SAP login and the password is stored encrypted. If you change your password in SAP, enter the new one here.</>}
       </p>
+      {kind === "sales" && (
+        <div style={{ fontSize: "0.75rem", color: "var(--text-tertiary, #94A3B8)", marginBottom: "0.75rem" }}>
+          🔒 Set by System Admin — Sales accounts can share one SAP user. Ask System Admin if it&apos;s missing or SAP refuses the password.
+        </div>
+      )}
       {saved && (
         <div style={{ fontSize: "0.8125rem", marginBottom: "0.75rem", fontWeight: 600, color: saved.hasPassword ? "#059669" : "#B45309" }}>
           {saved.hasPassword
@@ -99,7 +104,7 @@ function SapAccountCard({ kind }: { kind: string }) {
             : saved.sapUserCode ? `No password saved for ${saved.sapUserCode}` : "Not set up yet"}
         </div>
       )}
-      <form onSubmit={save}>
+      {kind !== "sales" && <form onSubmit={save}>
         {error && <div style={{ color: "#991B1B", fontSize: "0.8125rem", marginBottom: "0.75rem" }}>{error}</div>}
         {ok && <div style={{ color: "#059669", fontSize: "0.8125rem", marginBottom: "0.75rem" }}>{ok}</div>}
         <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
@@ -123,7 +128,7 @@ function SapAccountCard({ kind }: { kind: string }) {
             )}
           </div>
         </div>
-      </form>
+      </form>}
     </div>
   );
 }
@@ -237,7 +242,7 @@ export default function ChangePasswordPage() {
             <h1 style={styles.title}>My Profile</h1>
             <p style={styles.subtitle}>
               {session?.email ? `Signed in as ${session.email}. ` : ""}
-              Manage your own Owner Code and login password below.
+              {session?.kind === "sales" ? "Your SAP account and Owner Code (set by System Admin) and your login password." : "Manage your own Owner Code and login password below."}
             </p>
           </div>
         </div>
@@ -249,9 +254,16 @@ export default function ChangePasswordPage() {
           <p style={{ fontSize: "0.8125rem", color: "var(--text-secondary, #64748B)", marginBottom: "0.75rem" }}>
             Matched against your SAP Employee record&apos;s Code (Human Resources &gt; Employee Master
             Data) when you push an order to SAP — sets that order&apos;s Owner so other SAP users can
-            see it. Several admins may share the same code. Leave blank to use the default
-            integration account&apos;s own Employee.
+            see it. Several admins may share the same code.{session?.kind === "sales" ? "" : " Leave blank to use the default integration account’s own Employee."}
           </p>
+          {session?.kind === "sales" ? (
+            <div style={{ fontSize: "0.875rem" }}>
+              <div style={{ fontWeight: 700 }}>{ownerCodeLoaded ? ownerCode || "— not set —" : "Loading…"}</div>
+              <div style={{ fontSize: "0.75rem", color: "var(--text-tertiary, #94A3B8)", marginTop: 4 }}>
+                🔒 Set by System Admin. Ask System Admin to change it.
+              </div>
+            </div>
+          ) : (
           <form onSubmit={saveOwnerCode}>
             {ownerCodeError && <div style={{ color: "#991B1B", fontSize: "0.8125rem", marginBottom: "0.75rem" }}>{ownerCodeError}</div>}
             {ownerCodeSuccess && <div style={{ color: "#059669", fontSize: "0.8125rem", marginBottom: "0.75rem" }}>✓ Owner Code saved</div>}
@@ -269,6 +281,7 @@ export default function ChangePasswordPage() {
               </button>
             </div>
           </form>
+          )}
         </div>
 
         <div style={{ ...styles.cardPadded, maxWidth: "420px" }}>

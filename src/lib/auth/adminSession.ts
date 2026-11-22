@@ -144,7 +144,15 @@ export async function getAdminSession(request: NextRequest): Promise<AdminSessio
     return null;
   }
   if (!decoded.staff || !decoded.staffId) return null;
+  return loadStaffSession(decoded.staffId);
+}
 
+/**
+ * The session of staff member `staffId` (admin_users.id), straight from the
+ * DB — same checks as a signed-in request (active, not a customer). Used by
+ * getAdminSession and by server jobs acting for a user (Auto SO Approval).
+ */
+export async function loadStaffSession(staffId: number): Promise<AdminSession | null> {
   const row = await queryOne<StaffUserRow>(
     `SELECT a.id, a.userid, a.email, a.full_name, a.is_active, a.must_change_password,
             r.id AS role_id, r.name AS role_name, r.kind, r.permissions,
@@ -152,7 +160,7 @@ export async function getAdminSession(request: NextRequest): Promise<AdminSessio
      FROM admin_users a
      JOIN admin_roles r ON r.id = a.role_id AND r.company_id = a.company_id
      WHERE a.company_id = ? AND a.id = ?`,
-    [getCompanyId(), decoded.staffId]
+    [getCompanyId(), staffId]
   );
   if (!row || !row.is_active || row.kind === "customer") return null;
 

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, createContext, useContext } from "react";
+import { StaffInboxBell, NewBadgeStyles } from "./StaffInbox";
 import { useTranslations, useLocale } from "next-intl";
 import { usePathname } from "next/navigation";
 import type { AdminPermission } from "@/lib/auth/adminSession";
@@ -161,7 +162,11 @@ function MessageNotificationBell({ locale, pathname }: { locale: string; pathnam
   );
 }
 
-interface NavItem { key: AdminPermission | "change-password"; label: string; href: string; icon: string; rootOnly?: boolean; }
+interface NavItem {
+  key: AdminPermission | "change-password" | "auto-approval"; label: string; href: string; icon: string; rootOnly?: boolean;
+  /** Only in /account for Accountants (role kind account), who also need this permission. */
+  accountantOnly?: AdminPermission;
+}
 interface NavGroup { label: string; icon: string; items: NavItem[]; }
 
 function NavGroupSection({
@@ -238,6 +243,7 @@ const NAV_GROUPS: NavGroup[] = [
     label: "Credit Control", icon: "💳",
     items: [
       { key: "so-approval", label: "SO Approval", href: "approvals", icon: "✅" },
+      { key: "auto-approval", label: "Auto SO Approval", href: "auto-approval", icon: "🤖", accountantOnly: "so-approval" },
       { key: "ar-aging", label: "AR Aging", href: "ar-aging", icon: "⏳" },
     ],
   },
@@ -359,6 +365,7 @@ export function StaffShell({ children, area }: { children: React.ReactNode; area
     session.mustChangePassword ? item.key === "change-password"
     : area === "sales" && !SALES_AREA_PAGES.has(item.key) ? false
     : item.key === "change-password" ? true
+    : item.accountantOnly ? area === "account" && session.kind === "account" && session.permissions.includes(item.accountantOnly)
     : (item as { rootOnly?: boolean }).rootOnly ? session.isSuperAdmin
     : session.isSuperAdmin || session.permissions.includes(item.key as AdminPermission);
 
@@ -382,7 +389,10 @@ export function StaffShell({ children, area }: { children: React.ReactNode; area
     <AdminSessionContext.Provider value={session}>
     <StaffBaseContext.Provider value={base}>
       <div style={{ display: "flex", minHeight: "100vh", background: "var(--bg-secondary, #F8FAFC)" }}>
+        <NewBadgeStyles />
         {canSeeOrders && <MessageNotificationBell locale={locale} pathname={pathname} />}
+        {/* SO Approval notifications — every staff role (left of the customer-message bell when it's shown). */}
+        <StaffInboxBell locale={locale} pathname={pathname} right={canSeeOrders ? "4.5rem" : "1.5rem"} />
 
         {/* Sidebar */}
         <aside style={{

@@ -32,8 +32,17 @@ export async function GET(request: NextRequest) {
   return NextResponse.json({ ...(await getSapCredentialStatus(g.adminId)), session: getUserSapSession(g.adminId) });
 }
 
+/** Sales accounts may share one SAP user — only System Admin sets it (Users page); the Salesman sees it read only. */
+async function guardWrite(request: NextRequest) {
+  const session = await getAdminSession(request);
+  if (session?.kind === "sales") {
+    return { response: NextResponse.json({ error: "Only System Admin sets the SAP user and password of Sales accounts (Users page)" }, { status: 403 }) };
+  }
+  return guard(request);
+}
+
 async function PUTHandler(request: NextRequest) {
-  const g = await guard(request);
+  const g = await guardWrite(request);
   if (g.response) return g.response;
   const body = await request.json().catch(() => ({}));
   const sapUserCode = typeof body.sapUserCode === "string" ? body.sapUserCode : "";
@@ -49,7 +58,7 @@ async function PUTHandler(request: NextRequest) {
 }
 
 async function DELETEHandler(request: NextRequest) {
-  const g = await guard(request);
+  const g = await guardWrite(request);
   if (g.response) return g.response;
   await clearSapPassword(g.adminId);
   return NextResponse.json({ success: true });

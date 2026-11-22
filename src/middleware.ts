@@ -11,6 +11,14 @@ const intlMiddleware = createMiddleware(routing);
  */
 const LANG_CODE_SEGMENT = /^[a-z]{2}(?:[-_][a-z0-9]{2,4})?$/i;
 
+/** The origin the browser used: X-Forwarded-Proto/-Host from the proxy, else the Host header, else the request's own. */
+function publicOrigin(request: NextRequest): string {
+  const first = (v: string | null) => v?.split(",")[0]?.trim() || null;
+  const host = first(request.headers.get("x-forwarded-host")) ?? first(request.headers.get("host")) ?? request.nextUrl.host;
+  const proto = first(request.headers.get("x-forwarded-proto")) ?? request.nextUrl.protocol.replace(/:$/, "");
+  return `${proto === "https" ? "https" : "http"}://${host}`;
+}
+
 export default function middleware(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
   const [, first = "", ...rest] = pathname.split("/");
@@ -22,9 +30,9 @@ export default function middleware(request: NextRequest) {
   if (LANG_CODE_SEGMENT.test(first) && !(routing.locales as readonly string[]).includes(first)) {
     const lower = first.toLowerCase();
     const locale = (routing.locales as readonly string[]).includes(lower) ? lower : routing.defaultLocale;
-    const url = request.nextUrl.clone();
-    url.pathname = `/${locale}${rest.length ? `/${rest.join("/")}` : ""}`;
-    url.search = search;
+    // Behind the reverse proxy (Caddy → https://order.imv.com.vn) request.nextUrl carries the server's
+    // own address (0.0.0.0:5005), so the redirect is built on the public host the proxy forwards.
+    const url = new URL(`/${locale}${rest.length ? `/${rest.join("/")}` : ""}${search}`, publicOrigin(request));
     return NextResponse.redirect(url);
   }
 

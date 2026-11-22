@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import { NewBadge, NOTIFICATIONS_EVENT } from "../StaffInbox";
 import { useLocale } from "next-intl";
 import { styles, btn, Badge, LoadingOrEmpty, ORDER_STATUS_LABELS } from "../adminUi";
 import SelfCreateOrderDialog from "./SelfCreateOrderDialog";
@@ -20,6 +21,10 @@ interface Order {
   sap_doc_num: number | null;
   sap_so_number: string | null;
   created_at: string;
+  /** SO Approval state of the pushed SO (null = no approval needed). */
+  ar_status?: "pending" | "approved" | "rejected" | null;
+  /** Unread SO Approval notification for me (approved / rejected / undone …). */
+  is_new?: boolean;
 }
 
 const STATUS_TONE: Record<string, "success" | "warning" | "error" | "neutral"> = {
@@ -80,6 +85,13 @@ export default function AdminOrdersPage() {
       load(status, brand, customer, docNo);
     }, 400);
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+  }, [status, brand, customer, docNo, load]);
+
+  // A notification just arrived (staff inbox) → refresh the NEW markers.
+  useEffect(() => {
+    const onNew = () => load(status, brand, customer, docNo);
+    window.addEventListener(NOTIFICATIONS_EVENT, onNew);
+    return () => window.removeEventListener(NOTIFICATIONS_EVENT, onNew);
   }, [status, brand, customer, docNo, load]);
 
   const hasFilters = brand || customer || docNo;
@@ -180,7 +192,7 @@ export default function AdminOrdersPage() {
                       <td style={{
                         ...styles.td, fontFamily: "monospace", fontWeight: 600,
                         ...(o.status === "cancelled" ? { textDecoration: "line-through", color: "var(--text-tertiary, #94A3B8)" } : {}),
-                      }}>{o.order_number}</td>
+                      }}>{o.order_number}{o.is_new && <NewBadge title="SO Approval update — open the order to see it" />}</td>
                       <td style={styles.td}>{o.sap_card_code || "—"}</td>
                       <td style={styles.td}>{o.sap_card_name || o.customer_name || o.customer_email || "—"}</td>
                       <td style={styles.td}>{formatPrice(o.grand_total)}</td>
@@ -188,7 +200,15 @@ export default function AdminOrdersPage() {
                       <td style={{ ...styles.td, fontFamily: "monospace", fontWeight: 600, color: o.sap_so_number ? undefined : "var(--text-tertiary, #94A3B8)" }}>
                         {o.sap_so_number || "—"}
                       </td>
-                      <td style={styles.td}><Badge label={ORDER_STATUS_LABELS[o.status] || o.status} tone={STATUS_TONE[o.status] || "neutral"} /></td>
+                      <td style={styles.td}>
+                        <Badge label={ORDER_STATUS_LABELS[o.status] || o.status} tone={STATUS_TONE[o.status] || "neutral"} />
+                        {o.ar_status && (
+                          <div style={{ marginTop: 3 }} title="SO Approval (Accountant)">
+                            <Badge label={o.ar_status === "pending" ? "⏳ Waiting approval" : o.ar_status === "approved" ? "✓ SO approved" : "✕ SO rejected"}
+                              tone={o.ar_status === "pending" ? "warning" : o.ar_status === "approved" ? "success" : "error"} />
+                          </div>
+                        )}
+                      </td>
                       <td style={{ ...styles.td, fontSize: "0.75rem", color: "var(--text-tertiary, #94A3B8)" }}>
                         {new Date(o.created_at).toLocaleString(undefined, { timeZone: VN_TIME_ZONE })}
                       </td>

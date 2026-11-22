@@ -33,6 +33,11 @@ async function PATCHHandler(request: NextRequest) {
     return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   }
 
+  // Salesman: the Owner Code is set by System Admin only (Users page) — read only in My Profile.
+  if (session.kind === "sales") {
+    return NextResponse.json({ error: "Only System Admin sets the Owner Code of Sales accounts (Users page)" }, { status: 403 });
+  }
+
   const body = await request.json();
   if (typeof body.ownerCode !== "string") {
     return NextResponse.json({ error: "ownerCode is required" }, { status: 400 });
