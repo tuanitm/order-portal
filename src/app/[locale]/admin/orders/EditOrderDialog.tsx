@@ -245,14 +245,10 @@ export default function EditOrderDialog({
 
         <div style={{ padding: "0.875rem 1.25rem", borderTop: "1px solid var(--color-gray-200, #E2E8F0)", display: "flex", justifyContent: "flex-end", gap: "0.5rem", flexWrap: "wrap" }}>
           <button type="button" onClick={onClose} disabled={saving} style={btn("secondary", saving)}>Close</button>
-          <button type="button" onClick={() => save(false)} disabled={saving || !detail} style={btn(inSap ? "secondary" : "primary", saving || !detail)}>
-            {saving ? "Saving…" : inSap ? "Save only" : "Save"}
+          {/* An order already in SAP is always saved AND patched to SAP in one step. */}
+          <button type="button" onClick={() => save(inSap)} disabled={saving || !detail} style={btn("primary", saving || !detail)}>
+            {saving ? (inSap ? "Updating SAP…" : "Saving…") : inSap ? "Save & Update SAP" : "Save"}
           </button>
-          {inSap && (
-            <button type="button" onClick={() => save(true)} disabled={saving || !detail} style={btn("primary", saving || !detail)}>
-              {saving ? "Saving…" : "Save & Update SAP"}
-            </button>
-          )}
         </div>
       </div>
     </div>
