@@ -24,7 +24,10 @@ from docx.shared import Cm, Pt, RGBColor
 
 DOCS = Path(__file__).resolve().parent
 GUIDES = [
-    ("HUONG_DAN_ADMIN", "Hướng dẫn sử dụng – Người dùng Quản trị"),
+    ("HUONG_DAN_QUAN_TRI_HE_THONG", "Hướng dẫn sử dụng – System Admin"),
+    ("HUONG_DAN_ADMIN", "Hướng dẫn sử dụng – Admin"),
+    ("HUONG_DAN_NHAN_VIEN_KINH_DOANH", "Hướng dẫn sử dụng – Nhân viên kinh doanh"),
+    ("HUONG_DAN_KE_TOAN", "Hướng dẫn sử dụng – Kế toán"),
     ("HUONG_DAN_KHACH_HANG", "Hướng dẫn sử dụng – Khách hàng"),
 ]
 BRAND = "1E9A92"        # headings, links accents

@@ -694,6 +694,8 @@ const checkCache: Map<string, { at: number; checks: CheckResult[] }> = (g.__soAp
 /** Per SO AND per Brands scope — step 6 (AR aging) only covers the viewer's brands. */
 const checkKey = (docEntry: number, brands: Set<string> | null) => `${docEntry}|${brands === null ? "*" : [...brands].sort().join(",")}`;
 const forgetChecks = (docEntry: number) => { for (const k of [...checkCache.keys()]) if (k.startsWith(`${docEntry}|`)) checkCache.delete(k); };
+/** Drop the cached checks of an SO whose content changed (order page → Update SAP). */
+export function forgetApprovalChecks(docEntry: number): void { forgetChecks(docEntry); }
 
 async function requestFor(docEntry: number): Promise<SapApprovalRequest | null> {
   return (await getSoApprovalRequests([docEntry])).get(docEntry) ?? null;

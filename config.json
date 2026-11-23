@@ -25,7 +25,7 @@
   },
   "mysql": {
     "dbIp": "mysql8",
-    "dbPort": 3306,
+    "dbPort": 3386,
     "dbName": "orderdatasource",
     "dpUser": "orderdata",
     "encrypted": true
@@ -40,7 +40,7 @@
     "customerGroup": "'GT','MT'",
     "itemGroup": "'D1','L1','A1','A2'",
     "priceList": "'S01. IMV Price List','S02. GT Price List'",
-    "wareHouse": "'1001','1003','1002','1010'"
+    "wareHouse": "'1001','1003','1002','1010','1013'"
   },
   "webPush": {
     "publicKey": "BLxvlXnBxaUSId_mRFplDyrko83KutQENb5xpBd-SwHqf3aA_KdGXk1Pz2en1gVK6H2Td8HWyphCgegGfznvgZE",

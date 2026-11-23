@@ -1,8 +1,10 @@
-# Hướng dẫn sử dụng – Dành cho Người dùng Quản trị
+# Hướng dẫn sử dụng – Dành cho Admin
 
-**Cổng Đặt Hàng – IMV** · Cập nhật ngày 18/11/2026
+**Cổng Đặt Hàng – IMV** · Cập nhật ngày 22/11/2026
 
-Tài liệu dành cho nhân viên nội bộ (Root / Super Admin, Admin, Sales): đăng nhập, duyệt khách hàng, tạo và xử lý đơn hàng, đẩy đơn lên SAP Business One, xem tồn kho, quản lý dữ liệu đồng bộ từ SAP, phân quyền (Roles, Users) và nhật ký thao tác.
+Tài liệu dành cho nhân viên có Role loại **Admin**: duyệt khách hàng, tạo và xử lý đơn hàng, đẩy đơn lên SAP Business One bằng người dùng SAP của mình, theo dõi quy trình duyệt của Kế toán, xem tồn kho, quản lý dữ liệu đồng bộ từ SAP và nhận thông báo.
+
+Các chức năng chỉ dành cho **System Admin** (Roles, Users, SAP Sync Config, Reset the Id, Audit Logs, cài đặt Auto SO Approval của Kế toán) có trong tài liệu *Hướng dẫn sử dụng – System Admin*. Nhân viên kinh doanh và Kế toán có tài liệu riêng.
 
 Địa chỉ truy cập: **https://order.imv.com.vn** (một trang đăng nhập chung cho mọi người dùng)
 
@@ -13,8 +15,8 @@ Tài liệu dành cho nhân viên nội bộ (Root / Super Admin, Admin, Sales):
 ## Mục lục
 
 1. [Tổng quan hệ thống](#1-tổng-quan-hệ-thống)
-2. [Đăng nhập, loại người dùng và menu](#2-đăng-nhập-loại-người-dùng-và-menu)
-3. [Thiết lập lần đầu và công việc hằng ngày](#3-thiết-lập-lần-đầu-và-công-việc-hằng-ngày)
+2. [Đăng nhập, menu và phạm vi dữ liệu](#2-đăng-nhập-menu-và-phạm-vi-dữ-liệu)
+3. [Công việc hằng ngày](#3-công-việc-hằng-ngày)
 4. [Dashboard và đồng bộ nhanh](#4-dashboard-và-đồng-bộ-nhanh)
 5. [Duyệt khách hàng – Customer Approval](#5-duyệt-khách-hàng--customer-approval)
 6. [Danh sách đơn hàng và tạo đơn thay khách – Self create](#6-danh-sách-đơn-hàng-và-tạo-đơn-thay-khách--self-create)
@@ -22,95 +24,72 @@ Tài liệu dành cho nhân viên nội bộ (Root / Super Admin, Admin, Sales):
 8. [Tồn kho – Inventory](#8-tồn-kho--inventory)
 9. [Dữ liệu gốc – Master Data](#9-dữ-liệu-gốc--master-data)
 10. [Giá, chiết khấu và khuyến mãi](#10-giá-chiết-khấu-và-khuyến-mãi)
-11. [Phân quyền – Roles và Users](#11-phân-quyền--roles-và-users)
-12. [Cài đặt khác – Settings](#12-cài-đặt-khác--settings)
-13. [Nhật ký thao tác – Audit Logs](#13-nhật-ký-thao-tác--audit-logs)
-14. [Sự cố thường gặp](#14-sự-cố-thường-gặp)
-15. [Ghi chú vận hành cho bộ phận IT](#15-ghi-chú-vận-hành-cho-bộ-phận-it)
+11. [Quy trình duyệt SO của Kế toán](#11-quy-trình-duyệt-so-của-kế-toán)
+12. [Thông báo – chuông 🔔 và nhãn NEW](#12-thông-báo--chuông--và-nhãn-new)
+13. [My Profile: tài khoản SAP, Owner Code, mật khẩu](#13-my-profile-tài-khoản-sap-owner-code-mật-khẩu)
+14. [Catalog Visibility](#14-catalog-visibility)
+15. [Sự cố thường gặp](#15-sự-cố-thường-gặp)
 
 ---
 
 ## 1. Tổng quan hệ thống
 
-Cổng Đặt Hàng là nơi khách hàng (đại lý, nhà phân phối) tự đặt hàng, và nơi nhân viên kiểm tra rồi đẩy đơn vào **SAP Business One**. Nhân viên cũng có thể **tạo đơn thay khách hàng**, giúp tiết kiệm giấy phép người dùng SAP.
+Cổng Đặt Hàng là nơi khách hàng (đại lý, nhà phân phối) tự đặt hàng, và nơi nhân viên kiểm tra rồi đẩy đơn vào **SAP Business One**. Nhân viên cũng có thể **tạo đơn thay khách hàng**, giúp tiết kiệm giấy phép người dùng SAP. Kế toán duyệt SO theo quy trình duyệt của SAP ngay trên cổng.
 
 | Bước | Diễn biến |
 |---|---|
 | 1. Tạo đơn | Khách đặt trên cổng, hoặc nhân viên tạo đơn thay khách (**Self create**) |
 | 2. Chờ xác nhận | Đơn lưu trên cổng với trạng thái **Submitted** |
 | 3. Kiểm tra | Nhân viên kiểm tra tồn kho, điều chỉnh số lượng xác nhận, trao đổi với khách |
-| 4. Đẩy lên SAP | **Confirm & Push to SAP** tạo Draft hoặc Sales Order trong SAP |
-| 5. Theo dõi | Số chứng từ, số SO trong SAP và trạng thái đơn |
+| 4. Đẩy lên SAP | **Confirm & Push to SAP** tạo Draft hoặc Sales Order trong SAP, bằng người dùng SAP của người đẩy |
+| 5. Duyệt công nợ | Nếu SO khớp Approval Template của SAP, Kế toán duyệt; SO được phát hành (**U_DataStatus = C**) |
+| 6. Theo dõi | Số chứng từ, số SO trong SAP, trạng thái đơn và trạng thái duyệt; thông báo trên chuông 🔔 |
 
 - **Dữ liệu lấy từ SAP:** khách hàng (kèm địa chỉ và Sales Supervisor), nhóm khách hàng, nhóm hàng, sản phẩm, kho, tồn kho, bảng giá, chiết khấu kỳ, chiết khấu hợp đồng, khuyến mãi, thuế suất GTGT. Dữ liệu được đồng bộ theo lịch hoặc khi bấm nút đồng bộ.
-- **Múi giờ:** mọi ngày giờ trên cổng (thời gian tạo, cập nhật, đồng bộ, nhật ký) đều hiển thị theo **giờ Việt Nam (GMT+7)**, bất kể máy tính của người xem đặt múi giờ nào.
+- **Múi giờ:** mọi ngày giờ trên cổng đều hiển thị theo **giờ Việt Nam (GMT+7)**.
 
 ---
 
-## 2. Đăng nhập, loại người dùng và menu
+## 2. Đăng nhập, menu và phạm vi dữ liệu
 
 ### 2.1. Đăng nhập
 
 1. Mở **https://order.imv.com.vn**, nhập **Tên đăng nhập (User ID)** hoặc **Email** rồi bấm **Tiếp tục**.
-2. Nhập mật khẩu, bấm **Đăng nhập**. Hệ thống **tự nhận biết loại người dùng** và chuyển đến đúng khu vực:
-
-| Loại người dùng | Sau khi đăng nhập |
-|---|---|
-| **Root / Super Admin**, **Admin** | Khu vực quản trị **/admin** |
-| **Sales** | Khu vực bán hàng **/sales** (Orders, Inventory, My Profile) |
-| **Customer** | Cửa hàng của khách **/customer** (xem tài liệu Hướng dẫn cho Khách hàng) |
+2. Nhập mật khẩu, bấm **Đăng nhập**. Tài khoản Admin được chuyển đến khu vực **/admin**.
 
 - Sai tên hoặc mật khẩu: hiện thông báo **"Sai tên hoặc mật khẩu!"**.
 - Phiên đăng nhập của nhân viên có hiệu lực **8 giờ**.
-- **Đổi mật khẩu khi đăng nhập lần đầu:** nếu tài khoản được đặt *Change password at next login*, hệ thống đưa thẳng đến trang đổi mật khẩu; chưa đổi thì không dùng được chức năng nào khác.
-- Đổi mật khẩu của mình bất cứ lúc nào tại **Settings → My Profile**.
-- **Đăng xuất:** bấm **Đăng xuất** (giao diện tiếng Anh: **Sign out**) cạnh tên người dùng ở thanh bên trái; hệ thống quay về trang đăng nhập đầu tiên.
+- **Đổi mật khẩu khi đăng nhập lần đầu:** nếu tài khoản được đặt *Change password at next login*, hệ thống đưa thẳng đến trang đổi mật khẩu.
+- **Đăng xuất:** bấm **Đăng xuất / Sign out** cạnh tên người dùng ở thanh bên trái; hệ thống quay về trang đăng nhập đầu tiên.
 
-### 2.2. Quyền theo loại người dùng
+### 2.2. Menu (khu vực /admin)
 
-| Loại | Chức năng (menu) | Dữ liệu được thấy |
-|---|---|---|
-| **Root / Super Admin** | Tất cả, kể cả các mục chỉ dành cho Root | Toàn bộ |
-| **Admin** | Các chức năng được tích trong Role | Chỉ trong **phạm vi dữ liệu** của Role: Brands, Channels, Customer Groups, Product Groups, Warehouses (mục 11.1) |
-| **Sales** | Orders, Inventory (theo Role), My Profile | Như Admin |
-| **Customer** | Chỉ cửa hàng | Khách hàng SAP của chính mình |
-
-### 2.3. Bản đồ menu (khu vực /admin)
+Bạn chỉ thấy các mục được tích trong Role của mình.
 
 | Nhóm menu | Mục | Dùng để |
 |---|---|---|
 | Dashboard | Dashboard | Số liệu tổng quan, đồng bộ nhanh |
 | Customer Approval | Customer Approval | Duyệt, từ chối, tạo khách hàng trong SAP |
 | Orders | Orders | Tạo, xử lý, đẩy đơn lên SAP |
+| Credit Control | SO Approval, AR Aging | Chỉ khi Role được cấp: xem trạng thái duyệt SO, tuổi nợ khách hàng |
 | Inventory | Inventory | Tồn kho trực tiếp từ SAP, kèm % hạn sử dụng còn lại |
 | Master Data | Customer Groups, SAP Customers, Item Groups, Items, Warehouses | Dữ liệu gốc đồng bộ từ SAP |
 | Price & Discount | Price Lists, Contract Discount, Promotion Discount | Bảng giá, chiết khấu, khuyến mãi |
-| Settings | My Profile, Catalog Visibility | Đổi mật khẩu; ẩn/hiện hàng và kho cho khách hàng |
-| Settings (chỉ Root) | SAP Sync Config, Reset the Id, **Roles**, **Users**, Audit Logs | Lịch đồng bộ, cách đẩy đơn, bảo trì, phân quyền, nhật ký |
+| Settings | My Profile, Catalog Visibility | Tài khoản SAP, Owner Code, đổi mật khẩu; ẩn/hiện hàng và kho cho khách |
 
-> **Biểu tượng chuông** ở góc phải trên cùng báo tin nhắn mới của khách trong các đơn hàng. Bấm vào để mở thẳng đơn đó. Thanh bên trái hiện tên đăng nhập và tên Role của bạn.
+> Góc phải trên cùng có hai biểu tượng: **chuông 🔔** (thông báo duyệt SO – mục 12) và **biểu tượng tin nhắn** (tin nhắn mới của khách trong các đơn hàng). Thanh bên trái hiện tên đăng nhập và tên Role của bạn.
+
+### 2.3. Phạm vi dữ liệu
+
+Bạn chỉ thấy dữ liệu trong **phạm vi của Role**: **Brands**, **Channels**, **Customer Groups**, **Product Groups**, **Warehouses**. Mục để trống = không thấy dữ liệu nào. Phạm vi do System Admin cấu hình.
 
 ---
 
-## 3. Thiết lập lần đầu và công việc hằng ngày
-
-### 3.1. Thiết lập lần đầu (làm theo thứ tự)
-
-1. **Customer Groups** → **Sync from SAP (HANA)**, bật **Active** cho các nhóm khách cần bán.
-2. **Item Groups** → đồng bộ, bật **Active** cho các nhóm hàng cần bán, bấm **Save Changes**.
-3. **Price Lists** → đồng bộ, đánh dấu đúng một bảng **Base** và các bảng **Channel**.
-4. **SAP Customers** → **Sync from SAP** (lấy cả địa chỉ và Sales Supervisor).
-5. **Items** → **Sync from SAP**.
-6. **Warehouses** → đồng bộ kho và tồn kho, đánh dấu kho **Included**.
-7. **Contract Discount** và **Promotion Discount** → đồng bộ.
-8. **Roles** → tạo vai trò: chức năng và phạm vi dữ liệu (mục 11.1).
-9. **Users** → tạo tài khoản nhân viên và khách hàng, gán Role (mục 11.2).
-10. **SAP Sync Config** → đặt lịch đồng bộ tự động và cách đẩy đơn.
-
-### 3.2. Công việc hằng ngày
+## 3. Công việc hằng ngày
 
 - **Customer Approval:** duyệt khách hàng mới.
 - **Orders:** xử lý đơn **Submitted**, trả lời tin nhắn, đẩy đơn lên SAP; tạo đơn thay khách khi cần.
+- **Theo dõi duyệt:** xem nhãn ⏳ / ✓ / ✕ trên danh sách đơn và thông báo trên chuông 🔔.
 - **Đồng bộ:** khi SAP thay đổi giá, khuyến mãi hoặc sản phẩm, bấm đồng bộ hoặc chờ lịch tự động.
 
 ---
@@ -145,7 +124,7 @@ Khách tự đăng ký trên cổng ở trạng thái **Pending**. Bộ lọc: *
 - **✕ Reject:** nhập lý do (bắt buộc). Khách thấy lý do khi đăng nhập.
 - **↻ Resync SAP:** đọc lại bảng giá và nhóm khách của riêng khách đó sau khi SAP thay đổi.
 
-> Tài khoản khách hàng cũng có thể được tạo trực tiếp ở **Users** (Role loại Customer + mã khách SAP) – xem mục 11.2.
+> Tài khoản khách hàng cũng có thể được tạo trực tiếp ở **Users** (Role loại Customer + mã khách SAP) – xem *Hướng dẫn System Admin*.
 
 ---
 
@@ -157,7 +136,9 @@ Khách tự đăng ký trên cổng ở trạng thái **Pending**. Bộ lọc: *
 - **Các cột:** Brand, Order #, Cust Code, Cust Name, Total, SAP Doc #, SAP SO #, Status, Created (giờ Việt Nam).
 - **Mã đơn** có dạng `SO-{Mã khách}-{yymmdd}-{3 số}`, ví dụ `SO-GTSO0701-261027-771`.
 - **Đơn đã hủy** hiện mã đơn **gạch ngang**, chữ màu xám.
-- Admin / Sales chỉ thấy đơn của khách và thương hiệu thuộc phạm vi dữ liệu trong Role.
+- Admin chỉ thấy đơn của khách và thương hiệu thuộc phạm vi dữ liệu trong Role.
+- **Nhãn duyệt** dưới trạng thái (đơn đã đẩy lên SAP): ⏳ **Waiting approval**, ✓ **SO approved**, ✕ **SO rejected** (mục 11).
+- Nhãn đỏ nhấp nháy **NEW** cạnh mã đơn = có cập nhật duyệt (đã duyệt / từ chối / hoàn tác) bạn chưa xem; mở đơn thì nhãn tắt.
 
 ### 6.2. Tạo đơn thay khách hàng – nút ＋ Self create
 
@@ -211,8 +192,13 @@ Sau khi tạo, hộp thoại hiện liên kết tới đơn mới (trạng thái
 2. Nếu thiếu hàng, sửa **Cfm Qty** (số lượng xác nhận). Quà tặng tự tính lại theo tỷ lệ chương trình (mỗi dòng quà theo tỷ lệ riêng). **Line Total, Discount, Thuế và Total** của đơn được tính lại theo Cfm Qty.
 3. Dòng có Cfm Qty khác Qty cần khách **Đồng ý / Từ chối** trên trang đơn của họ. Dòng khách từ chối không được đẩy lên SAP và tính là 0.
 4. Bấm **Confirm & Push to SAP**. Ngay trước khi đẩy, hệ thống kiểm tra lại tồn kho thực tế và tự giảm Cfm Qty nếu kho không đủ.
-5. Thành công: đơn nhận **SAP Doc #** và đổi trạng thái theo **Post SO Mode** (Draft → **SAP Draft Created**; Sales Order → **Approved**). Nếu lỗi, nội dung lỗi SAP hiện cạnh nút (và được ghi vào Audit Logs).
-6. Cập nhật trạng thái theo tiến độ bằng ô chọn cạnh nhãn trạng thái; mỗi lần đổi được ghi lại kèm thời gian.
+5. **Đẩy bằng người dùng SAP của bạn:** nếu tài khoản của bạn có người dùng SAP (My Profile → SAP account, ví dụ `sa02`), cổng đăng nhập SAP Service Layer bằng người dùng đó để tạo SO – SAP ghi bạn là người tạo (UserSign) và người khởi tạo quy trình duyệt. Chưa có người dùng SAP thì đẩy bằng người dùng mặc định của cổng (**admin02**).
+6. Thành công: đơn nhận **SAP Doc #** và đổi trạng thái theo **Post SO Mode** (Draft → **SAP Draft Created**; Sales Order → **Approved**). Với Sales Order, SO được tạo với **U_DataStatus = I** rồi:
+   - nếu khớp **Approval Template** của SAP → **giữ ở I**, chờ Kế toán duyệt (thông báo *Credit approval required* trên trang đơn; Kế toán nhận thông báo) – xem mục 11;
+   - nếu không → cập nhật **C** ngay.
+
+   Nếu lỗi, nội dung lỗi SAP hiện cạnh nút (và được ghi vào Audit Logs).
+7. Cập nhật trạng thái theo tiến độ bằng ô chọn cạnh nhãn trạng thái; mỗi lần đổi được ghi lại kèm thời gian.
 
 ### 7.3. Dữ liệu gửi lên SAP
 
@@ -222,7 +208,9 @@ Sau khi tạo, hộp thoại hiện liên kết tới đơn mới (trạng thái
 | PayToCode / ShipToCode | Địa chỉ xuất hóa đơn / giao hàng đã chọn trên đơn (khách chọn khi đặt hàng, hoặc nhân viên chọn khi Self create) |
 | U_CusSEL04 | Sales Supervisor (khi có chọn) |
 | U_InvName, U_InvTaxNo, U_InvAddress, U_BPPhone | Thông tin xuất hóa đơn lấy từ đơn: tên khách hàng, MST của khách, địa chỉ xuất hóa đơn (Bill to), số điện thoại liên hệ (nếu đơn thiếu thì lấy từ khách hàng trong SAP) |
-| U_DataStatus | Gửi **I** khi tạo; với Post SO Mode = **Sales Order**, sau khi SO được tạo hệ thống cập nhật thành **C** |
+| U_DataStatus | Gửi **I** khi tạo. Với Post SO Mode = **Sales Order**: không cần duyệt → cập nhật **C** ngay; cần duyệt → giữ **I**, Kế toán duyệt bước cuối thì thành **C** |
+| Người tạo trong SAP (UserSign) | Người dùng SAP của bạn (My Profile), hoặc admin02 |
+| DocumentsOwner, U_OwnerName | Theo **Owner Code** của bạn (My Profile) |
 | Dòng hàng: Dscription, U_INVDesc | Tên hàng trong SAP; U_INVDesc giống Dscription |
 | Dòng quà tặng: U_INVDesc | Tên hàng + *- HÀNG KHUYẾN MÃI KHÔNG THU TIỀN* |
 | Dòng quà tặng: U_CTKM, U_CTKM_NAME | Mã và tên chương trình tặng hàng |
@@ -252,10 +240,11 @@ Sau khi tạo, hộp thoại hiện liên kết tới đơn mới (trạng thái
 
 Tồn kho đọc trực tiếp từ SAP: **OnHand**, **Committed** (đơn bán đang mở + yêu cầu chuyển kho + lệnh sản xuất) và **Available**.
 
-- **Chọn kho:** ô **🏭 All warehouses** cho phép chọn một hoặc nhiều kho; mặc định chọn tất cả kho trong Role của bạn (Root: tất cả kho của công ty). Luôn phải có ít nhất một kho được chọn.
+- **Chọn kho:** ô **🏭 All warehouses** cho phép chọn một hoặc nhiều kho; mặc định chọn tất cả kho trong Role của bạn (System Admin: tất cả kho của công ty). Luôn phải có ít nhất một kho được chọn.
 - **Cột Warehouse:** mỗi mặt hàng hiện một dòng cho mỗi kho; rê chuột để xem tên kho.
 - **Cột Shelf life %** (trước OnHand): % hạn sử dụng còn lại của **lô thấp nhất**. Đỏ dưới 33%, cam dưới 66%, xanh từ 66% trở lên. Số trong ngoặc là số lô; rê chuột để xem từng lô và số lượng. *—* = không có lô ghi ngày.
 - Tìm theo mã hoặc tên hàng; mỗi trang 50 dòng.
+- **Export Excel:** xuất đúng dữ liệu đang xem (mọi dòng theo bộ lọc, kèm chi tiết lô).
 
 > **Tốc độ:** chọn tất cả kho có thể mất khoảng 10 giây. Chọn ít kho hơn để xem nhanh hơn.
 
@@ -290,120 +279,79 @@ Khi khớp chương trình, mục cụ thể hơn được ưu tiên (mã khách
 
 ---
 
-## 11. Phân quyền – Roles và Users
+## 11. Quy trình duyệt SO của Kế toán
 
-### 11.1. Roles (chỉ Root)
+Áp dụng khi Post SO Mode = **Sales Order**. Cổng dùng đúng thiết lập trong SAP: **Approval Templates** (điều kiện, người khởi tạo – originators), **Approval Stages** và người duyệt.
 
-Mỗi người dùng có **đúng một Role**. Role quyết định **chức năng** được dùng và **dữ liệu** được thấy; người dùng kế thừa cả hai từ Role.
+1. Bạn bấm **Confirm & Push to SAP**: SO được tạo với **U_DataStatus = I** bằng người dùng SAP của bạn.
+2. Cổng kiểm tra các Approval Template: điều kiện đúng với SO **và** người dùng SAP của bạn là originator của template.
+   - **Có template áp dụng** (ví dụ đơn GT do sa02 đẩy → **SO01. SO - GT**): SO **giữ ở I**; Kế toán của bước đầu (ví dụ **acc03**) nhận thông báo và duyệt trên cổng.
+   - **Không có template**: SO được cập nhật thành **C** ngay.
+3. Kế toán kiểm tra 6 bước (giá chuẩn, chiết khấu kỳ, chiết khấu hợp đồng, khuyến mãi, tồn kho & hạn sử dụng, công nợ) rồi duyệt hoặc từ chối.
+4. Duyệt bước cuối → SO thành **C** trong SAP; bạn nhận thông báo ✅. Từ chối → SO giữ **I**; bạn nhận thông báo ⛔ kèm lý do.
+5. Kế toán có thể **hoàn tác duyệt** (khi SO chưa có hóa đơn): SO quay về **I**, chờ duyệt lại; bạn nhận thông báo ↶.
 
-| Loại Role (Role type) | Chức năng | Phạm vi dữ liệu |
-|---|---|---|
-| **Super Admin** | Tất cả | Toàn bộ – không cần cấu hình |
-| **Admin** | Tích chọn (Dashboard, Customers, Items, Price Lists, Orders, Inventory…) | **Bắt buộc**: Brands, Channels, Customer Groups, Product Groups; Warehouses tùy chọn |
-| **Sales** | Tích chọn (nên có Orders, Inventory) | Như Admin |
-| **Customer** | Chỉ cửa hàng | **Tùy chọn** (để trống = không giới hạn): Brands, Channels, Product Groups, Warehouses. *Không có Customer Groups* vì mỗi người dùng Customer là một khách SAP |
-
-**Ý nghĩa phạm vi dữ liệu**
-
-| Mục | Admin / Sales | Customer |
-|---|---|---|
-| **Brands** (ví dụ D1, N1) | Chỉ thấy hàng, đơn của các thương hiệu này | Cửa hàng chỉ hiện sản phẩm các thương hiệu này |
-| **Channels** (ví dụ GT) | Khách thuộc kênh này | Chỉ gán được khách SAP thuộc kênh này |
-| **Customer Groups** | Khách thuộc các nhóm (giao với Channels) | — |
-| **Product Groups** | Hàng thuộc các nhóm hàng (gồm nhóm con) | Cửa hàng chỉ hiện hàng thuộc các nhóm này |
-| **Warehouses** | Kho dùng ở Inventory, Self create, kiểm tra tồn, đẩy đơn | Kho tính tồn cho khách (thay cho kho theo nhóm khách ở Catalog Visibility) |
-
-> Với Admin / Sales, mục **để trống = không thấy dữ liệu nào**. Một nhóm bao gồm mọi nhóm con.
-
-**Thao tác:** **＋ New role** tạo mới; **Edit** sửa; **Duplicate** tạo Role mới sao chép đầy đủ chức năng và phạm vi dữ liệu (tên tự đặt "… (copy)", có thể đổi trước khi lưu); **Delete** chỉ được khi Role không còn người dùng.
-
-### 11.2. Users (chỉ Root)
-
-Một danh sách cho **mọi người dùng** (nhân viên và khách hàng). Lọc theo **All / Staff / Super Admin / Admin / Sales / Customers**, tìm theo User ID, tên, email, mã SAP, điện thoại.
-
-| Trường | Ghi chú |
+| Nhãn trên danh sách đơn | Ý nghĩa |
 |---|---|
-| **Role** | Bắt buộc, một Role |
-| **User ID** | Tên đăng nhập, duy nhất; 3–50 ký tự (chữ, số, `.` `_` `-`). Bắt buộc với nhân viên |
-| **Name** | Bắt buộc |
-| **Email** | Không bắt buộc; nếu có thì duy nhất và **cũng dùng để đăng nhập** (và để nhận mã Quên mật khẩu) |
-| **Phone** | Không bắt buộc |
-| **SAP customer code** | **Bắt buộc với Role Customer**: người dùng đặt hàng cho khách SAP này (gõ mã hoặc tên để chọn) |
-| **Department**, **SAP owner code** | Chỉ nhân viên: phòng ban và nhân viên SAP ghi lên đơn khi đẩy |
-| **Password** | Bắt buộc khi tạo (≥ 6 ký tự); khi sửa để trống = giữ nguyên |
-| **Change password at next login** | Bắt người dùng đổi mật khẩu ở lần đăng nhập tới (có thể tích nhanh ngay trên danh sách) |
-| **Active** | **Deactivate / Activate** để khóa / mở tài khoản |
+| ⏳ **Waiting approval** | Đang chờ Kế toán duyệt |
+| ✓ **SO approved** | Đã duyệt, SO đã phát hành (C) |
+| ✕ **SO rejected** | Bị từ chối, SO giữ I |
 
-- **Delete** không được khi người dùng đã có đơn hàng (hãy Deactivate), không xóa được chính mình và Super Admin cuối cùng.
-- Khi gán Role Customer có **Channels**, khách SAP phải thuộc kênh đó; nếu không, hệ thống báo lỗi và không lưu.
+> Nếu đẩy bằng **admin02** (chưa có người dùng SAP riêng) mà admin02 không phải originator của template, SO không vào quy trình duyệt và được đặt C ngay. Hãy nhờ System Admin gán người dùng SAP cho bạn.
 
 ---
 
-## 12. Cài đặt khác – Settings
+## 12. Thông báo – chuông 🔔 và nhãn NEW
 
-### 12.1. Catalog Visibility
+**Chuông thông báo** ở góc phải trên cùng; **số màu đỏ** = số thông báo mới chưa đọc (cũng hiện trên tiêu đề tab trình duyệt, ví dụ "(2) Order Portal").
+
+| Thông báo | Khi nào |
+|---|---|
+| ✅ **SO … approved** | Kế toán duyệt (kể cả Auto SO Approval) – SO đã phát hành C |
+| ⛔ **SO … rejected** | Kế toán từ chối, kèm lý do |
+| ➡️ **SO …: stage approved** | Một bước đã duyệt, chờ bước tiếp theo |
+| ↶ **SO …: approval undone** | Kế toán hoàn tác duyệt, kèm lý do |
+
+- Bạn nhận thông báo cho SO **bạn tạo**, **bạn đẩy**, hoặc SO được tạo bằng người dùng SAP của bạn.
+- Bấm thông báo để mở đơn; **Mark all read** đánh dấu đã đọc tất cả. Thông báo mới khi đang làm việc hiện một khung nhỏ vài giây.
+- Ở danh sách **Orders**, đơn có cập nhật chưa xem có nhãn đỏ nhấp nháy **NEW**; mở đơn thì nhãn tắt.
+
+---
+
+## 13. My Profile: tài khoản SAP, Owner Code, mật khẩu
+
+Mở **Settings → My Profile**.
+
+- **SAP account (Push to SAP):** nhập **SAP user code** (ví dụ `sa02`) và **SAP password** một lần, bấm **Verify & save**. Cổng đăng nhập thử SAP; thành công thì mật khẩu được lưu **mã hóa**. Từ đó các đơn bạn đẩy được tạo bằng người dùng SAP này. Khi đổi mật khẩu trong SAP, nhập lại mật khẩu mới ở đây (nếu SAP từ chối mật khẩu đã lưu, việc đẩy đơn dừng lại và báo bạn cập nhật). **Remove** xóa mật khẩu đã lưu.
+- **Owner Code:** mã nhân viên SAP (Employee Code) ghi vào Owner của SO để người dùng SAP khác thấy đơn. Nhiều người có thể dùng chung một mã. Để trống = dùng Employee của người dùng mặc định.
+- **Change Password:** đổi mật khẩu đăng nhập cổng.
+
+> Mỗi người dùng SAP chỉ gắn với một tài khoản Admin. System Admin cũng có thể đặt các thông tin này cho bạn ở trang Users.
+
+---
+
+## 14. Catalog Visibility
 
 - **Quy tắc ẩn/hiện:** mặc định khách thấy mọi sản phẩm. Thêm quy tắc (Customer Group + Item Group + **Visible** / **Hidden**) để ẩn một nhóm hàng với một nhóm khách; quy tắc áp dụng xuống mọi nhóm con.
 - **Warehouse Visibility:** gán kho cho từng nhóm khách cấp 2. Khách chỉ thấy tồn kho của các kho này (trừ khi Role Customer của họ có Warehouses riêng).
 
-### 12.2. SAP Sync Config (chỉ Root)
-
-- **Post SO Mode:** **Draft** (mặc định, tạo bản nháp, người dùng SAP duyệt thành Sales Order) hoặc **Sales Order** (tạo thẳng Sales Order, đơn chuyển ngay sang Approved).
-- **SAP Sync Schedule:** bật đồng bộ tự động mỗi N giờ, bấm **Save**; **Run now** chạy ngay; **Last run** cho biết kết quả lần gần nhất. Lịch mới có hiệu lực sau khi khởi động lại máy chủ.
-
-### 12.3. Reset the Id (chỉ Root)
-
-Đánh số lại cột **id** của các bảng dữ liệu đồng bộ và bảng nhóm (về 1..N), giữ nguyên liên kết cha–con. Mỗi bảng hiện số dòng, id lớn nhất và % dải id đã dùng. Không chạy được khi có đồng bộ đang chạy trên bảng đó. Mọi lần chạy được ghi vào Audit Logs.
-
-> Sau khi reset **Customer Groups** hoặc **Item Groups**, các admin khác nên tải lại các trang quản trị đang mở có chỉnh sửa nhóm.
-
 ---
 
-## 13. Nhật ký thao tác – Audit Logs
-
-Chỉ Root xem được. Ghi lại **mọi thao tác** của mọi loại người dùng (Root / Super Admin, Admin, Sales, Customer), cả **thành công và thất bại** (thất bại có hậu tố *Failed*):
-
-| Nhóm | Hành động được ghi |
-|---|---|
-| Đăng nhập | Đăng nhập, sai mật khẩu / không có tài khoản, đăng xuất, đổi mật khẩu, yêu cầu và đặt lại mật khẩu (Quên mật khẩu) |
-| Đơn của khách | Đặt đơn, sửa đơn, đồng ý / từ chối SL xác nhận, nhắn tin, hủy đơn |
-| Đơn – nhân viên | Self create, sửa đơn, sửa Cfm Qty, Confirm & Push to SAP, cập nhật trạng thái từ SAP, nhắn tin, hủy đơn |
-| Khách hàng, người dùng | Duyệt, từ chối, tạo khách trong SAP, Resync; tạo / sửa / xóa Users và Roles |
-| Dữ liệu gốc | Sửa Items, Item Groups, Customer Groups, Price Lists, Warehouses, SAP Customers, Catalog Visibility, lịch đồng bộ |
-| Đồng bộ SAP | Mọi lần đồng bộ bằng tay và **Run now**, kèm kết quả (số bản ghi) hoặc lỗi |
-
-- **Các cột:** Time (giờ Việt Nam), **User** (User ID), **User type**, Action, Entity (đối tượng, ví dụ `order #104`), IP Address, Details (bấm **View**: dữ liệu gửi lên – mật khẩu luôn hiện `***` – và kết quả hoặc lỗi).
-- **Bộ lọc:** loại người dùng, hành động, tìm theo User ID / email / mã đối tượng, khoảng ngày.
-- Không ghi: các thao tác chỉ xem / tìm kiếm, và đồng bộ tự động theo lịch.
-
----
-
-## 14. Sự cố thường gặp
+## 15. Sự cố thường gặp
 
 | Hiện tượng | Nguyên nhân thường gặp | Cách xử lý |
 |---|---|---|
-| Đăng nhập báo "Sai tên hoặc mật khẩu!" | Sai User ID / email / mật khẩu; tài khoản chưa có email nên không đăng nhập bằng email được | Kiểm tra ở **Users**; Root đặt lại mật khẩu (và tích *Change password at next login*) |
-| Admin / Sales không thấy đơn, khách, hàng hoặc kho nào | Role chưa cấu hình đủ Brands / Channels / Customer Groups / Product Groups / Warehouses | Root bổ sung phạm vi dữ liệu ở **Roles** |
-| Khách không thấy sản phẩm | Nhóm hàng tắt Active; sản phẩm tắt Visible; bị Catalog Visibility ẩn; hết hàng ở kho của khách; Role Customer giới hạn Brands / Product Groups | Kiểm tra Item Groups, Items, Catalog Visibility, Warehouses, Roles |
+| Đăng nhập báo "Sai tên hoặc mật khẩu!" | Sai User ID / email / mật khẩu | Nhờ System Admin đặt lại mật khẩu |
+| Không thấy đơn, khách, hàng hoặc kho nào | Role chưa cấu hình đủ phạm vi dữ liệu | Nhờ System Admin bổ sung ở **Roles** |
+| Khách không thấy sản phẩm | Nhóm hàng tắt Active; sản phẩm tắt Visible; bị Catalog Visibility ẩn; hết hàng ở kho của khách | Kiểm tra Item Groups, Items, Catalog Visibility, Warehouses |
 | Khách thấy sai giá hoặc thiếu khuyến mãi | Chưa đồng bộ; khách thiếu BP Code; chương trình chưa tới ngày hoặc đã hết hạn | **↻ Resync SAP** cho khách; đồng bộ Price Lists, Contract / Promotion Discount |
-| Không lưu được người dùng Customer | Thiếu mã khách SAP, mã không có trong SAP Customers, hoặc khách ngoài Channels của Role | Đồng bộ **SAP Customers**; chọn đúng Role |
-| Confirm & Push báo lỗi | Khách thiếu BP Code; còn dòng chờ khách xác nhận; SAP từ chối dữ liệu | Đọc lỗi cạnh nút (hoặc Audit Logs); xử lý dòng Pending; bổ sung BP Code |
+| Confirm & Push báo lỗi | Khách thiếu BP Code; còn dòng chờ khách xác nhận; SAP từ chối dữ liệu | Đọc lỗi cạnh nút; xử lý dòng Pending; bổ sung BP Code |
+| *SAP refused the saved password* khi đẩy đơn | Mật khẩu SAP đã đổi | Nhập mật khẩu mới ở **My Profile → SAP account** |
+| SAP báo *Posting Date … equal to or earlier than system date* | Ngày của máy chủ SAP chậm hơn | Cổng đã tự lấy ngày theo SAP; nếu vẫn lỗi báo IT |
+| SO không vào quy trình duyệt dù cần | Người dùng SAP đẩy đơn không phải originator của Approval Template | Nhờ System Admin / tư vấn SAP kiểm tra template và người dùng SAP của bạn |
 | Thuế hiện "—" | Mặt hàng chưa có VAT Group trong SAP | Bổ sung VAT Group trong SAP, đồng bộ lại Items |
-| Người dùng SAP khác không thấy đơn đã đẩy | Phân quyền Owner trong SAP B1 | Kiểm tra SAP owner code của nhân viên và quyền xem chứng từ trong SAP |
-| Khách không nhận được email | Cấu hình email (SMTP) sai hoặc mật khẩu ứng dụng hết hiệu lực; tài khoản không có email | Báo bộ phận IT kiểm tra cấu hình email |
+| Người dùng SAP khác không thấy đơn đã đẩy | Owner Code / phân quyền Owner trong SAP | Kiểm tra Owner Code ở My Profile và quyền xem chứng từ trong SAP |
 | Ảnh sản phẩm trống | Trường `U_ImageURL` trong SAP chưa có giá trị | Điền `U_ImageURL`, đồng bộ lại Items |
-| Lịch đồng bộ mới không chạy | Máy chủ chưa khởi động lại | Khởi động lại máy chủ, xem **Last run** |
 | Inventory báo lỗi SAP | Mất kết nối SAP / HANA hoặc thiếu quyền | Đọc nội dung lỗi, báo bộ phận IT |
 
 **Liên hệ mở khóa tài khoản khách hàng:** 0908404678.
-
----
-
-## 15. Ghi chú vận hành cho bộ phận IT
-
-- **Cấu hình:** `config.json` (kết nối MySQL, SAP, HANA, email; danh sách `masterdata`: nhóm khách, nhóm hàng, bảng giá, kho của công ty) và `.env` (mật khẩu đã mã hóa). Không chia sẻ các file này ra ngoài.
-- **Chạy bằng Docker:** `docker compose up -d --build` để cập nhật phiên bản. Cổng mặc định 5005; HTTPS qua `docker compose --profile proxy up -d`. Container đặt `TZ=Asia/Ho_Chi_Minh`.
-- **Cơ sở dữ liệu:** các thay đổi cấu trúc nằm trong `schema.sql`; script migration trong thư mục `scripts/` (chạy thử không có `--apply`, áp dụng với `--apply`). Cơ sở dữ liệu dùng chung với Order-Portal2 (công ty ADS) – mọi migration chỉ **thêm** cột/bảng và chỉ đổi dữ liệu của IMV.
-- **Múi giờ:** máy chủ MySQL chạy UTC; ứng dụng tự đặt `+07:00` cho mọi kết nối. Cột thời gian là `TIMESTAMP` nên dữ liệu luôn đúng; công cụ SQL khác muốn xem giờ Việt Nam thì chạy `SET time_zone = '+07:00';`.
-- **Tạo hàng loạt người dùng khách hàng:** từ file Excel (cột company_id, role_id, userid, password, sap_card_code…) bằng script; mã khách phải có trong SAP Customers.
-- **Sau khi đổi mật khẩu email hoặc lịch đồng bộ:** khởi động lại ứng dụng.

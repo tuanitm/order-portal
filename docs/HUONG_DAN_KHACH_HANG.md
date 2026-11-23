@@ -1,6 +1,6 @@
 # Hướng dẫn sử dụng – Dành cho Khách hàng
 
-**Cổng Đặt Hàng – IMV** · Cập nhật ngày 18/11/2026
+**Cổng Đặt Hàng – IMV** · Cập nhật ngày 22/11/2026
 
 Tài liệu này hướng dẫn Quý khách (đại lý, nhà phân phối, cửa hàng) đăng nhập, xem giá và khuyến mãi, đặt hàng và theo dõi đơn hàng trên Cổng Đặt Hàng.
 
@@ -220,6 +220,7 @@ Bấm nút **VI** / **EN** trên thanh trên cùng để chuyển giữa tiếng
 | Giá trên thẻ sản phẩm đã gồm thuế chưa? | Chưa. Thuế GTGT được tính ở bước Đặt hàng; **Tổng thanh toán (gồm thuế)** là số tiền cần trả. |
 | Tôi không thấy một khuyến mãi đang chạy? | Khuyến mãi chỉ hiện khi còn hiệu lực và áp dụng cho Quý khách. Chương trình mới bắt đầu có thể hiện sau vài giờ. Vui lòng liên hệ nhân viên phụ trách nếu cần kiểm tra. |
 | Tôi không thấy một số sản phẩm? | Danh mục hiển thị khác nhau theo khách hàng (thương hiệu, nhóm hàng được bán cho Quý khách), và sản phẩm hết hàng sẽ không hiện. |
+| Sau khi đơn được xác nhận, đơn còn qua bước nào? | Bộ phận kế toán của công ty có thể kiểm tra công nợ và giá trước khi giao hàng. Nếu cần bổ sung (ví dụ thanh toán công nợ quá hạn), nhân viên phụ trách sẽ liên hệ Quý khách hoặc nhắn tin trong đơn hàng. |
 | Muốn đổi hoặc thêm địa chỉ hóa đơn / giao hàng? | Liên hệ nhân viên phụ trách; địa chỉ mới sẽ có trong danh sách chọn sau khi được cập nhật. |
 | Không nhận được email mã xác thực? | Kiểm tra thư mục Spam và địa chỉ email, rồi bấm **Gửi lại mã**. |
 | Muốn sửa hoặc hủy đơn đã gửi? | Khi đơn chưa lên SAP: tự sửa (điện thoại, ghi chú) hoặc hủy trong trang Chi tiết. Khi đã lên SAP: nhắn tin trong đơn hoặc liên hệ nhân viên, kèm mã đơn. |

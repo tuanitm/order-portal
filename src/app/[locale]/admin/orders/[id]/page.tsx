@@ -4,7 +4,8 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams } from "next/navigation";
 import { styles, btn, Badge, BackLink, SyncButton, ORDER_STATUS_LABELS } from "../../adminUi";
 import SelfCreateOrderDialog, { type DuplicateSource } from "../SelfCreateOrderDialog";
-import { useStaffBase } from "../../layout";
+import { useStaffBase, useAdminSession } from "../../layout";
+import EditOrderDialog from "../EditOrderDialog";
 import { VN_TIME_ZONE } from "@/lib/vnTime";
 
 // 'cancelled' is excluded from the dropdown — it's set exclusively via the
@@ -14,6 +15,8 @@ import { VN_TIME_ZONE } from "@/lib/vnTime";
 // displays correctly.
 const STATUSES = ["draft", "submitted", "processing", "sap_draft_created", "approved", "delivered", "rejected", "completed"];
 const TERMINAL_STATUSES = ["cancelled", "completed", "rejected"];
+/** No Edit order / Update SAP (see NON_EDITABLE_STATUSES in lib/orderSapUpdate.ts). */
+const EDIT_LOCKED_STATUSES = ["cancelled", "completed", "rejected", "delivered"];
 const STATUS_TONE: Record<string, "success" | "warning" | "error" | "neutral"> = {
   draft: "neutral", submitted: "warning", processing: "warning",
   sap_draft_created: "warning", approved: "success", delivered: "success",
@@ -31,6 +34,9 @@ interface OrderDetail {
   created_by_admin_id: number | null; created_by_admin_email: string | null;
   bill_to_code: string | null; billing_address: string | null; ship_to_code: string | null;
   supervisor_code: string | null; supervisor_name: string | null;
+  /** Edit order / Update SAP: set while portal edits are not yet in SAP. */
+  sap_outdated_at: string | null; sap_updated_at: string | null; sap_updated_by_email: string | null;
+  edited_at: string | null; edited_by_email: string | null;
 }
 interface OrderLine {
   id: number; sap_item_code: string; item_name: string; quantity: number; uom: string;
@@ -295,6 +301,8 @@ export default function AdminOrderDetailPage() {
   const [isSaving, setIsSaving] = useState(false);
   const [duplicateFrom, setDuplicateFrom] = useState<DuplicateSource | null>(null);
   const staffBase = useStaffBase();
+  const me = useAdminSession();
+  const [editOpen, setEditOpen] = useState(false);
 
   // Warehouse stock check — "Warehouse Visibility" dropdown (the warehouses
   // THIS order's customer can see) plus a live (uncached) per-item Avail
@@ -474,6 +482,38 @@ export default function AdminOrderDetailPage() {
     return <div style={styles.page}><div style={styles.container}>Loading...</div></div>;
   }
 
+  // Edit order / Update SAP: Admin, Accountant and System Admin, while the order is still open.
+  const canEdit = !!me && me.kind !== "sales" && !EDIT_LOCKED_STATUSES.includes(order.status);
+  const fmtTime = (v: string | null) => (v ? new Date(v).toLocaleString("vi-VN", { timeZone: VN_TIME_ZONE }) : "");
+
+  /** Alerts for the result of a push or an Update SAP (approval, stock caps, rejected lines). */
+  const showSapResult = (data: Record<string, unknown>) => {
+    if (data.dataStatusWarning) alert(String(data.dataStatusWarning));
+    // An approval template applies — the SO stays I until the stage approves.
+    const appr = data.sapApproval as { requestNo: number | null; template: string | null; waitingFor: string[]; portal?: boolean } | null;
+    if (appr) {
+      alert(`Credit approval required${appr.template ? ` (SAP template ${appr.template})` : ""}${appr.requestNo ? ` — SAP request #${appr.requestNo}` : ""}.\n` +
+        `The Sales Order stays U_DataStatus = I until approved in SO Approval by: ${appr.waitingFor.join(", ") || "the stage authorizers"}.`);
+    }
+    // The server re-checks live stock right before sending and caps any line
+    // that no longer has enough — flag it clearly.
+    const adjustments = (data.adjustments as { sapItemCode: string; from: number; to: number }[]) || [];
+    if (adjustments.length > 0) {
+      alert(
+        "Confirm Qty was reduced due to insufficient live stock:\n" +
+        adjustments.map((a) => `${a.sapItemCode}: ${a.from} → ${a.to}`).join("\n")
+      );
+    }
+    // Lines the customer Rejected are never sent to SAP — flag what got left out.
+    const rejectedItems = (data.rejectedItems as string[]) || [];
+    if (rejectedItems.length > 0) {
+      alert("These items were rejected by the customer and were NOT included in SAP:\n" + rejectedItems.join(", "));
+    }
+    if (data.updated) {
+      alert(`SAP ${data.target === "draft" ? "Draft" : "Sales Order"} ${String(data.sapDocNum ?? "")} updated (as SAP user ${String(data.pushedAsSapUser ?? "")}).`);
+    }
+  };
+
 
   // "Duplicate": open the Self create dialog pre-filled with this order —
   // header and items (ordered quantity, chosen promotion / gift programs);
@@ -567,38 +607,25 @@ export default function AdminOrderDetailPage() {
                     label="Confirm & Push to SAP"
                     loadingLabel="Pushing to SAP..."
                     onDone={(data) => {
-                      if (data.dataStatusWarning) alert(String(data.dataStatusWarning));
-                      // SAP opened an approval request (Approval Templates) — the SO stays I until the stage approves.
-                      const appr = data.sapApproval as { requestNo: number | null; template: string | null; waitingFor: string[]; portal?: boolean } | null;
-                      if (appr) {
-                        alert(`Credit approval required${appr.template ? ` (SAP template ${appr.template})` : ""}${appr.requestNo ? ` — SAP request #${appr.requestNo}` : ""}.
-` +
-                          `The Sales Order stays U_DataStatus = I until approved in SO Approval by: ${appr.waitingFor.join(", ") || "the stage authorizers"}.`);
-                      }
-                      // The server re-checks live stock right before pushing
-                      // and caps any line that no longer has enough — flag it
-                      // clearly rather than letting it pass silently in the
-                      // button's own generic JSON response blob.
-                      const adjustments = (data.adjustments as { sapItemCode: string; from: number; to: number }[]) || [];
-                      if (adjustments.length > 0) {
-                        alert(
-                          "Confirm Qty was reduced due to insufficient live stock:\n" +
-                          adjustments.map((a) => `${a.sapItemCode}: ${a.from} → ${a.to}`).join("\n")
-                        );
-                      }
-                      // Lines the customer Rejected are never sent to SAP —
-                      // the rest of the order still goes through, but flag
-                      // what got left out so it isn't a silent surprise.
-                      const rejectedItems = (data.rejectedItems as string[]) || [];
-                      if (rejectedItems.length > 0) {
-                        alert(
-                          "These items were rejected by the customer and were NOT included in the SAP push:\n" +
-                          rejectedItems.join(", ")
-                        );
-                      }
+                      showSapResult(data);
                       load();
                     }}
                     disabled={!selectedWarehouse}
+                  />
+                )}
+                {canEdit && (
+                  <button type="button" onClick={() => setEditOpen(true)} disabled={isSaving} style={btn("secondary", isSaving)}
+                    title="Change warehouse, addresses, supervisor, phone, remark and quantities">
+                    ✎ Edit order
+                  </button>
+                )}
+                {canEdit && isPushedToSap && (
+                  <SyncButton
+                    url={`/api/admin/orders/${params.id}/confirm?mode=update&warehouseCode=${encodeURIComponent(order.warehouse_code || selectedWarehouse)}`}
+                    label={order.sap_outdated_at ? "⟳ Update SAP (changes pending)" : "⟳ Update SAP"}
+                    loadingLabel="Updating SAP..."
+                    onDone={(data) => { showSapResult(data); load(); }}
+                    disabled={!(order.warehouse_code || selectedWarehouse)}
                   />
                 )}
                 {/* Cancel is disabled once the order is a confirmed SAP Sales Order
@@ -635,6 +662,18 @@ export default function AdminOrderDetailPage() {
             <p style={{ fontSize: "0.75rem", color: "#DC2626", marginBottom: "1rem" }}>
               Select a warehouse above before confirming — it's stamped onto the SAP draft order's lines.
             </p>
+          )}
+
+          {order.sap_outdated_at && (
+            <div style={{ fontSize: "0.8125rem", color: "#B45309", background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 8, padding: "0.5rem 0.75rem", marginBottom: "1rem" }}>
+              ⚠ Edited in the portal on {fmtTime(order.sap_outdated_at)}{order.edited_by_email ? ` by ${order.edited_by_email}` : ""} — not yet in SAP. Use <strong>Update SAP</strong> to send the changes.
+            </div>
+          )}
+          {(order.sap_updated_at || order.edited_at) && !order.sap_outdated_at && (
+            <div style={{ fontSize: "0.75rem", color: "var(--text-tertiary, #94A3B8)", marginBottom: "0.75rem" }}>
+              {order.edited_at && <>Last edited {fmtTime(order.edited_at)}{order.edited_by_email ? ` by ${order.edited_by_email}` : ""}. </>}
+              {order.sap_updated_at && <>Last updated in SAP {fmtTime(order.sap_updated_at)}{order.sap_updated_by_email ? ` by ${order.sap_updated_by_email}` : ""}.</>}
+            </div>
           )}
 
           {/* SAP SO# + Update Status — visible once the order has been pushed to SAP.
@@ -778,13 +817,14 @@ export default function AdminOrderDetailPage() {
                     </td>
                     <td style={styles.td}>{formatQty(l.quantity)}</td>
                     <td style={styles.td}>
-                      {l.is_gift_line ? (
+                      {l.is_gift_line || isPushedToSap ? (
+                        // Once the order is in SAP, quantities change through Edit order + Update SAP only.
                         // Free item quantity is derived from its buy line's
                         // confirm_qty x the promo's buy/give ratio (see
                         // recalculateLinkedGiftQty) — never admin-editable
                         // directly, or it could drift from that ratio. The
                         // PATCH route also rejects a direct edit server-side.
-                        <div style={{ fontWeight: 600 }} title="Follows its buy line's quantity automatically">
+                        <div style={{ fontWeight: 600 }} title={l.is_gift_line ? "Follows its buy line's quantity automatically" : "In SAP — change it with Edit order"}>
                           {formatQty(l.confirm_qty)}
                         </div>
                       ) : (
@@ -858,6 +898,19 @@ export default function AdminOrderDetailPage() {
 
         <MessagesThread orderId={order.id} />
       </div>
+
+      {editOpen && (
+        <EditOrderDialog
+          order={order}
+          lines={lines}
+          onClose={() => setEditOpen(false)}
+          onSaved={(sapResult) => {
+            setEditOpen(false);
+            if (sapResult) showSapResult(sapResult);
+            load();
+          }}
+        />
+      )}
 
       {duplicateFrom && (
         <SelfCreateOrderDialog

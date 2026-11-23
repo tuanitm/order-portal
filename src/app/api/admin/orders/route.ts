@@ -89,7 +89,7 @@ export async function GET(request: NextRequest) {
 
   const orders = await query(
     `SELECT o.id, o.order_number, o.customer_name, o.subtotal, o.discount_total, o.grand_total,
-            o.status, o.sap_doc_entry, o.sap_doc_num, o.sap_so_number, o.created_at, o.ar_status,
+            o.status, o.sap_doc_entry, o.sap_doc_num, o.sap_so_number, o.created_at, o.ar_status, o.sap_outdated_at,
             u.email AS customer_email, COALESCE(o.sap_card_code, u.sap_card_code) AS sap_card_code,
             c.card_name AS sap_card_name,
             (SELECT GROUP_CONCAT(DISTINCT COALESCE(cc2.ocr_name, i2.brand_code) ORDER BY 1 SEPARATOR ', ')

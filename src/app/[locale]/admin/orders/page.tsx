@@ -25,6 +25,8 @@ interface Order {
   ar_status?: "pending" | "approved" | "rejected" | null;
   /** Unread SO Approval notification for me (approved / rejected / undone …). */
   is_new?: boolean;
+  /** Edited in the portal, not yet sent with Update SAP. */
+  sap_outdated_at?: string | null;
 }
 
 const STATUS_TONE: Record<string, "success" | "warning" | "error" | "neutral"> = {
@@ -192,7 +194,7 @@ export default function AdminOrdersPage() {
                       <td style={{
                         ...styles.td, fontFamily: "monospace", fontWeight: 600,
                         ...(o.status === "cancelled" ? { textDecoration: "line-through", color: "var(--text-tertiary, #94A3B8)" } : {}),
-                      }}>{o.order_number}{o.is_new && <NewBadge title="SO Approval update — open the order to see it" />}</td>
+                      }}>{o.order_number}{o.is_new && <NewBadge title="SO Approval update — open the order to see it" />}{o.sap_outdated_at && <span title="Edited in the portal — not yet in SAP (Update SAP on the order page)" style={{ marginLeft: 6, fontSize: "0.65rem", fontWeight: 700, color: "#B45309", background: "#FEF3C7", borderRadius: 4, padding: "1px 5px" }}>✎ not in SAP</span>}</td>
                       <td style={styles.td}>{o.sap_card_code || "—"}</td>
                       <td style={styles.td}>{o.sap_card_name || o.customer_name || o.customer_email || "—"}</td>
                       <td style={styles.td}>{formatPrice(o.grand_total)}</td>

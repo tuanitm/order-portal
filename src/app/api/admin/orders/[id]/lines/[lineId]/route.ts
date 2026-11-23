@@ -52,6 +52,12 @@ async function PATCHHandler(
     return NextResponse.json({ error: "Order not found" }, { status: 404 });
   }
 
+  // Once the order is in SAP, quantities change only through Edit order + Update SAP.
+  const pushed = await queryOne<{ sap_doc_entry: number | null }>(`SELECT sap_doc_entry FROM orders WHERE company_id = ? AND id = ?`, [getCompanyId(), orderId]);
+  if (pushed?.sap_doc_entry) {
+    return NextResponse.json({ error: "This order is already in SAP — change quantities with Edit order, then Update SAP" }, { status: 409 });
+  }
+
   const body = await request.json();
   const confirmQty = Number(body.confirmQty);
   if (!Number.isFinite(confirmQty) || confirmQty < 0 || !Number.isInteger(confirmQty)) {

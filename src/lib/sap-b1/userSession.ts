@@ -81,7 +81,7 @@ export async function logoutUserSapSession(adminUserId: number): Promise<void> {
 }
 
 /** One Service Layer call as this staff member's SAP user. */
-export async function userSapRequest<T>(adminUserId: number, method: string, endpoint: string, body?: unknown): Promise<T> {
+export async function userSapRequest<T>(adminUserId: number, method: string, endpoint: string, body?: unknown, extraHeaders?: Record<string, string>): Promise<T> {
   const s = sessions.get(adminUserId);
   if (!s || s.expiresAt <= Date.now()) {
     sessions.delete(adminUserId);
@@ -89,7 +89,7 @@ export async function userSapRequest<T>(adminUserId: number, method: string, end
   }
   const res = await fetch(`${baseUrl()}${endpoint}`, {
     method,
-    headers: { "Content-Type": "application/json", Cookie: `B1SESSION=${s.sessionId}` },
+    headers: { "Content-Type": "application/json", ...extraHeaders, Cookie: `B1SESSION=${s.sessionId}` },
     body: body === undefined ? undefined : JSON.stringify(body),
     dispatcher: insecureDispatcher,
   } as RequestInit);

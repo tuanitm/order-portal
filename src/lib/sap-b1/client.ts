@@ -465,11 +465,13 @@ export class SapB1Client {
   private async request<T>(
     method: string,
     endpoint: string,
-    body?: unknown
+    body?: unknown,
+    extraHeaders?: Record<string, string>
   ): Promise<T> {
     const url = `${this.baseUrl}${endpoint}`;
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
+      ...extraHeaders,
     };
 
     const usedSessionId = this.sessionId;
@@ -1155,6 +1157,17 @@ export class SapB1Client {
   async updateSalesOrderDataStatus(docEntry: number, dataStatus: string): Promise<void> {
     await this.ensureSession();
     await this.request('PATCH', `/Orders(${docEntry})`, { U_DataStatus: dataStatus });
+  }
+
+  /**
+   * Update an existing Sales Order (`/Orders`) or Draft (`/Drafts`) — the
+   * order page's "Update SAP". With `replaceLines`, DocumentLines in the body
+   * REPLACE the document's lines (B1S-ReplaceCollectionsOnPatch): lines left
+   * out are removed, so the body must carry the complete new line set.
+   */
+  async updateDocument(entity: 'Orders' | 'Drafts', docEntry: number, body: unknown, replaceLines = true): Promise<void> {
+    await this.ensureSession();
+    await this.request('PATCH', `/${entity}(${docEntry})`, body, replaceLines ? { 'B1S-ReplaceCollectionsOnPatch': 'true' } : undefined);
   }
 
   /**

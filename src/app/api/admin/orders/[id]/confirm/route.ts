@@ -17,10 +17,14 @@ import { getAdminWarehouseCodes } from "@/lib/adminWarehouses";
 import { audited, logAuditEvent } from "@/lib/auditLog";
 import { recalculateOrderTotals } from "@/lib/orderTotals";
 import { notifyApprovalNeeded, notifySafely } from "@/lib/staffNotifications";
+import { canEditOrders, NON_EDITABLE_STATUSES, resolveSapOrderTarget, committedBySalesOrder, type SapOrderTarget } from "@/lib/orderSapUpdate";
+import { forgetApprovalChecks } from "@/lib/soApproval/service";
 
 interface OrderRow {
   id: number;
   order_number: string;
+  status: string;
+  sap_doc_num: number | null;
   remark: string | null;
   sap_doc_entry: number | null;
   sap_card_code: string | null;
@@ -198,6 +202,15 @@ async function POSTHandler(
     return NextResponse.json({ error: "Invalid order ID" }, { status: 400 });
   }
 
+  // ?mode=update — "Update SAP": the order is already in SAP and was edited in the
+  // portal (Edit order); the same document is rebuilt from the order and PATCHed
+  // onto the existing SAP Sales Order / Draft instead of creating a new one.
+  // Admin, Accountant and System Admin only (see canEditOrders).
+  const isUpdate = new URL(request.url).searchParams.get("mode") === "update";
+  if (isUpdate && !canEditOrders(guard.session)) {
+    return NextResponse.json({ error: "Only Admin, Accountant and System Admin users can update orders in SAP" }, { status: 403 });
+  }
+
   // Who the Sales Order is created / updated as in SAP: an Admin / Sales user
   // with a SAP account saved (My Profile → SAP account) pushes as THEIR OWN
   // SAP user, so SAP's creator (UserSign), last updater (UserSign2) and the
@@ -224,7 +237,7 @@ async function POSTHandler(
     // The order's own customer (orders.sap_card_code, always set for admin-
     // created orders); pricing data from the login if there is one, else from
     // the SAP customer record — an admin-created order may have no login.
-    `SELECT o.id, o.order_number, o.remark, o.sap_doc_entry,
+    `SELECT o.id, o.order_number, o.status, o.sap_doc_num, o.remark, o.sap_doc_entry,
             COALESCE(o.sap_card_code, u.sap_card_code) AS sap_card_code,
             COALESCE(u.sap_price_list_num, c.price_list_num) AS sap_price_list_num,
             COALESCE(u.sap_cus_grp01, c.cus_grp01) AS sap_cus_grp01,
@@ -247,7 +260,18 @@ async function POSTHandler(
   if (!(await isOrderInAdminScope(guard.session, orderId))) {
     return NextResponse.json({ error: "Order not found" }, { status: 404 });
   }
-  if (order.sap_doc_entry) {
+  // Update: the SAP document this order lives in now, checked still changeable.
+  let target: SapOrderTarget | null = null;
+  if (isUpdate) {
+    if (NON_EDITABLE_STATUSES.includes(order.status)) {
+      return NextResponse.json({ error: `A ${order.status} order can't be updated in SAP` }, { status: 409 });
+    }
+    try {
+      target = await resolveSapOrderTarget(order);
+    } catch (e) {
+      return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 409 });
+    }
+  } else if (order.sap_doc_entry) {
     return NextResponse.json(
       { error: `Order already pushed to SAP as DocEntry ${order.sap_doc_entry}` },
       { status: 409 }
@@ -511,6 +535,12 @@ async function POSTHandler(
   try {
     const availability = await getLiveAvailabilityForOrder(orderId, warehouseCode);
     availabilityByItem = new Map(availability.map((a) => [a.sapItemCode, a.availableQty]));
+    // Updating a Sales Order: its own open lines are part of "committed" — add them back.
+    if (target?.kind === "order") {
+      for (const [item, q] of await committedBySalesOrder(target.docEntry, warehouseCode)) {
+        availabilityByItem.set(item, (availabilityByItem.get(item) ?? 0) + q);
+      }
+    }
     requiredShelfLifeByItem = new Map(
       availability.map((a) => [a.sapItemCode, { from: a.requiredShelfLifeFrom, to: a.requiredShelfLifeTo }])
     );
@@ -602,7 +632,7 @@ async function POSTHandler(
   if (pendingLines.length > 0) {
     return NextResponse.json(
       {
-        error: `Cannot push to SAP — ${pendingLines.length} line(s) are pending customer confirmation: ${pendingLines.map((l) => l.sap_item_code).join(", ")}. Ask the customer to Accept/Reject the adjusted quantity on their order page first.`,
+        error: `Cannot push to SAP — ${pendingLines.length} line(s) are pending customer confirmation: ${pendingLines.map((l) => l.sap_item_code).join(", ")}. Ask the customer to Accept/Reject the adjusted quantity on their order page, or set the quantity with Edit order.`,
         pendingItems: pendingLines.map((l) => l.sap_item_code),
         adjustments,
       },
@@ -647,6 +677,8 @@ async function POSTHandler(
     .then((r) => (/^\d{4}-\d{2}-\d{2}$/.test(String(r[0]?.d)) ? String(r[0].d) : null))
     .catch(() => null);
   const vnToday = sapToday && sapToday < portalToday ? sapToday : portalToday;
+  // Lines' U_SODate: the Sales Order's own date — today on a push, the SO's DocDate on an update.
+  const soDate = target?.kind === "order" && target.docDate ? target.docDate : vnToday;
 
   // Header U_ProdBrand: the one brand every pushed line shares, or the
   // fixed "Inventory Brand" fallback if they don't all agree (a line with
@@ -728,7 +760,7 @@ async function POSTHandler(
       // (see createDraftSalesOrder's call below), which SAP generates
       // server-side via SBO_SP_TransactionNotification AFTER this Sales
       // Order is added, so there's nothing for this client to set here.
-      U_SODate: vnToday,
+      U_SODate: soDate,
       U_PM_BaseLine: `${meta.index}-${l.sap_item_code}`,
       // Same as the line's Dscription (the SAP item name).
       ItemDescription: l.sap_item_name,
@@ -784,7 +816,7 @@ async function POSTHandler(
       // (see createDraftSalesOrder's call below), which SAP generates
       // server-side via SBO_SP_TransactionNotification AFTER this Sales
       // Order is added, so there's nothing for this client to set here.
-      U_SODate: vnToday,
+      U_SODate: soDate,
       U_PM_BaseItem: sourceLine.sap_item_code,
       U_PM_BaseLine: `${meta.index}-${sourceLine.sap_item_code}`,
       U_INVDesc: description,
@@ -841,7 +873,7 @@ async function POSTHandler(
       // (see createDraftSalesOrder's call below), which SAP generates
       // server-side via SBO_SP_TransactionNotification AFTER this Sales
       // Order is added, so there's nothing for this client to set here.
-      U_SODate: vnToday,
+      U_SODate: soDate,
       U_PM_BaseItem: buyLine?.sap_item_code,
       U_PM_BaseLine: meta && buyLine ? `${meta.index}-${buyLine.sap_item_code}` : undefined,
       // Dscription stays the item name; the invoice text marks it as a free promotional item.
@@ -910,7 +942,8 @@ async function POSTHandler(
   const fillOwner = isFillOwnerEnabled();
   const [businessPartner, orderOwner] = await Promise.all([
     sap.getBusinessPartner(order.sap_card_code),
-    fillOwner ? sap.resolveOrderOwner(admin?.owner_code || null) : Promise.resolve(null),
+    // An update keeps the SO's Owner as it is.
+    fillOwner && !isUpdate ? sap.resolveOrderOwner(admin?.owner_code || null) : Promise.resolve(null),
   ]);
 
   // Read the Post SO Mode setting — determines whether to push as SAP Draft or
@@ -954,7 +987,8 @@ async function POSTHandler(
     U_CusSEL04: order.supervisor_code || undefined,
     // Real Sales Orders only, never a Draft: created as I (In-Progress), then
     // set to C (Completed) by a separate update once the order exists — see below.
-    ...(postSoMode === "sales_order" ? { U_DataStatus: "I" } : {}),
+    // An update of a Sales Order starts a new approval round the same way (back to I).
+    ...((isUpdate ? target?.kind === "order" && postSoMode === "sales_order" : postSoMode === "sales_order") ? { U_DataStatus: "I" } : {}),
     // DocumentsOwner (SAP B1's "Owner" authorization field) / U_OwnerName —
     // see resolveOrderOwner. Only set when fillOwner is enabled in config;
     // omitted entirely when disabled so all SAP users can see every order.
@@ -970,6 +1004,119 @@ async function POSTHandler(
 
   let sapResult: { DocEntry: number; DocNum: number };
   let pushedAs: string = loadConfig().sapb1.userId;
+
+  if (isUpdate && target) {
+    return finishUpdate(target);
+  }
+
+  /**
+   * "Update SAP": PATCH the rebuilt document onto the existing SAP Sales Order
+   * / Draft — its lines are REPLACED by the new set (B1S-ReplaceCollectionsOnPatch);
+   * customer, dates and Owner stay as they are. A Sales Order then gets a new
+   * approval round, the same rule as a push: earlier decisions are superseded,
+   * the SAP Approval Templates are checked again with the updating SAP user as
+   * the originator — one applies → stays I and waits in SO Approval (approvers
+   * notified); none → C.
+   */
+  async function finishUpdate(t: SapOrderTarget) {
+    const staff = guard.session!;
+    const { CardCode: _card, DocDate: _date, DocDueDate: _due, ...rest } = sapPayload;
+    void _card; void _date; void _due;
+    const body = { ...rest, U_RelDocs: orderNumber };
+    const entity = t.kind === "order" ? "Orders" : "Drafts";
+    const docNum = t.docNum ?? order!.sap_doc_num ?? t.docEntry;
+    try {
+      if (pushAsUser) {
+        const session = await ensureUserSapSession(staff.adminId!);
+        if (!session) throw new SapPasswordInvalidError("No SAP user and password saved — set them in My Profile");
+        pushedAs = session.sapUser;
+        await sapRequestAsUser(staff.adminId!, "PATCH", `/${entity}(${t.docEntry})`, body, { "B1S-ReplaceCollectionsOnPatch": "true" });
+      } else {
+        await sap.updateDocument(entity, t.docEntry, body);
+      }
+    } catch (error) {
+      if (error instanceof SapPasswordInvalidError) {
+        return NextResponse.json({ error: error.message, code: "sap_password_invalid" }, { status: 428 });
+      }
+      console.error(`[Admin] Failed to update SAP ${entity} ${t.docEntry} for order ${orderNumber}:`, error);
+      return NextResponse.json(
+        { error: `Failed to update SAP ${t.kind === "order" ? "Sales Order" : "Draft"} ${docNum}`, message: error instanceof Error ? error.message : String(error) },
+        { status: 502 }
+      );
+    }
+
+    await query(
+      `UPDATE orders SET warehouse_code = ?, sap_outdated_at = NULL, sap_updated_at = NOW(), sap_updated_by_admin_id = ? WHERE company_id = ? AND id = ?`,
+      [warehouseCode, staff.adminId ?? null, companyId, orderId]
+    );
+    for (const [sapItemCode, availQty] of availabilityByItem.entries()) {
+      await query(`UPDATE order_lines SET avail_qty = ? WHERE company_id = ? AND order_id = ? AND sap_item_code = ?`, [availQty, companyId, orderId, sapItemCode]);
+    }
+
+    let dataStatusWarning: string | null = null;
+    let sapApproval: { requestNo: number | null; template: string | null; waitingFor: string[]; portal: boolean } | null = null;
+    if (t.kind === "order" && postSoMode === "sales_order") {
+      // The content changed: earlier approvals no longer count.
+      await query(`UPDATE so_approvals SET superseded = 1 WHERE company_id = ? AND sap_doc_entry = ? AND superseded = 0`, [companyId, t.docEntry]);
+      let needsApproval: { codes: number[]; names: string[]; waitingFor: string[] } | null = null;
+      let matchError: unknown = null;
+      try {
+        const { templates, warnings } = await templatesForPush(t.docEntry, pushedAs);
+        if (warnings.length) console.warn(`[Admin] SO ${docNum} (update) approval-condition warnings:`, warnings);
+        if (templates.length) {
+          needsApproval = {
+            codes: templates.map((x) => x.wtmCode), names: templates.map((x) => x.name),
+            waitingFor: [...new Set(templates.flatMap((x) => [...x.stages].sort((a, b) => a.sortId - b.sortId)[0]?.authorizers.map((a) => a.userCode) ?? []))],
+          };
+        }
+      } catch (err) {
+        matchError = err;
+      }
+      if (matchError) {
+        console.error(`[Admin] SO ${docNum} (update): approval templates could not be checked:`, matchError);
+        await query(`UPDATE orders SET ar_status = NULL, ar_decided_at = NULL, ar_decided_by = NULL, sap_approval_templates = NULL WHERE company_id = ? AND id = ?`, [companyId, orderId]);
+        dataStatusWarning = `Sales Order ${docNum} was updated and set back to U_DataStatus = I, but its SAP approval templates could not be checked, so it was NOT released (C). Check it in SAP. (${matchError instanceof Error ? matchError.message : String(matchError)})`;
+      } else if (needsApproval) {
+        await query(
+          `UPDATE orders SET ar_status = 'pending', ar_decided_at = NULL, ar_decided_by = NULL, sap_approval_templates = ? WHERE company_id = ? AND id = ?`,
+          [JSON.stringify(needsApproval.codes), companyId, orderId]
+        );
+        sapApproval = { requestNo: null, template: needsApproval.names.join(", "), waitingFor: needsApproval.waitingFor, portal: true };
+      } else {
+        try {
+          if (pushAsUser) await sapRequestAsUser(staff.adminId!, "PATCH", `/Orders(${t.docEntry})`, { U_DataStatus: "C" });
+          else await sap.updateSalesOrderDataStatus(t.docEntry, "C");
+          await query(`UPDATE orders SET ar_status = NULL, ar_decided_at = NULL, ar_decided_by = NULL, sap_approval_templates = NULL WHERE company_id = ? AND id = ?`, [companyId, orderId]);
+        } catch (err) {
+          console.error(`[Admin] SO ${docNum} updated but U_DataStatus could not be set to C:`, err);
+          dataStatusWarning = `Sales Order ${docNum} was updated, but U_DataStatus could not be set to C — it is still I. Please update it in SAP. (${err instanceof Error ? err.message : String(err)})`;
+        }
+      }
+      forgetApprovalChecks(t.docEntry);
+      if (sapApproval?.waitingFor.length) {
+        const approval = sapApproval;
+        notifySafely(`update of SO ${docNum}`, () => notifyApprovalNeeded(t.docEntry, approval.waitingFor, {
+          actor: `${staff.userid || staff.email} (SAP ${pushedAs})`,
+          reason: `Updated in the portal${approval.template ? ` — approval template ${approval.template}` : ""}`,
+        }));
+      }
+    }
+
+    await logAuditEvent({
+      actorType: "admin", actorId: staff.adminId, actorLabel: staff.email,
+      action: "order_sap_update", entityType: "order", entityId: orderId,
+      details: { orderNumber, warehouseCode, target: t.kind, sapDocEntry: t.docEntry, sapDocNum: docNum, dataStatusWarning, sapApproval, pushedAsSapUser: pushedAs, lines: documentLines.length },
+      request,
+    });
+
+    return NextResponse.json({
+      success: true, updated: true, target: t.kind,
+      sapDocEntry: t.docEntry, sapDocNum: docNum,
+      dataStatusWarning, sapApproval, pushedAsSapUser: pushedAs,
+      adjustments, rejectedItems: rejectedLines.map((l) => l.sap_item_code),
+    });
+  }
+
   try {
     if (pushAsUser) {
       // As the admin's own SAP user (same payloads as SapB1Client.createSalesOrder / createDraftSalesOrder).

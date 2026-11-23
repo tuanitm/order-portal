@@ -553,6 +553,13 @@ CREATE TABLE IF NOT EXISTS orders (
   -- Set when an admin created the order on the customer's behalf (admin_users.id).
   created_by_admin_id INT NULL,
   sap_pushed_by_admin_id INT NULL,  -- who pushed it to SAP (SO Approval notifications)
+  -- Edit order / Update SAP (scripts/migrate_order_sap_update.mjs): sap_outdated_at is set
+  -- when an order already in SAP is edited and cleared by a successful "Update SAP".
+  sap_outdated_at DATETIME NULL,
+  sap_updated_at DATETIME NULL,
+  sap_updated_by_admin_id INT NULL,
+  edited_at DATETIME NULL,
+  edited_by_admin_id INT NULL,
   -- Header choices made in the admin "Self create" dialog (NULL for
   -- storefront orders): SAP warehouse, bill-to/ship-to address names
   -- (customer_addresses.address_name -> PayToCode/ShipToCode) and the

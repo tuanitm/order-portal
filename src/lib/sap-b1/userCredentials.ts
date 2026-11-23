@@ -185,13 +185,13 @@ export async function ensureUserSapSession(adminUserId: number, forceNew = false
  * session, signs in again once and retries. Throws SapPasswordInvalidError
  * (saved password refused) or SapSessionExpiredError (nothing saved).
  */
-export async function sapRequestAsUser<T>(adminUserId: number, method: string, endpoint: string, body?: unknown): Promise<T> {
+export async function sapRequestAsUser<T>(adminUserId: number, method: string, endpoint: string, body?: unknown, extraHeaders?: Record<string, string>): Promise<T> {
   if (!(await ensureUserSapSession(adminUserId))) throw new SapSessionExpiredError("No SAP user and password saved — set them in My Profile");
   try {
-    return await userSapRequest<T>(adminUserId, method, endpoint, body);
+    return await userSapRequest<T>(adminUserId, method, endpoint, body, extraHeaders);
   } catch (e) {
     if (!(e instanceof SapSessionExpiredError)) throw e;
     if (!(await ensureUserSapSession(adminUserId, true))) throw e;
-    return userSapRequest<T>(adminUserId, method, endpoint, body);
+    return userSapRequest<T>(adminUserId, method, endpoint, body, extraHeaders);
   }
 }
