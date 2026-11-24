@@ -13,8 +13,8 @@ import { listApprovalQueue, getApprovalDetail, decideApproval, docsWithUndo, Dec
  * Inventory Stock schedule; outside every window it doesn't run), the
  * portal goes through the SOs waiting for THAT Accountant's decision (their
  * own SO Approval queue: their SAP approval lines / stages and data
- * permissions — never another Accountant's), re-runs the six checks and:
- *   - all six pass        → approves it as the Accountant (method "auto",
+ * permissions — never another Accountant's), re-runs the five checks and:
+ *   - all five pass        → approves it as the Accountant (method "auto",
  *                           their own SAP user — exactly like clicking Approve)
  *   - any step not a pass → leaves it pending, logs which steps and why
  *   - error               → logs it (failed)

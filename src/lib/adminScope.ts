@@ -80,9 +80,44 @@ export async function getAllowedItemGroupCodes(session: AdminSession): Promise<A
   return expandToDescendantCodes(allRows, new Set(allRows.filter((r) => codes.includes(r.code)).map((r) => r.id)));
 }
 
-/** The role's Brands (items.brand_code). null = unrestricted (Super Admin); empty = none. */
+/**
+ * The portal's brands: config.json masterdata.brandList — SAP "Product Brand"
+ * cost centers (OOCR / cost_centers dimension 1). null = not configured (no limit).
+ */
+export function getConfigBrandCodes(): string[] | null {
+  const raw = loadConfig().masterdata.brandList;
+  if (!raw || !raw.trim()) return null;
+  const codes = raw.split(",").map((s) => s.trim().replace(/^'|'$/g, "")).filter(Boolean);
+  return codes.length ? codes : null;
+}
+
+/**
+ * The brands this user works with (items.brand_code / U_ProdBrand / OcrCode):
+ * the role's Brands within config's brandList. System Admin = the whole
+ * brandList (null = unrestricted only when no brandList is configured); empty = none.
+ */
 export function getAllowedBrandCodes(session: AdminSession): AllowedCodes {
-  return session.isSuperAdmin ? null : new Set(session.scope.brands);
+  const portal = getConfigBrandCodes();
+  if (session.isSuperAdmin) return portal ? new Set(portal) : null;
+  return new Set(session.scope.brands.filter((c) => !portal || portal.includes(c)));
+}
+
+/**
+ * Brand choices for filters / pickers: SAP Product Brand cost centers
+ * (dimension 1) in brandList, in brandList order — narrowed to the user's
+ * brands when a session is given. Names from SAP (e.g. D1 → PIGEON).
+ */
+export async function getBrandOptions(session?: AdminSession): Promise<{ code: string; name: string | null }[]> {
+  const rows = await query<{ code: string; name: string | null; active: number }[]>(
+    `SELECT ocr_code AS code, ocr_name AS name, is_active AS active FROM cost_centers WHERE company_id = ? AND dimension = 1 ORDER BY ocr_code`,
+    [getCompanyId()]
+  );
+  const portal = getConfigBrandCodes();
+  const allowed = session ? getAllowedBrandCodes(session) : null;
+  const list = portal
+    ? portal.map((code) => ({ code, name: rows.find((r) => r.code === code)?.name ?? null }))
+    : rows.filter((r) => r.active).map((r) => ({ code: r.code, name: r.name }));
+  return list.filter((b) => !allowed || allowed.has(b.code));
 }
 
 /** SQL for "this items row's brand is allowed" — `col` is the brand_code column (e.g. "i.brand_code"). */
@@ -124,6 +159,20 @@ export function inScope(codes: AllowedCodes, candidateCodes: (string | null | un
  * - Everyone else: orders under their role's Channels / Customer Groups (and descendants).
  * Returns a Set of allowed customer group codes, or an empty Set if no access.
  */
+/** config.json masterdata.customerGroup (e.g. 'GT','MT') and every group under them — the company's channels. */
+export async function getConfigCustomerGroupCodes(): Promise<Set<string>> {
+  const { masterdata } = loadConfig();
+  const configCodes = (masterdata.customerGroup || "").split(",").map((s) => s.trim().replace(/^'|'$/g, "")).filter(Boolean);
+  if (configCodes.length === 0) return new Set();
+  const allRows = await query<GroupRow[]>(`SELECT id, level, code, parent_code FROM customer_groups WHERE company_id = ?`, [getCompanyId()]);
+  return expandToDescendantCodes(allRows, new Set(allRows.filter((r) => configCodes.includes(r.code)).map((r) => r.id)));
+}
+
+/** config.json masterdata.itemGroup (e.g. 'D1','L1','A1','A2') — the company's level-1 product groups (brands). */
+export function getConfigItemGroupCodes(): string[] {
+  return (loadConfig().masterdata.itemGroup || "").split(",").map((s) => s.trim().replace(/^'|'$/g, "")).filter(Boolean);
+}
+
 export async function getOrderAllowedCustomerGroupCodes(session: AdminSession): Promise<Set<string>> {
   const companyId = getCompanyId();
   const allRows = await query<GroupRow[]>(`SELECT id, level, code, parent_code FROM customer_groups WHERE company_id = ?`, [companyId]);

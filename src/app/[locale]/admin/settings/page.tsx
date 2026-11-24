@@ -296,7 +296,7 @@ export default function SettingsPage() {
                   which must be an originator of the templates; Super Admin pushes as the portal&apos;s integration user.
                 </div>
                 <label style={{ display: "flex", alignItems: "center", gap: "0.75rem", marginTop: "0.875rem", flexWrap: "wrap" }}>
-                  <span style={{ fontSize: "0.8125rem", fontWeight: 700, color: "var(--text-primary, #0F172A)" }}>📅 Approve SO from date</span>
+                  <span style={{ fontSize: "0.8125rem", fontWeight: 700, color: "var(--text-primary, #0F172A)" }}>📅 Sync SO AR from</span>
                   <input type="date" value={soApprovalFromDate} onChange={(e) => setSoApprovalFromDate(e.target.value)}
                     style={{ padding: "0.4rem 0.6rem", border: "1px solid var(--color-gray-200, #E2E8F0)", borderRadius: 6, fontSize: "0.8125rem" }} />
                   {soApprovalFromDate && (
@@ -306,7 +306,7 @@ export default function SettingsPage() {
                     </button>
                   )}
                   <span style={{ fontSize: "0.75rem", color: "var(--text-secondary, #64748B)" }}>
-                    SO Approval lists only Sales Orders with DocDate on or after this date{soApprovalFromDate ? "" : " (empty = all)"}. Saved with the settings below.
+                    SAP approval requests for Sales Orders (SO Approval) and AR Invoices (AR Invoice — including ones raised in the SAP client) are synced from SAP only with DocDate on or after this date{soApprovalFromDate ? "" : " (empty = all SOs; for AR Invoices only those still pending)"}. Saved with the settings below.
                   </span>
                 </label>
               </div>
@@ -644,7 +644,7 @@ function AccountantsAutoApproval() {
   return (
     <div>
       <p style={{ fontSize: "0.8125rem", color: "var(--text-tertiary, #94A3B8)", marginBottom: "1rem" }}>
-        Each Accountant sets their own on Credit Control → Auto SO Approval: on their time windows the SOs waiting for
+        Each Accountant sets their own on the Auto SO Approval page: on their time windows the SOs waiting for
         their approval whose 6 checks all pass are approved as their SAP user; the rest stay for manual review, with the reason logged.
         You can change anyone&apos;s here — a run still covers only that Accountant&apos;s own queue.
       </p>

@@ -5,7 +5,7 @@ import { listApprovalQueue, type QueueStatus } from "@/lib/soApproval/service";
 /**
  * GET /api/admin/approvals — SAP Sales Order approval requests for the
  * caller (their SAP user's lines; Super Admin: all), DocDate on/after
- * Settings → "Approve SO from date", within their data permissions.
+ * Settings → "Sync SO AR from", within their data permissions.
  *   ?status=pending|approved|rejected|all  (default pending)
  *   ?brand= &dateFrom=YYYY-MM-DD &dateTo= &soNo= (U_DocNo / DocNum) &bp= (code or name) &creator= (SAP user code)
  * Each row carries the SO header, the request's stage / who it waits for,

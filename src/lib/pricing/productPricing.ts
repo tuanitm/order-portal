@@ -126,6 +126,9 @@ interface ProductRow {
   channel_price: string | null;
   period_disc_pct: string | null;
   contract_disc_pct: string | null;
+  /** End date (YYYY-MM-DD) of the winning period / contract discount row; null = open-ended. */
+  period_disc_valid_to: string | null;
+  contract_disc_valid_to: string | null;
   available_qty: string | null;
   brand_code: string | null;
   brand_name_display: string | null;
@@ -142,6 +145,7 @@ interface PromoOptionRow {
   code: string | null;
   name: string | null;
   pct: number;
+  validTo?: string | null;
   score: number;
 }
 
@@ -153,6 +157,7 @@ interface GiveawayOptionRow {
   giveCode: string;
   giveName: string | null;
   giveQty: number;
+  validTo?: string | null;
   score: number;
 }
 
@@ -318,7 +323,7 @@ export function mapRowToProductWithPricing(row: ProductRow): ProductWithPricing 
 
   const giveawayOptions = withStackedSameItemGifts(row.sap_item_code, giveawayOptionsSorted.map((o) => ({
     code: o.code, name: o.name, buyQty: Number(o.buyQty),
-    giveItemCode: o.giveCode, giveItemName: o.giveName, giveQty: Number(o.giveQty),
+    giveItemCode: o.giveCode, giveItemName: o.giveName, giveQty: Number(o.giveQty), validTo: o.validTo ?? null,
   })));
 
   const promoDiscPct = promoOptionsSorted[0] ? Number(promoOptionsSorted[0].pct) : 0;
@@ -367,6 +372,8 @@ export function mapRowToProductWithPricing(row: ProductRow): ProductWithPricing 
     periodDiscPct,
     contractDiscPct,
     promoDiscPct,
+    periodDiscValidTo: row.period_disc_valid_to ?? null,
+    contractDiscValidTo: row.contract_disc_valid_to ?? null,
     hasPromotion: promoDiscPct > 0,
     promotionTitle: promoOptionsSorted[0] ? promoOptionsSorted[0].name || undefined : undefined,
     promotionCode: promoOptionsSorted[0] ? promoOptionsSorted[0].code || undefined : undefined,
@@ -375,7 +382,7 @@ export function mapRowToProductWithPricing(row: ProductRow): ProductWithPricing 
     // only shows a picker when this has more than one entry; `undefined`ed
     // `code`/`name` (a legacy Excel-import-sourced row with no bp_type/
     // it_type-derived program identity) still shows up so the pct is visible.
-    promotionOptions: promoOptionsSorted.map((o) => ({ code: o.code, name: o.name, pct: Number(o.pct) })),
+    promotionOptions: promoOptionsSorted.map((o) => ({ code: o.code, name: o.name, pct: Number(o.pct), validTo: o.validTo ?? null })),
     hasBuyGivePromo: giveawayOptions.length > 0,
     promoBuyQty: giveawayOptions[0]?.buyQty,
     promoGiveItemCode: giveawayOptions[0]?.giveItemCode || undefined,
@@ -623,6 +630,8 @@ export async function queryPricedProducts(
             cp_base.price AS channel_price,
             period_best.pct AS period_disc_pct,
             cd_best.pct AS contract_disc_pct,
+            period_best.valid_to AS period_disc_valid_to,
+            cd_best.valid_to AS contract_disc_valid_to,
             promo_options.options AS promo_options_json,
             giveaway_options.options AS giveaway_options_json,
             ${availableQtySql} AS available_qty
@@ -634,7 +643,7 @@ export async function queryPricedProducts(
      LEFT JOIN cost_centers cc
        ON cc.company_id = ? AND cc.ocr_code = i.brand_code AND cc.dimension = 1
      LEFT JOIN LATERAL (
-       SELECT pdisc.discount_percent AS pct
+       SELECT pdisc.discount_percent AS pct, DATE_FORMAT(pdisc.date_to, '%Y-%m-%d') AS valid_to
        FROM period_discount pdisc
        WHERE pdisc.company_id = ?
          AND pdisc.price_list_num = ?
@@ -645,7 +654,7 @@ export async function queryPricedProducts(
        LIMIT 1
      ) period_best ON TRUE
      LEFT JOIN LATERAL (
-       SELECT cd.u_base_disc_pct AS pct
+       SELECT cd.u_base_disc_pct AS pct, DATE_FORMAT(cd.u_valid_to, '%Y-%m-%d') AS valid_to
        FROM contract_discount cd
        WHERE cd.company_id = ?
          AND (cd.canceled IS NULL OR cd.canceled != 'Y')
@@ -679,6 +688,7 @@ export async function queryPricedProducts(
        -- today's auto-best default.
        SELECT JSON_ARRAYAGG(JSON_OBJECT(
          'code', pd.promotion_code, 'name', pd.promotion_name, 'pct', pd.disc_pct,
+         'validTo', DATE_FORMAT(pd.end_date, '%Y-%m-%d'),
          'score', (${promoMatch.scoreSql})
        )) AS options
        FROM ${promoMatch.fromSql}
@@ -694,6 +704,7 @@ export async function queryPricedProducts(
        SELECT JSON_ARRAYAGG(JSON_OBJECT(
          'code', pd2.promotion_code, 'name', pd2.promotion_name, 'buyQty', pd2.selling_qty,
          'giveCode', pd2.giving_item_code, 'giveName', pd2.giving_item_name, 'giveQty', pd2.giving_qty,
+         'validTo', DATE_FORMAT(pd2.end_date, '%Y-%m-%d'),
          'score', (${giveMatch.scoreSql})
        )) AS options
        FROM ${giveMatch.fromSql}

@@ -116,6 +116,9 @@ export async function register() {
     try {
       const { pollSapApprovalRequests } = await import("@/lib/staffNotifications");
       await pollSapApprovalRequests();
+      // AR Invoice approval requests raised in the SAP client → AR Invoice list (+ bell), from Settings → "Sync SO AR from".
+      const { importSapArRequests } = await import("@/lib/arInvoice/sapImport");
+      await importSapArRequests({ limit: 30 }).catch((e) => console.error("[Scheduler] SAP AR request import failed:", e));
       // Every 5 minutes: each Accountant's "to approve" on the bell = their live Pending queue.
       if (Date.now() - lastToDoSyncAll >= 5 * 60 * 1000) {
         lastToDoSyncAll = Date.now();

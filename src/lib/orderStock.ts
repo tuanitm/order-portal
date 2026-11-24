@@ -43,7 +43,7 @@ export interface LiveItemAvailability {
   /** Raw SAP figures behind availableQty (OITW OnHand / IsCommited in this warehouse). */
   inStock: number;
   committed: number;
-  /** False when the worst batch's shelf life is outside this customer's required range (availableQty is then 0). */
+  /** False when at least one batch is outside this customer's required range (those batches are left out of availableQty). */
   shelfLifeOk: boolean;
   /** Every batch in this warehouse (qty > 0), earliest expiry first, checked against the required range. */
   batches: BatchShelfLife[];
@@ -62,10 +62,9 @@ export interface BatchShelfLife {
 
 /**
  * LIVE (not the cached item_warehouse_stock table) on-hand/committed stock
- * from SAP for every item on one order, in one warehouse, gated by this
- * customer's applicable customer_require_shelflife rules — same
- * any-matching-rule-must-pass semantics as the storefront's stock gate
- * (src/app/api/products/route.ts). Shared by GET .../stock (the admin
+ * from SAP for every item on one order, in one warehouse, counting only the
+ * batches that meet this customer's applicable customer_require_shelflife
+ * rules (a batch must pass every applicable rule). Shared by GET .../stock (the admin
  * Order Review page's "Avail Qty" column) and POST .../confirm (the final
  * safety cap right before the SAP push — see that route), so both read
  * the exact same number, computed the exact same way.
@@ -154,16 +153,6 @@ export async function getLiveAvailability(
       : [];
     const applicableRules = rules.filter((r) => itemGroupCodes.includes(r.item_group_code));
 
-    let qualifies = true;
-    if (shelfLifePct !== null) {
-      const violatesAnApplicableRule = applicableRules.some(
-        (r) =>
-          (r.shelf_life_from !== null && shelfLifePct < r.shelf_life_from) ||
-          (r.shelf_life_to !== null && shelfLifePct > r.shelf_life_to)
-      );
-      qualifies = !violatesAnApplicableRule;
-    }
-
     const froms = applicableRules.map((r) => r.shelf_life_from).filter((v): v is number => v !== null);
     const tos = applicableRules.map((r) => r.shelf_life_to).filter((v): v is number => v !== null);
     const batches: BatchShelfLife[] = batchRows
@@ -176,12 +165,21 @@ export async function getLiveAvailability(
         return { batchNo: b.batch_no ?? null, qty: Number(b.qty), mnfDate: b.mnf_date, expDate: b.exp_date, shelfLifePct: pct, meetsRequirement: meets };
       });
 
+    // Avail Qty = only stock that meets this customer's required shelf life:
+    // the smaller of (OnHand - Committed) and the qty of the batches inside the
+    // required range. With no applicable rule, or an item without batches, it is
+    // simply OnHand - Committed. Batches without dates count as meeting the rule.
+    const free = Math.max(0, inStock - committed);
+    const qualifyingQty = batches.filter((b) => b.meetsRequirement).reduce((t, b) => t + b.qty, 0);
+    const limitedByShelfLife = applicableRules.length > 0 && batches.length > 0;
+    const availableQty = limitedByShelfLife ? Math.min(free, qualifyingQty) : free;
+
     return {
       sapItemCode,
-      availableQty: qualifies ? inStock - committed : 0,
+      availableQty,
       inStock,
       committed,
-      shelfLifeOk: qualifies,
+      shelfLifeOk: batches.every((b) => b.meetsRequirement),
       batches,
       shelfLifePct,
       requiredShelfLifeFrom: froms.length > 0 ? Math.max(...froms) : null,

@@ -85,10 +85,12 @@ function SapAccountCard({ kind }: { kind: string }) {
   const labelStyle = { display: "block", fontSize: "0.75rem", fontWeight: 600, marginBottom: "0.25rem", color: "var(--text-secondary, #64748B)" } as const;
   return (
     <div style={{ ...styles.cardPadded, maxWidth: "420px", marginBottom: "1.5rem" }}>
-      <h2 style={{ fontSize: "1rem", fontWeight: 700, marginBottom: "0.25rem" }}>SAP account {kind === "account" ? "(SO Approval)" : "(Push to SAP)"}</h2>
+      <h2 style={{ fontSize: "1rem", fontWeight: 700, marginBottom: "0.25rem" }}>SAP account {kind === "account" ? "(SO Approval)" : kind === "super_admin" ? "(AR Invoice)" : "(Push to SAP)"}</h2>
       <p style={{ fontSize: "0.8125rem", color: "var(--text-secondary, #64748B)", marginBottom: "0.75rem" }}>
         {kind === "account"
           ? "The SAP B1 user you approve Sales Orders as — it decides which orders you see (SAP Approval Stages)."
+          : kind === "super_admin"
+          ? "The SAP B1 user your AR Invoices are posted to SAP as (e.g. sa01) — SAP's approval templates (AR01–AR05) apply to it. Sales Order pushes by System Admin still use admin02."
           : "The SAP B1 user your orders are pushed to SAP as (Confirm & Push): SAP shows it as the Sales Order's creator and the approval originator. Without one, your pushes use the portal's default SAP user (admin02)."}
         {kind === "sales" ? null : <>{" "}Enter it once: it&apos;s checked with an SAP login and the password is stored encrypted. If you change your password in SAP, enter the new one here.</>}
       </p>
@@ -247,7 +249,7 @@ export default function ChangePasswordPage() {
           </div>
         </div>
 
-        {session && ["account", "admin", "sales"].includes(session.kind) && <SapAccountCard kind={session.kind} />}
+        {session && ["account", "admin", "sales", "super_admin"].includes(session.kind) && <SapAccountCard kind={session.kind} />}
 
         <div style={{ ...styles.cardPadded, maxWidth: "420px", marginBottom: "1.5rem" }}>
           <h2 style={{ fontSize: "1rem", fontWeight: 700, marginBottom: "0.25rem" }}>Owner Code</h2>

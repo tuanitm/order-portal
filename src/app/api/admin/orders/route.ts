@@ -42,9 +42,14 @@ export async function GET(request: NextRequest) {
     params.push(...list);
   }
 
-  if (status) {
+  // "Adm Confirmed" and "AR Approved" share one status column on screen (orderStatusDisplay):
+  // an order the Accountant approved in SO Approval is listed under AR Approved only.
+  if (status === "ar_approved") {
+    whereClauses.push("o.status IN ('processing','sap_draft_created','approved') AND o.ar_status = 'approved'");
+  } else if (status) {
     whereClauses.push("o.status = ?");
     params.push(status);
+    if (["processing", "sap_draft_created", "approved"].includes(status)) whereClauses.push("(o.ar_status IS NULL OR o.ar_status <> 'approved')");
   }
   if (customer) {
     whereClauses.push("(COALESCE(o.sap_card_code, u.sap_card_code) LIKE ? OR c.card_name LIKE ? OR o.customer_name LIKE ?)");

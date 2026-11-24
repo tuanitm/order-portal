@@ -19,7 +19,7 @@ import {
 } from "@/lib/soApproval/sapProcedure";
 import {
   getSoApprovalRequests, progressFromRequest, arStatusOf, myPendingLine, approvalCompletes, searchSoApprovals,
-  getSoScopeFacts, getSoLinesForDisplay, searchSoHeaders, type SapApprovalRequest, type SoApprovalListRow,
+  getSoScopeFacts, getSoLinesForDisplay, searchSoHeaders, type SoDisplayLine, type SapApprovalRequest, type SoApprovalListRow,
 } from "@/lib/soApproval/sapApprovalRequests";
 
 /**
@@ -665,7 +665,7 @@ export interface ApprovalDetail {
     customerName: string | null; mstCode: string | null; cardCode: string; contactPhone: string | null;
     deliveryAddress: string | null; supervisorName: string | null; createdByStaff: string | null;
     creator: string | null;
-    lines: { item: string; name: string | null; qty: number; uom: string | null; price: number; discountPct: number; total: number; gift: boolean; kind?: string | null }[];
+    lines: SoDisplayLine[];
   };
   sap: SapSoHeader | null;
   ar: ArSummary | null;
@@ -1256,3 +1256,63 @@ export async function syncAllApprovalToDo(): Promise<void> {
 
 /** Internals exposed for scripted checks only (synthetic requests) — not for app code. */
 export const __soApprovalInternals = { reopenOf, reopenProgress, decideInfoReopened, finalApprovalOf };
+
+/** One rule of a promotion program, as shown in the SO Approval "PM Code" popup. */
+export interface PromotionRuleView {
+  sellingItem: string | null; sellingItemName: string | null; sellingGroup: string | null;
+  discPct: number | null; buyQty: number | null; givingItem: string | null; givingItemName: string | null; giveQty: number | null;
+  beginDate: string | null; endDate: string | null;
+  /** BP targets of this rule (customer code / group), and whether one is this SO's customer or its groups. */
+  targets: string[]; forCustomer: boolean;
+}
+
+/**
+ * The promotion program behind a PM Code on an SO (cached promotion_discount,
+ * synced from SAP), limited to the items on this SO, so the lookup stays on
+ * idx_company_item_bp. Rules that target this customer (BP code or one of its
+ * groups) are flagged and listed first. Same data scope as the SO detail.
+ */
+export async function getPromotionProgramForSo(session: AdminSession, docEntry: number, code: string) {
+  const facts = await soInScope(session, docEntry);
+  if (!facts) return null;
+  const lines = await getSoLinesForDisplay(docEntry);
+  const items = [...new Set(lines.map((l) => l.item))];
+  if (items.length === 0) return { code, name: null, rules: [] as PromotionRuleView[] };
+  const rows = await query<{
+    promotion_name: string | null; begin_date: string | null; end_date: string | null; bp_type: string | null; bp_code: string | null; bp_name: string | null;
+    bp_grp_code: string | null; bp_grp_name: string | null; selling_item_code: string | null; selling_item_name: string | null;
+    selling_grp_code: string | null; selling_grp_name: string | null; disc_pct: string | null; selling_qty: string | null;
+    giving_item_code: string | null; giving_item_name: string | null; giving_qty: string | null;
+  }[]>(
+    `SELECT promotion_name, DATE_FORMAT(begin_date, '%Y-%m-%d') AS begin_date, DATE_FORMAT(end_date, '%Y-%m-%d') AS end_date,
+            bp_type, bp_code, bp_name, bp_grp_code, bp_grp_name, selling_item_code, selling_item_name, selling_grp_code, selling_grp_name,
+            disc_pct, selling_qty, giving_item_code, giving_item_name, giving_qty
+       FROM promotion_discount FORCE INDEX (idx_company_item_bp)
+      WHERE company_id = ? AND selling_item_code IN (${items.map(() => "?").join(",")}) AND promotion_code = ?
+      LIMIT 5000`,
+    [getCompanyId(), ...items, code]
+  );
+  const mine = new Set([facts.cardCode, ...facts.groups].map((x) => x.toLowerCase()));
+  const num = (v: string | null) => (v === null ? null : Number(v));
+  const rules = new Map<string, PromotionRuleView>();
+  for (const r of rows) {
+    const key = [r.selling_item_code, r.disc_pct, r.selling_qty, r.giving_item_code, r.giving_qty, r.begin_date, r.end_date].join("|");
+    const target = r.bp_code ? `${r.bp_code}${r.bp_name ? ` ${r.bp_name}` : ""}` : r.bp_grp_code ? `${r.bp_grp_code}${r.bp_grp_name ? ` ${r.bp_grp_name}` : ""}` : "all customers";
+    const isMine = [r.bp_code, r.bp_grp_code].some((c) => c && mine.has(c.toLowerCase())) || (!r.bp_code && !r.bp_grp_code);
+    let rule = rules.get(key);
+    if (!rule) {
+      rule = {
+        sellingItem: r.selling_item_code, sellingItemName: r.selling_item_name, sellingGroup: r.selling_grp_name ?? r.selling_grp_code,
+        discPct: num(r.disc_pct), buyQty: num(r.selling_qty), givingItem: r.giving_item_code, givingItemName: r.giving_item_name, giveQty: num(r.giving_qty),
+        beginDate: r.begin_date, endDate: r.end_date, targets: [], forCustomer: false,
+      };
+      rules.set(key, rule);
+    }
+    if (!rule.targets.includes(target) && rule.targets.length < 20) rule.targets.push(target);
+    rule.forCustomer ||= isMine;
+  }
+  const sorted = [...rules.values()].sort((a, b) => Number(b.forCustomer) - Number(a.forCustomer)
+    || items.indexOf(a.sellingItem ?? "") - items.indexOf(b.sellingItem ?? ""));
+  const name = rows[0]?.promotion_name ?? lines.find((l) => l.pmCode === code)?.pmName ?? null;
+  return { code, name, rules: sorted, truncated: rows.length >= 5000 };
+}

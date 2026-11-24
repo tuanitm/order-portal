@@ -25,7 +25,9 @@ import {
  * user, and a Sales account newly given that SAP user adopts it. Accountant
  * and Admin SAP users stay one-to-one.
  */
-export const SAP_ACCOUNT_KINDS = ["account", "admin", "sales"] as const;
+// super_admin: System Admin may keep their own SAP login too — used for AR Invoice (posted as that SAP user, so
+// SAP's AR approval templates apply). Sales Order pushes by System Admin still use admin02 (see confirm route).
+export const SAP_ACCOUNT_KINDS = ["account", "admin", "sales", "super_admin"] as const;
 export const hasSapAccountKind = (kind: string | null | undefined) => (SAP_ACCOUNT_KINDS as readonly string[]).includes(kind ?? "");
 export class SapCredentialError extends Error {
   constructor(message: string, public status = 400, public code?: string) { super(message); }

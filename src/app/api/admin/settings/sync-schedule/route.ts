@@ -43,7 +43,7 @@ async function PATCHHandler(request: NextRequest) {
   };
   if (soApprovalFromDate !== undefined && soApprovalFromDate !== null && soApprovalFromDate !== ""
       && !(typeof soApprovalFromDate === "string" && realDate(soApprovalFromDate))) {
-    return NextResponse.json({ error: "Approve SO from date must be YYYY-MM-DD" }, { status: 400 });
+    return NextResponse.json({ error: "Sync SO AR from must be YYYY-MM-DD" }, { status: 400 });
   }
 
   if (typeof isEnabled !== "boolean" || !Number.isInteger(intervalHours) || intervalHours < 1) {

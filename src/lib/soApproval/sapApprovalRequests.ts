@@ -157,7 +157,7 @@ export function approvalCompletes(req: SapApprovalRequest): boolean {
 export interface SoApprovalFilters {
   /** pending = W · approved = Y/P/A · rejected = N/C · all */
   status: "pending" | "approved" | "rejected" | "all";
-  /** Settings → "Approve SO from date" (YYYY-MM-DD) — never earlier than this. */
+  /** Settings → "Sync SO AR from" (YYYY-MM-DD) — never earlier than this. */
   fromDate: string | null;
   dateFrom?: string;
   dateTo?: string;
@@ -287,20 +287,81 @@ export async function getSoScopeFacts(docEntry: number): Promise<{ cardCode: str
   };
 }
 
-/** SAP SO lines for display. */
-export async function getSoLinesForDisplay(docEntry: number) {
+/** One item line of a SAP SO as shown in SO Approval (same columns as the Admin order page). */
+export interface SoDisplayLine {
+  item: string; name: string | null; qty: number; uom: string | null;
+  /** Price before discounts (RDR1.PriceBefDi). */
+  basePrice: number;
+  /** Standard / Period discount = the line's own DiscPrcnt. */
+  stdPct: number;
+  /** Contract (CK99999998) / Promotion (CK99999999) discount % folded in from their discount lines. */
+  ctPct: number; pmPct: number;
+  /** Promotion program (U_CTKM / U_CTKM_NAME) — of the CK99999999 line for a bought item, of the line itself for a free item. */
+  pmCode: string | null; pmName: string | null;
+  /** Net unit price and line total after every discount (item line + its discount lines). */
+  unitPrice: number; total: number;
+  vat: number; vatPct: number | null;
+  gift: boolean; brand: string | null;
+}
+
+/** The two synthetic discount items the push adds after an item line — shown as CT / PM Disc % on that item, not as lines. */
+const DISCOUNT_ITEMS: Record<string, "ct" | "pm"> = { CK99999998: "ct", CK99999999: "pm" };
+
+/**
+ * SAP SO lines for display, each bought item followed by its free item(s).
+ * CK99999998 / CK99999999 stay in SAP; here they are folded into the item they
+ * discount as CT / PM Disc % (their negative amounts / VAT net into its Unit
+ * Price, Line Total and VAT). Discount and free lines find their bought item by
+ * U_PM_BaseLine ("<item index>-<item code>", the same key the portal push and
+ * the SAP add-on write), then by U_PM_BaseItem.
+ */
+export async function getSoLinesForDisplay(docEntry: number): Promise<SoDisplayLine[]> {
   const s = `"${getHanaSchema()}"`;
   const rows = await queryHana<Record<string, unknown>>(
-    `SELECT "ItemCode", "Dscription", "Quantity", "unitMsr", "PriceBefDi", "DiscPrcnt", "LineTotal", "U_PM_Type", "OcrCode"
+    `SELECT "ItemCode", "Dscription", "Quantity", "unitMsr", "PriceBefDi", "DiscPrcnt", "LineTotal", "VatSum", "VatPrcnt",
+            "U_PM_Type", "U_PM_BaseItem", "U_PM_BaseLine", "U_PM_DiscPercent", "U_CTKM", "U_CTKM_NAME", "OcrCode"
        FROM ${s}."RDR1" WHERE "DocEntry" = ${Number(docEntry)} ORDER BY "LineNum"`
   );
-  return rows.map((l) => ({
+  const line = (l: Record<string, unknown>, gift: boolean): SoDisplayLine => ({
     item: String(l.ItemCode), name: str(l.Dscription), qty: num(l.Quantity), uom: str(l.unitMsr),
-    price: num(l.PriceBefDi), discountPct: num(l.DiscPrcnt), total: num(l.LineTotal),
-    gift: String(l.U_PM_Type ?? "") === "31",
-    kind: String(l.U_PM_Type ?? "") === "98" ? "contract discount" : String(l.U_PM_Type ?? "") === "20" ? "promotion discount" : null as string | null,
-    brand: str(l.OcrCode),
-  }));
+    basePrice: num(l.PriceBefDi), stdPct: num(l.DiscPrcnt), ctPct: 0, pmPct: 0,
+    pmCode: gift ? str(l.U_CTKM) : null, pmName: gift ? str(l.U_CTKM_NAME) : null,
+    unitPrice: 0, total: num(l.LineTotal), vat: num(l.VatSum),
+    vatPct: l.VatPrcnt === null || l.VatPrcnt === undefined ? null : num(l.VatPrcnt),
+    gift, brand: str(l.OcrCode),
+  });
+
+  // Bought items first (their key = own U_PM_BaseLine, else "<index among items>-<code>").
+  const items: { key: string; line: SoDisplayLine; gifts: SoDisplayLine[] }[] = [];
+  const isGift = (l: Record<string, unknown>) => String(l.U_PM_Type ?? "") === "31";
+  for (const l of rows) {
+    if (DISCOUNT_ITEMS[String(l.ItemCode).toUpperCase()] || isGift(l)) continue;
+    items.push({ key: str(l.U_PM_BaseLine) ?? `${items.length}-${String(l.ItemCode)}`, line: line(l, false), gifts: [] });
+  }
+  const ownerOf = (l: Record<string, unknown>) => {
+    const key = str(l.U_PM_BaseLine), base = str(l.U_PM_BaseItem);
+    return (key ? items.find((x) => x.key === key) : undefined)
+      ?? (base ? items.find((x) => x.line.item === base) : undefined);
+  };
+  const orphanGifts: SoDisplayLine[] = [];
+  for (const l of rows) {
+    const kind = DISCOUNT_ITEMS[String(l.ItemCode).toUpperCase()];
+    if (kind) {
+      const t = (ownerOf(l) ?? items[items.length - 1])?.line;
+      if (!t) continue; // a discount line with no item at all — nothing sensible to show
+      const pct = num(l.U_PM_DiscPercent);
+      if (kind === "ct") t.ctPct += pct;
+      else { t.pmPct += pct; t.pmCode ??= str(l.U_CTKM); t.pmName ??= str(l.U_CTKM_NAME); }
+      t.total += num(l.LineTotal);
+      t.vat += num(l.VatSum);
+    } else if (isGift(l)) {
+      const owner = ownerOf(l);
+      (owner ? owner.gifts : orphanGifts).push(line(l, true));
+    }
+  }
+  const out = [...items.flatMap((x) => [x.line, ...x.gifts]), ...orphanGifts];
+  for (const x of out) x.unitPrice = x.qty ? x.total / x.qty : 0;
+  return out;
 }
 
 /**

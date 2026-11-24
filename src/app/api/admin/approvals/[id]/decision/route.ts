@@ -31,7 +31,7 @@ async function POSTHandler(request: NextRequest, { params }: { params: Promise<{
 
   try {
     // Every step that isn't a pass needs its own checking note — so a multi-SO approval only goes through
-    // for SOs whose six checks all pass; the others are reviewed one by one.
+    // for SOs whose five checks all pass; the others are reviewed one by one.
     // "bulk" = from the multi-SO bar (recorded as such); "auto" is only for Auto SO Approval itself.
     const method = body.method === "bulk" ? "bulk" : "manual";
     const r = await decideApproval(guard.session, docEntry, decision, notes, stepNotes, method);

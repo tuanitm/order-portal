@@ -149,7 +149,7 @@ export default function UsersPage() {
   const formKind: RoleKind | null = form ? roles.find((r) => String(r.id) === form.roleId)?.kind ?? null : null;
   const isStaff = formKind !== null && formKind !== "customer";
   // Accountants approve as their SAP user; Admin / Sales users push orders as it (Super Admin uses admin02).
-  const hasSapAccount = formKind === "account" || formKind === "admin" || formKind === "sales";
+  const hasSapAccount = formKind === "account" || formKind === "admin" || formKind === "sales" || formKind === "super_admin";
 
   const edit = (u: UserRow | null) => {
     setError("");
@@ -317,6 +317,8 @@ export default function UsersPage() {
                           onChange={(e) => setForm({ ...form, sapUserCode: e.target.value })} />
                         <div style={hint}>{formKind === "account"
                           ? "SAP B1 user this Accountant approves as (SAP Approval Stages)."
+                          : formKind === "super_admin"
+                          ? "SAP B1 user this System Admin posts AR Invoices as (e.g. sa01; SAP approval templates apply). Their Sales Order pushes still use admin02."
                           : "SAP B1 user this user pushes orders to SAP as (SAP creator / approval originator, e.g. sa01). Empty = pushes as the default SAP user admin02."} The user can also set it in My Profile.</div>
                       </div>
                       <div>

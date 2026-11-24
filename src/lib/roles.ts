@@ -2,6 +2,7 @@ import { query } from "@/lib/db/connection";
 import { getCompanyId } from "@/lib/config";
 import { ASSIGNABLE_ADMIN_PERMISSIONS, jsonCodeList, type RoleKind } from "@/lib/auth/adminSession";
 import { masterdataWarehouseCodes } from "@/lib/adminWarehouses";
+import { getBrandOptions } from "@/lib/adminScope";
 
 export const ROLE_KINDS: RoleKind[] = ["super_admin", "admin", "sales", "account", "customer"];
 
@@ -20,12 +21,8 @@ const LABEL: Record<ScopeField, string> = {
 export async function getRoleOptions() {
   const companyId = getCompanyId();
   const [brands, channels, customerGroups, itemGroups] = await Promise.all([
-    query<{ code: string; name: string | null }[]>(
-      `SELECT i.brand_code AS code, MAX(cc.ocr_name) AS name FROM items i
-         LEFT JOIN cost_centers cc ON cc.company_id = i.company_id AND cc.ocr_code = i.brand_code AND cc.dimension = 1
-        WHERE i.company_id = ? AND i.brand_code IS NOT NULL AND i.brand_code <> '' GROUP BY i.brand_code ORDER BY i.brand_code`,
-      [companyId]
-    ),
+    // SAP Product Brand cost centers (dimension 1) within config's brandList.
+    getBrandOptions(),
     query<{ code: string; name: string | null }[]>(`SELECT code, name FROM customer_groups WHERE company_id = ? AND level = 1 ORDER BY code`, [companyId]),
     query<{ code: string; name: string | null; level: number }[]>(`SELECT code, name, level FROM customer_groups WHERE company_id = ? ORDER BY level, code`, [companyId]),
     query<{ code: string; name: string | null; level: number }[]>(`SELECT code, name, level FROM item_groups WHERE company_id = ? ORDER BY level, code`, [companyId]),

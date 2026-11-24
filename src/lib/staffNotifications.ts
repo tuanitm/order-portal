@@ -27,7 +27,7 @@ import { queryHana, getHanaSchema } from "@/lib/hana/client";
  * stage), approved / rejected, or decided in SAP (reconciled by the poller and
  * when the user's SO Approval list loads).
  */
-export type NotificationKind = "so_approval_request" | "so_approved" | "so_rejected" | "so_stage_approved" | "so_undone";
+export type NotificationKind = "so_approval_request" | "so_approved" | "so_rejected" | "so_stage_approved" | "so_undone" | "ar_approval_request";
 
 export interface StaffNotification {
   id: number;
@@ -172,6 +172,36 @@ export function notifySafely(label: string, fn: () => Promise<unknown>): void {
 /** Counted on the bell: unread, or "waits for your approval" not processed yet. */
 const OPEN_SQL = `(read_at IS NULL OR (kind = 'so_approval_request' AND processed_at IS NULL))`;
 
+/**
+ * An AR Invoice (portal ar_documents.id) waits for these SAP users' approval —
+ * whoever holds that SAP user (Accountants; System Admin with a linked SAP user).
+ * Not repeated while the same one is unread.
+ */
+export async function notifyArApprovalNeeded(arDocId: number, waitingFor: string[], f: {
+  docNo: string; cardCode: string; cardName: string | null; total: number; stage?: string | null; actor?: string | null; reason?: string | null; excludeAdminId?: number | null;
+}): Promise<number> {
+  const recipients = await staffForSapUsers(waitingFor);
+  const companyId = getCompanyId();
+  let count = 0;
+  for (const r of recipients) {
+    if (r.id === f.excludeAdminId) continue;
+    const url = `${homePathForKind(r.kind)}/ar-invoices/${arDocId}`;
+    const dup = await queryOne<{ id: number }>(
+      `SELECT id FROM staff_notifications WHERE company_id = ? AND admin_user_id = ? AND kind = 'ar_approval_request' AND url = ? AND read_at IS NULL LIMIT 1`,
+      [companyId, r.id, url]
+    );
+    if (dup) continue;
+    await query(
+      `INSERT INTO staff_notifications (company_id, admin_user_id, kind, title, body, url, actor_label) VALUES (?, ?, 'ar_approval_request', ?, ?, ?, ?)`,
+      [companyId, r.id, `AR Invoice ${f.docNo} waits for your approval`.slice(0, 255),
+        [`${f.cardCode}${f.cardName ? ` · ${f.cardName}` : ""}`, `${Math.round(f.total).toLocaleString("en-US")} VND`, f.stage && `Stage ${f.stage}`, f.reason, f.actor && `By ${f.actor}`].filter(Boolean).join(" — "),
+        url, f.actor?.slice(0, 255) ?? null]
+    );
+    count++;
+  }
+  return count;
+}
+
 export async function listNotifications(adminUserId: number, limit = 30): Promise<{ items: StaffNotification[]; unread: number; toDo: number }> {
   const [rows, cnt] = await Promise.all([
     query<{ id: number; kind: NotificationKind; title: string; body: string | null; url: string | null; sap_doc_entry: number | null; order_id: number | null; actor_label: string | null; created_at: string; read_at: string | null; processed_at: string | null }[]>(
@@ -274,13 +304,14 @@ async function reconcileProcessed(): Promise<void> {
   }
 }
 
-export async function markNotificationsRead(adminUserId: number, which: { ids?: number[]; all?: boolean; docEntry?: number; orderId?: number }): Promise<void> {
+export async function markNotificationsRead(adminUserId: number, which: { ids?: number[]; all?: boolean; docEntry?: number; orderId?: number; arDocId?: number }): Promise<void> {
   const base = `UPDATE staff_notifications SET read_at = NOW() WHERE company_id = ? AND admin_user_id = ? AND read_at IS NULL`;
   const p = [getCompanyId(), adminUserId];
   if (which.all) await query(base, p);
   else if (which.ids?.length) await query(`${base} AND id IN (${marks(which.ids.length)})`, [...p, ...which.ids]);
   else if (which.docEntry) await query(`${base} AND sap_doc_entry = ?`, [...p, which.docEntry]);
   else if (which.orderId) await query(`${base} AND order_id = ?`, [...p, which.orderId]);
+  else if (which.arDocId) await query(`${base} AND kind = 'ar_approval_request' AND url LIKE ?`, [...p, `%/ar-invoices/${which.arDocId}`]);
 }
 
 /** Which of these SOs have an unread notification for this user (the NEW marker). */

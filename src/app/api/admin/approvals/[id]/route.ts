@@ -5,7 +5,7 @@ import { markNotificationsRead } from "@/lib/staffNotifications";
 
 /**
  * GET /api/admin/approvals/[id]?recheck=1 — [id] = SAP Sales Order DocEntry. One SO for approval: SAP
- * header, customer AR / credit position, the six checks (cached 15 min;
+ * header, customer AR / credit position, the five checks (cached 15 min;
  * recheck=1 runs them again), decision history and the caller's SAP session.
  */
 export async function GET(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {

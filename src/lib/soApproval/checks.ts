@@ -2,27 +2,27 @@ import { query, queryOne } from "@/lib/db/connection";
 import { getCompanyId } from "@/lib/config";
 import { queryPricedProducts, type PricingContext } from "@/lib/pricing/productPricing";
 import { getBasePriceListNum } from "@/lib/sap-b1/sync";
-import { getLiveAvailabilityForOrder, getLiveAvailability } from "@/lib/orderStock";
 import { queryHana, getHanaSchema } from "@/lib/hana/client";
-import { queryHanaInventoryByWarehouse } from "@/lib/hana/inventoryQuery";
 import { AR_AGING_BUCKETS, AR_AGING_BUCKET_LABELS } from "@/lib/hana/arAgingQuery";
 import { freeQtyFor } from "@/lib/adminOrderCreate";
 import type { ArSummary } from "@/lib/soApproval/sapData";
 import type { ProductWithPricing } from "@/types/product";
 
 /**
- * The Accountant's six top-down checks for one portal Sales Order:
+ * The Accountant's five top-down checks for one portal Sales Order:
  *   1 Standard Price · 2 Period Discount · 3 Contract Discount ·
- *   4 Promotion Discount · 5 Stock & shelf life · 6 AR (open invoices / credit)
+ *   4 Promotion Discount · 5 AR (open invoices / credit)
+ * Stock & required shelf life is NOT checked here — it belongs to the Admin
+ * Approval (the push caps Confirm Qty at live, shelf-life-valid stock).
  * Steps 1–4 compare what the order was priced at (order_lines) with what the
  * pricing engine gives this customer TODAY (the storefront's own rules).
  * Each step says pass / warn / fail; the Accountant must write a note to
  * approve past any step that isn't "pass".
  */
 export type CheckStatus = "pass" | "warn" | "fail" | "error";
-export type CheckKey = "price" | "period" | "contract" | "promotion" | "stock" | "ar";
+export type CheckKey = "price" | "period" | "contract" | "promotion" | "ar";
 
-/** A nested table under one row (e.g. the batches of an item in the stock check). */
+/** A nested table under one row. */
 export interface CheckSubTable { columns: { key: string; label: string; align?: "right" }[]; rows: CheckRow[] }
 /** One table row: column values, plus optional _status and _sub (nested table). */
 export interface CheckRow { [col: string]: string | number | null | undefined | CheckSubTable }
@@ -42,10 +42,9 @@ export const CHECK_TITLES: Record<CheckKey, string> = {
   period: "Standard / Period Discount",
   contract: "Contract Discount",
   promotion: "Promotion Discount",
-  stock: "Inventory Available & Required Shelf Life",
   ar: "AR Aging — Pending Invoices (not reconciled) & Credit",
 };
-const ORDER: CheckKey[] = ["price", "period", "contract", "promotion", "stock", "ar"];
+const ORDER: CheckKey[] = ["price", "period", "contract", "promotion", "ar"];
 
 interface OrderLineRow {
   id: number;
@@ -223,10 +222,7 @@ export async function runApprovalChecks(order: OrderForChecks, ar: ArSummary | n
   const gifts = lines.filter((l) => l.is_gift_line);
   const codes = [...new Set(lines.map((l) => l.sap_item_code))];
 
-  const [pricing, stock] = await Promise.all([
-    currentPricing(order, codes).catch((e) => e as Error),
-    stockCheck(order, lines).catch((e) => result("stock", "error", `Stock check failed: ${e instanceof Error ? e.message : String(e)}`, [], [])),
-  ]);
+  const pricing = await currentPricing(order, codes).catch((e) => e as Error);
 
   const out: CheckResult[] = [];
   if (pricing instanceof Error) {
@@ -236,7 +232,6 @@ export async function runApprovalChecks(order: OrderForChecks, ar: ArSummary | n
   } else {
     out.push(priceCheck(sold, pricing), pctCheck("period", sold, pricing), pctCheck("contract", sold, pricing), promotionCheck(sold, gifts, pricing));
   }
-  out.push(stock);
   out.push(arCheck(ar));
   return out;
 }
@@ -263,138 +258,107 @@ function priceCheck(sold: OrderLineRow[], pricing: Map<string, ProductWithPricin
     rows);
 }
 
-function pctCheck(key: "period" | "contract", sold: OrderLineRow[], pricing: Map<string, ProductWithPricing>): CheckResult {
-  const rows: CheckResult["rows"] = sold.map((l) => {
-    const p = pricing.get(l.sap_item_code);
-    const orderPct = n(key === "period" ? l.period_disc_pct : l.contract_disc_pct);
-    const nowPct = p ? (key === "period" ? p.periodDiscPct : p.contractDiscPct) : null;
-    const st: CheckStatus = !p ? (orderPct > 0 ? "error" : "pass") : nowPct === null ? (orderPct > 0 ? "fail" : "pass")
-      : samePct(orderPct, nowPct) ? "pass" : orderPct > nowPct ? "fail" : "warn";
-    return { item: l.sap_item_code, name: l.item_name, order: r2(orderPct), allowed: nowPct === null ? null : r2(nowPct), _status: st };
-  });
-  const status = worst(rows.map((r) => r._status ?? "pass"));
-  const used = rows.filter((r) => n(r.order) > 0).length;
-  const label = key === "period" ? "period discount" : "contract discount";
-  return result(key, status,
-    status === "pass" ? (used ? `${used} line(s) with ${label}, all matching today's valid ${label}.` : `No ${label} on this order, none expected.`)
-      : `${rows.filter((r) => r._status === "fail").length} line(s) get MORE ${label} than allowed today, ${rows.filter((r) => r._status === "warn").length} get less.`,
-    [{ key: "item", label: "Item" }, { key: "name", label: "Name" }, { key: "order", label: "Order %", align: "right" }, { key: "allowed", label: "Valid today %", align: "right" }],
-    rows);
-}
+/** "YYYY-MM-DD" -> "dd/MM/yyyy"; null = open-ended. */
+const untilDate = (iso: string | null | undefined) => (iso ? `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}` : "no end date");
 
-function promotionCheck(sold: OrderLineRow[], gifts: OrderLineRow[], pricing: Map<string, ProductWithPricing>): CheckResult {
+/**
+ * Steps 2 / 3: only the items with a Standard/Period (or Contract) discount —
+ * on the order (Setup %) or valid for the customer today. "Valid until" is the
+ * end date of today's valid discount; when today's % differs from the setup,
+ * it is shown next to the date.
+ */
+function pctCheck(key: "period" | "contract", sold: OrderLineRow[], pricing: Map<string, ProductWithPricing>): CheckResult {
+  const label = key === "period" ? "standard / period discount" : "contract discount";
   const rows: CheckResult["rows"] = [];
   for (const l of sold) {
     const p = pricing.get(l.sap_item_code);
+    const orderPct = n(key === "period" ? l.period_disc_pct : l.contract_disc_pct);
+    const nowPct = p ? (key === "period" ? p.periodDiscPct : p.contractDiscPct) : 0;
+    if (orderPct <= 0 && nowPct <= 0) continue; // no discount of this kind for this item
+    const st: CheckStatus = !p ? "error" : nowPct <= 0 ? "fail"
+      : samePct(orderPct, nowPct) ? "pass" : orderPct > nowPct ? "fail" : "warn";
+    const until = !p ? "not in portal catalog" : nowPct <= 0 ? "not valid today"
+      : untilDate(key === "period" ? p.periodDiscValidTo : p.contractDiscValidTo) + (samePct(orderPct, nowPct) ? "" : ` (valid ${r2(nowPct)} %)`);
+    rows.push({ item: l.sap_item_code, name: l.item_name, order: r2(orderPct), until, _status: st });
+  }
+  const status = worst(rows.map((r) => r._status ?? "pass"));
+  return result(key, status,
+    rows.length === 0 ? `No ${label} on this order, none expected.`
+      : status === "pass" ? `${rows.length} item(s) with ${label}, all matching the ${label} valid today.`
+      : `${rows.filter((r) => r._status === "fail").length} item(s) get MORE ${label} than valid today, ${rows.filter((r) => r._status === "warn").length} get less.`,
+    [{ key: "item", label: "Item" }, { key: "name", label: "Name" }, { key: "order", label: "Setup %", align: "right" }, { key: "until", label: "Valid until" }],
+    rows);
+}
+
+/**
+ * Step 4: every bought item with a promotion, each followed by its free item(s)
+ * (🎁). Disc = the % discount on the order; Ratio = the buy-give rule with the
+ * qty on the order — "Buy 4 free 1 (buy 8)" on the buying item,
+ * "Buy 4 free 1 (free 2)" on its free item.
+ */
+function promotionCheck(sold: OrderLineRow[], gifts: OrderLineRow[], pricing: Map<string, ProductWithPricing>): CheckResult {
+  const rows: CheckResult["rows"] = [];
+  const ratio = (buy: number | null | undefined, give: number | null | undefined) => (buy && give ? `Buy ${r2(n(buy))} free ${r2(n(give))}` : "");
+  /** The buy-give rule of a free line: today's program rule, else the one saved on the order line. */
+  const ruleOf = (g: OrderLineRow, src: OrderLineRow | undefined) => {
+    const p = src ? pricing.get(src.sap_item_code) : undefined;
+    const program = p?.giveawayOptions.find((o) => o.code === g.giveaway_promotion_code && (o.giveItemCode === g.sap_item_code || o.extra?.giveItemCode === g.sap_item_code));
+    const rule = program ? (program.giveItemCode === g.sap_item_code ? program : program.extra) : undefined;
+    return { p, program, rule, text: rule ? ratio(rule.buyQty, rule.giveQty) : ratio(g.promo_buy_qty, g.promo_give_qty) };
+  };
+  /** Ratio cell of a buying item: its free items' rules, with the bought qty. */
+  const buyRatio = (l: OrderLineRow, its: OrderLineRow[]) => {
+    const texts = [...new Set(its.map((g) => ruleOf(g, l).text).filter(Boolean))];
+    return texts.length ? `${texts.join(" · ")} (buy ${r2(n(l.quantity))})` : "—";
+  };
+  const giftsOf = new Map<number, OrderLineRow[]>();
+  const unpaired: OrderLineRow[] = [];
+  for (const g of gifts) {
+    const src = sold.find((x) => x.id === g.source_line_id) ?? sold.find((x) => x.sap_item_code === g.sap_item_code);
+    if (src) giftsOf.set(src.id, [...(giftsOf.get(src.id) ?? []), g]);
+    else unpaired.push(g);
+  }
+  const giftRow = (g: OrderLineRow, src: OrderLineRow | undefined) => {
+    const { p, program, rule, text: r } = ruleOf(g, src);
+    const allowedQty = src && rule ? freeQtyFor(src.quantity, rule.buyQty, rule.giveQty) : null;
+    const st: CheckStatus = src && !p ? "error" : allowedQty === null ? "fail" : g.quantity <= allowedQty ? "pass" : "fail";
+    const until = src && !p ? "not in portal catalog" : allowedQty === null ? "not valid today"
+      : untilDate(rule?.validTo ?? program?.validTo) + (g.quantity <= allowedQty ? "" : ` (valid ${allowedQty} free)`);
+    rows.push({
+      item: `↳ 🎁 ${g.sap_item_code}`, name: g.item_name, type: "free item", program: g.giveaway_promotion_code || g.giveaway_promotion_name,
+      disc: "—", ratio: r ? `${r} (free ${r2(n(g.quantity))})` : `${r2(n(g.quantity))} free`, until, _status: st,
+    });
+  };
+  for (const l of sold) {
+    const p = pricing.get(l.sap_item_code);
     const pct = n(l.promo_disc_pct);
+    const its = giftsOf.get(l.id) ?? [];
     if (pct > 0) {
       const program = p?.promotionOptions.find((o) => (l.promotion_code ? o.code === l.promotion_code : true));
       const allowed = program ? Number(program.pct) : null;
       const st: CheckStatus = !p ? "error" : allowed === null ? "fail" : samePct(pct, allowed) ? "pass" : pct > allowed ? "fail" : "warn";
-      rows.push({ item: l.sap_item_code, type: "% discount", program: l.promotion_code || l.promotion_name, order: `${r2(pct)} %`, allowed: !p ? "not in portal catalog" : allowed === null ? "not valid today" : `${r2(allowed)} %`, _status: st });
+      const until = !p ? "not in portal catalog" : allowed === null ? "not valid today"
+        : untilDate(program?.validTo) + (samePct(pct, allowed) ? "" : ` (valid ${r2(allowed)} %)`);
+      rows.push({ item: l.sap_item_code, name: l.item_name, type: "% discount", program: l.promotion_code || l.promotion_name, disc: `${r2(pct)} %`, ratio: buyRatio(l, its), until, _status: st });
+    } else if (its.length) {
+      // No % discount, but it has free items — the buying item still heads its pair.
+      rows.push({ item: l.sap_item_code, name: l.item_name, type: "buying item", program: null, disc: "—", ratio: buyRatio(l, its), until: "—", _status: "pass" });
     }
+    for (const g of its) giftRow(g, l);
   }
-  // Free goods: each gift line against the buy line's program today.
-  for (const g of gifts) {
-    const src = sold.find((s) => s.id === g.source_line_id) ?? sold.find((s) => s.sap_item_code === g.sap_item_code);
-    const p = src ? pricing.get(src.sap_item_code) : undefined;
-    const program = p?.giveawayOptions.find((o) => o.code === g.giveaway_promotion_code && (o.giveItemCode === g.sap_item_code || o.extra?.giveItemCode === g.sap_item_code));
-    let allowedQty: number | null = null;
-    if (src && program) {
-      const rule = program.giveItemCode === g.sap_item_code ? program : program.extra;
-      allowedQty = rule ? freeQtyFor(src.quantity, rule.buyQty, rule.giveQty) : null;
-    }
-    const st: CheckStatus = src && !p ? "error" : allowedQty === null ? "fail" : g.quantity <= allowedQty ? "pass" : "fail";
-    rows.push({ item: g.sap_item_code, type: "free goods", program: g.giveaway_promotion_code || g.giveaway_promotion_name, order: `${g.quantity} free`, allowed: src && !p ? "not in portal catalog" : allowedQty === null ? "not valid today" : `${allowedQty} free`, _status: st });
-  }
+  for (const g of unpaired) giftRow(g, undefined);
   const status = worst(rows.map((r) => r._status ?? "pass"));
+  const promoRows = rows.filter((r) => r.type !== "buying item");
   return result("promotion", status,
-    rows.length === 0 ? "No promotion on this order." : status === "pass" ? `${rows.length} promotion line(s), all valid today.`
-      : `${rows.filter((r) => r._status !== "pass").length} promotion line(s) not matching a program valid today.`,
-    [{ key: "item", label: "Item" }, { key: "type", label: "Type" }, { key: "program", label: "Program" }, { key: "order", label: "On order", align: "right" }, { key: "allowed", label: "Valid today", align: "right" }],
+    promoRows.length === 0 ? "No promotion on this order." : status === "pass" ? `${promoRows.length} promotion line(s), all valid today.`
+      : `${promoRows.filter((r) => r._status !== "pass").length} promotion line(s) not matching a program valid today.`,
+    [{ key: "item", label: "Item" }, { key: "name", label: "Name" }, { key: "type", label: "Type" }, { key: "program", label: "Program" },
+     { key: "disc", label: "Disc", align: "right" }, { key: "ratio", label: "Ratio" }, { key: "until", label: "Valid until" }],
     rows);
 }
 
 /**
- * Stock in the order's warehouse, reconciled with the customer's required
- * shelf life, per item:
- *   On hand / Committed  — SAP's QRM_Inventory by Warehouse figures (Committed
- *                          = open SO incl. THIS order + transfer requests +
- *                          production orders).
- *   Committed by others  = Committed − this order's qty.
- *   Available for order  = On hand − Committed by others.
- *   Meets shelf life     = qty of the batches whose remaining shelf life is
- *                          inside the customer's required range (all on-hand
- *                          qty when no rule applies or batches have no dates).
- *   Usable               = the smaller of the two (other orders may take the
- *                          good batches first — SAP doesn't reserve batches).
- * Pass when Ordered ≤ Usable. Each item lists its batches underneath.
- */
-async function stockCheck(order: OrderForChecks, lines: OrderLineRow[]): Promise<CheckResult> {
-  if (!order.warehouseCode) return result("stock", "warn", "The order has no warehouse — check stock manually.", [], []);
-  const need = new Map<string, number>();
-  for (const l of lines) need.set(l.sap_item_code, (need.get(l.sap_item_code) ?? 0) + Number(l.quantity));
-  const [qrm, shelf] = await Promise.all([
-    queryHanaInventoryByWarehouse([order.warehouseCode], undefined, order.sapLines ? { itemCodes: [...need.keys()] } : {}),
-    order.sapLines
-      ? getLiveAvailability([...need.keys()], order.warehouseCode, {
-          sap_cus_grp01: order.customer.cus_grp01, sap_cus_grp02: order.customer.cus_grp02, sap_cus_grp03: order.customer.cus_grp03,
-        }, `A${order.docEntry ?? 0}`)
-      : getLiveAvailabilityForOrder(order.id, order.warehouseCode),
-  ]);
-  const qrmBy = new Map(qrm.map((r) => [r.item_code, r]));
-  const shelfBy = new Map(shelf.map((x) => [x.sapItemCode, x]));
-  const fmtDate = (d: string | null) => (d ? String(d).slice(0, 10) : null);
-
-  const rows: CheckResult["rows"] = [...need.entries()].map(([code, ordered]) => {
-    const q = qrmBy.get(code);
-    const sh = shelfBy.get(code);
-    const onHand = q ? Number(q.on_hand) : 0;
-    const committed = q ? Number(q.committed) : 0;
-    const committedOthers = Math.max(0, committed - ordered);
-    const available = onHand - committedOthers;
-    const batches = sh?.batches ?? [];
-    const hasRule = !!sh && (sh.requiredShelfLifeFrom !== null || sh.requiredShelfLifeTo !== null);
-    const shelfOkQty = batches.length ? batches.filter((b) => b.meetsRequirement).reduce((t, b) => t + b.qty, 0) : onHand;
-    const usable = Math.max(0, Math.min(available, shelfOkQty));
-    const status: CheckStatus = ordered <= usable ? "pass" : "fail";
-    const why = ordered <= usable ? "OK"
-      : ordered > available ? `Short ${ordered - Math.max(0, available)}`
-      : `Only ${shelfOkQty} meet shelf life`;
-    return {
-      item: code, ordered, onHand, committedOthers, available,
-      required: hasRule ? `${sh!.requiredShelfLifeFrom ?? 0}–${sh!.requiredShelfLifeTo ?? 100} %` : "no rule",
-      shelfOkQty, usable, result: why, _status: status,
-      _sub: batches.length ? {
-        columns: [
-          { key: "batch", label: "Batch" }, { key: "qty", label: "Qty", align: "right" as const },
-          { key: "mnf", label: "Mfg date" }, { key: "exp", label: "Expiry" },
-          { key: "pct", label: "Shelf life", align: "right" as const }, { key: "meets", label: "Meets required" },
-        ],
-        rows: batches.map((b) => ({
-          batch: b.batchNo, qty: b.qty, mnf: fmtDate(b.mnfDate), exp: fmtDate(b.expDate),
-          pct: b.shelfLifePct === null ? "—" : `${r2(b.shelfLifePct)} %`,
-          meets: b.shelfLifePct === null ? "no dates" : b.meetsRequirement ? "✓ Yes" : "✕ No",
-          _status: (b.meetsRequirement ? "pass" : "fail") as CheckStatus,
-        })),
-      } : undefined,
-    };
-  });
-  const status = worst(rows.map((r) => r._status ?? "pass"));
-  const short = rows.filter((r) => n(r.ordered) > n(r.available)).length;
-  const badShelf = rows.filter((r) => r._status === "fail" && n(r.ordered) <= n(r.available)).length;
-  return result("stock", status,
-    status === "pass" ? `All ${rows.length} item(s) covered in warehouse ${order.warehouseCode} by stock that meets the customer's required shelf life.`
-      : [short ? `${short} item(s) short of available stock` : "", badShelf ? `${badShelf} item(s) without enough stock meeting the required shelf life` : ""].filter(Boolean).join("; ") + ".",
-    [{ key: "item", label: "Item" }, { key: "ordered", label: "Ordered", align: "right" }, { key: "onHand", label: "On hand", align: "right" },
-     { key: "committedOthers", label: "Committed by others*", align: "right" }, { key: "available", label: "Available for order", align: "right" },
-     { key: "required", label: "Required shelf life" }, { key: "shelfOkQty", label: "Meets shelf life", align: "right" },
-     { key: "usable", label: "Usable", align: "right" }, { key: "result", label: "Result" }],
-    rows);
-}
-
-/**
- * Step 6 — SAP AR aging (QRM_Q504_AR_Aging2) for this customer, as of today:
+ * Step 5 — SAP AR aging (QRM_Q504_AR_Aging2) for this customer, as of today:
  * every invoice / journal / payment line not yet reconciled, with its age in
  * days past due. Overdue = Ages ≥ 0 (every Q504 bucket but "Not due").
  */

@@ -19,9 +19,9 @@ import { getUserSapSession } from "@/lib/sap-b1/userSession";
 async function guard(request: NextRequest): Promise<{ response: NextResponse; adminId?: never } | { adminId: number; response?: never }> {
   const session = await getAdminSession(request);
   if (!session || !session.adminId) return { response: NextResponse.json({ error: "Not authenticated" }, { status: 401 }) };
-  // Accountants approve as this SAP user; Admin / Sales users push orders as it. Super Admin uses admin02.
+  // Accountants approve as this SAP user; Admin / Sales users push orders as it; everyone (System Admin too) posts AR Invoices as it.
   if (!hasSapAccountKind(session.kind)) {
-    return { response: NextResponse.json({ error: "Only Admin, Sales and Accountant users have their own SAP account — Super Admin uses the portal's integration login" }, { status: 403 }) };
+    return { response: NextResponse.json({ error: "This user type has no SAP account" }, { status: 403 }) };
   }
   return { adminId: session.adminId };
 }

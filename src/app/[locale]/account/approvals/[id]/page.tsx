@@ -1,15 +1,16 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState, type CSSProperties, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { useParams } from "next/navigation";
 import { styles, btn, Badge, BackLink } from "../../../admin/adminUi";
+import { useFloatingScroll } from "../../../admin/tableTools";
 import { useStaffBase } from "../../../admin/layout";
 
 /**
  * SO Approval — review one Sales Order.
  *
  * Layout (recommended for credit control): the SO identity and totals on
- * top; the six checks as a guided top-down stepper in the main column (each
+ * top; the five checks as a guided top-down stepper in the main column (each
  * step shows its evidence, the system's recommendation, and asks for a note
  * when the Accountant continues against it); the customer's credit / AR
  * position pinned in a side panel so it's visible at every step; the
@@ -18,7 +19,7 @@ import { useStaffBase } from "../../../admin/layout";
 type CheckStatus = "pass" | "warn" | "fail" | "error";
 type Cell = string | number | null | undefined;
 interface SubTable { columns: { key: string; label: string; align?: "right" }[]; rows: CheckRowData[] }
-/** A check table row; _sub = nested table (an item's batches in the stock check). */
+/** A check table row; _sub = optional nested table. */
 type CheckRowData = { [col: string]: Cell | SubTable } & { _status?: CheckStatus; _sub?: SubTable };
 interface Check {
   key: string; step: number; title: string; status: CheckStatus; summary: string; recommendation: string;
@@ -46,9 +47,17 @@ interface Detail {
     supervisorName: string | null; createdByStaff: string | null;
     /** portal = pushed from the portal; sap = created in SAP (by `creator`). */
     source: "portal" | "sap"; docEntry: number; creator: string | null;
-    lines: { item: string; name: string | null; qty: number; uom: string | null; price: number; discountPct: number; total: number; gift: boolean; kind?: string | null }[];
+    lines: {
+      item: string; name: string | null; qty: number; uom: string | null; basePrice: number;
+      stdPct: number; ctPct: number; pmPct: number; pmCode: string | null; pmName: string | null;
+      unitPrice: number; total: number; vat: number; vatPct: number | null; gift: boolean;
+    }[];
   };
-  sap: { docEntry: number; docNum: number; docNo: string | null; totalInclTax: number; vatSum: number; totalExclTax: number; comments: string | null; docStatus: string | null; cancelled: boolean; dataStatus: string | null; docDate: string | null } | null;
+  sap: {
+    docEntry: number; docNum: number; docNo: string | null; totalInclTax: number; vatSum: number; totalExclTax: number; comments: string | null;
+    docStatus: string | null; cancelled: boolean; dataStatus: string | null; docDate: string | null;
+    billToCode: string | null; billTo: string | null; shipToCode: string | null; shipTo: string | null; phone: string | null;
+  } | null;
   ar: Ar | null;
   checks: Check[];
   checkedAt: string;
@@ -84,65 +93,172 @@ interface Procedure {
   }[];
 }
 
-const STAGE_META = {
-  done: { icon: "✓", color: "#047857", bg: "#D1FAE5", label: "Approved" },
-  current: { icon: "●", color: "#B45309", bg: "#FEF3C7", label: "Current stage" },
-  waiting: { icon: "○", color: "#64748B", bg: "#F1F5F9", label: "Waiting" },
-  rejected: { icon: "✕", color: "#B91C1C", bg: "#FEE2E2", label: "Rejected" },
-} as const;
+type OrderLine = Detail["order"]["lines"][number];
+/** Default widths (px) of the Order lines columns — each can be dragged wider/narrower by its header's right edge. */
+const LINE_COL_WIDTH: Record<string, number> = {
+  "Item Code": 110, "Item Name": 260, Qty: 70, Uom: 70, "Base Price": 100, "STD Disc %": 85, "CT Disc %": 85,
+  "PM Code": 120, "PM Disc %": 85, "Unit Price": 100, "Line Total": 115, VAT: 130,
+};
 
-/** SAP Approval Templates / Stages that apply to this Sales Order, and where it stands. */
-function ProcedureCard({ p, me }: { p: Procedure; me: string | null }) {
-  const isMe = (u: string | null) => !!me && !!u && u.toLowerCase() === me.toLowerCase();
+interface PromotionRule {
+  sellingItem: string | null; sellingItemName: string | null; sellingGroup: string | null;
+  discPct: number | null; buyQty: number | null; givingItem: string | null; givingItemName: string | null; giveQty: number | null;
+  beginDate: string | null; endDate: string | null; targets: string[]; forCustomer: boolean;
+}
+const dmy = (iso: string | null) => (iso ? `${iso.slice(8, 10)}/${iso.slice(5, 7)}/${iso.slice(0, 4)}` : "—");
+
+/** Popup for a PM Code: the promotion program's rules for this SO's items (rules for this customer first). */
+function PromotionModal({ docEntry, code, onClose }: { docEntry: number; code: string; onClose: () => void }) {
+  const [data, setData] = useState<{ code: string; name: string | null; rules: PromotionRule[]; truncated?: boolean } | null>(null);
+  const [error, setError] = useState("");
+  const [showAll, setShowAll] = useState(false);
+  useEffect(() => {
+    let live = true;
+    fetch(`/api/admin/approvals/${docEntry}/promotion?code=${encodeURIComponent(code)}`)
+      .then(async (r) => { const j = await r.json(); if (!r.ok) throw new Error(j.error || "Failed to load"); return j; })
+      .then((j) => { if (live) setData(j); })
+      .catch((e) => { if (live) setError(e instanceof Error ? e.message : String(e)); });
+    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", esc);
+    return () => { live = false; window.removeEventListener("keydown", esc); };
+  }, [docEntry, code, onClose]);
+  const mine = data?.rules.filter((r) => r.forCustomer) ?? [];
+  const shown = data ? (showAll || mine.length === 0 ? data.rules : mine) : [];
+  const begin = data?.rules.map((r) => r.beginDate).filter(Boolean).sort()[0] ?? null;
+  const end = data?.rules.map((r) => r.endDate).filter(Boolean).sort().pop() ?? null;
+  const th: CSSProperties = { ...styles.th, padding: "0.45rem 0.65rem", whiteSpace: "nowrap" };
+  const td: CSSProperties = { ...styles.td, padding: "0.4rem 0.65rem", fontSize: "0.78rem" };
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+      <div onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true"
+        style={{ background: "var(--bg-primary, #fff)", borderRadius: 12, width: "min(980px, 100%)", maxHeight: "85vh", display: "flex", flexDirection: "column", boxShadow: "0 20px 50px rgba(0,0,0,0.25)" }}>
+        <div style={{ padding: "1rem 1.25rem", borderBottom: "1px solid var(--color-gray-200, #E2E8F0)", display: "flex", gap: 12, alignItems: "flex-start" }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: "0.75rem", color: "var(--text-tertiary, #94A3B8)", fontWeight: 600 }}>Promotion program</div>
+            <div style={{ fontFamily: "monospace", fontWeight: 700, fontSize: "1rem" }}>{code}</div>
+            {data?.name && <div style={{ fontSize: "0.85rem", marginTop: 2 }}>{data.name}</div>}
+            {data && data.rules.length > 0 && <div style={{ fontSize: "0.75rem", color: "var(--text-secondary, #64748B)", marginTop: 4 }}>Valid {dmy(begin)} → {end ? dmy(end) : "no end date"}</div>}
+          </div>
+          <button type="button" onClick={onClose} style={btn("secondary", false)} aria-label="Close">✕</button>
+        </div>
+        <div style={{ padding: "0.75rem 1.25rem 1.25rem", overflow: "auto" }}>
+          {error && <div style={{ color: "#B91C1C", fontSize: "0.85rem" }}>{error}</div>}
+          {!data && !error && <div style={{ fontSize: "0.85rem", color: "var(--text-secondary)" }}>Loading…</div>}
+          {data && data.rules.length === 0 && (
+            <div style={{ fontSize: "0.85rem", color: "var(--text-secondary)" }}>No rules of this program for the items on this SO in the portal&apos;s promotion data (it may not be synced from SAP yet).</div>
+          )}
+          {data && data.rules.length > 0 && (
+            <>
+              <div style={{ display: "flex", alignItems: "center", gap: 12, fontSize: "0.78rem", color: "var(--text-secondary, #64748B)", marginBottom: 8 }}>
+                <span>{mine.length > 0 && !showAll ? `${mine.length} rule(s) for this customer, for the items on this SO.` : `${data.rules.length} rule(s) for the items on this SO.`}</span>
+                {mine.length > 0 && mine.length < data.rules.length && (
+                  <label style={{ display: "inline-flex", gap: 4, alignItems: "center", cursor: "pointer" }}>
+                    <input type="checkbox" checked={showAll} onChange={(e) => setShowAll(e.target.checked)} /> show all customers&apos; rules ({data.rules.length})
+                  </label>
+                )}
+              </div>
+              <table style={{ ...styles.table, fontSize: "0.78rem" }}>
+                <thead><tr>{["Buying item", "Disc %", "Ratio", "Free item", "Valid", "For"].map((h) => <th key={h} style={th}>{h}</th>)}</tr></thead>
+                <tbody>
+                  {shown.map((r, i) => (
+                    <tr key={i} style={r.forCustomer ? undefined : { color: "var(--text-tertiary, #94A3B8)" }}>
+                      <td style={td}><span style={{ fontFamily: "monospace", fontWeight: 600 }}>{r.sellingItem ?? r.sellingGroup ?? "—"}</span>{r.sellingItemName && <div style={{ fontSize: "0.72rem" }}>{r.sellingItemName}</div>}</td>
+                      <td style={{ ...td, textAlign: "right" }}>{r.discPct !== null ? `${Number(r.discPct)}%` : "—"}</td>
+                      <td style={{ ...td, whiteSpace: "nowrap" }}>{r.buyQty && r.giveQty ? `Buy ${Number(r.buyQty)} get ${Number(r.giveQty)}` : r.buyQty && r.buyQty > 1 ? `from ${Number(r.buyQty)}` : "—"}</td>
+                      <td style={td}>{r.givingItem ? <><span aria-hidden>🎁 </span><span style={{ fontFamily: "monospace", fontWeight: 600 }}>{r.givingItem}</span>{r.givingItemName && <div style={{ fontSize: "0.72rem" }}>{r.givingItemName}</div>}</> : "—"}</td>
+                      <td style={{ ...td, whiteSpace: "nowrap" }}>{dmy(r.beginDate)} → {r.endDate ? dmy(r.endDate) : "no end"}</td>
+                      <td style={td} title={r.targets.join("\n")}>{r.forCustomer ? <Badge label="This customer" tone="success" /> : null} {r.targets.slice(0, 2).join(", ")}{r.targets.length > 2 ? ` +${r.targets.length - 2}` : ""}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {data.truncated && <div style={{ fontSize: "0.72rem", color: "#B45309", marginTop: 6 }}>Only the first 5,000 program rows were read.</div>}
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Order lines with the Admin order page's columns. The CK99999998 / CK99999999
+ * discount lines are folded into CT / PM Disc % (server side); each free item
+ * follows its buying item; PM Code shows only when a promotion program is on
+ * the order (click it for the program). Columns are resizable by dragging the
+ * header's right edge.
+ */
+function OrderLinesTable({ lines, docEntry }: { lines: OrderLine[]; docEntry: number }) {
+  const [promo, setPromo] = useState<string | null>(null);
+  const closePromo = useCallback(() => setPromo(null), []);
+  const scroll = useFloatingScroll();
+  const cols = ["Item Code", "Item Name", "Qty", "Uom", "Base Price", "STD Disc %", "CT Disc %",
+    ...(lines.some((l) => l.pmCode) ? ["PM Code"] : []), "PM Disc %", "Unit Price", "Line Total", "VAT"];
+  const [widths, setWidths] = useState<Record<string, number>>({});
+  const widthOf = (c: string) => widths[c] ?? LINE_COL_WIDTH[c] ?? 100;
+  const startResize = (c: string) => (e: ReactMouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const x0 = e.clientX, w0 = widthOf(c);
+    const move = (ev: MouseEvent) => setWidths((w) => ({ ...w, [c]: Math.max(50, w0 + ev.clientX - x0) }));
+    const up = () => { window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); document.body.style.cursor = ""; };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+    document.body.style.cursor = "col-resize";
+  };
+  const right = (c: string) => !["Item Code", "Item Name", "Uom", "PM Code"].includes(c);
+  const dash = <span style={{ color: "var(--text-tertiary, #94A3B8)" }}>—</span>;
+  const pct = (v: number) => (v ? `${Number(v.toFixed(2))}%` : dash);
+  const cell = (l: OrderLine, c: string): ReactNode => {
+    switch (c) {
+      case "Item Code": return <span style={{ fontFamily: "monospace", fontWeight: 600, paddingLeft: l.gift ? 14 : 0 }}>{l.gift ? "↳ " : ""}{l.item}</span>;
+      case "Item Name": return <>{l.gift && <span aria-hidden>🎁 </span>}{l.name}{l.gift && <span style={{ marginLeft: 6 }}><Badge label="FREE" tone="success" /></span>}</>;
+      case "Qty": return l.qty;
+      case "Uom": return l.uom;
+      case "Base Price": return money(l.basePrice);
+      case "STD Disc %": return pct(l.stdPct);
+      case "CT Disc %": return pct(l.ctPct);
+      case "PM Code": return l.pmCode ? (
+        <button type="button" onClick={() => setPromo(l.pmCode)} title={`${l.pmName ?? ""}\nClick to see the promotion program`.trim()}
+          style={{ fontFamily: "monospace", fontSize: "inherit", color: "var(--color-primary, #0F766E)", textDecoration: "underline", background: "none", border: 0, padding: 0, cursor: "pointer" }}>
+          {l.pmCode}
+        </button>
+      ) : dash;
+      case "PM Disc %": return pct(l.pmPct);
+      case "Unit Price": return money(l.unitPrice);
+      case "Line Total": return <strong>{money(l.total)}</strong>;
+      case "VAT": return l.vatPct === null ? "—" : <>{money(l.vat)} ({Number(l.vatPct)}%)</>;
+    }
+    return null;
+  };
   return (
     <div>
-      {p.noTemplate && (
-        <div style={{ fontSize: "0.8125rem", color: "#B45309" }}>
-          No SAP approval request for this Sales Order — SAP didn&apos;t require approval (no Approval Template applied when it was set to C).
-        </div>
-      )}
-      {p.templates.map((t) => (
-        <div key={t.wtmCode} style={{ marginBottom: "0.75rem" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center" }}>
-            <span style={{ fontWeight: 700, fontSize: "0.8125rem" }}>{t.name}</span>
-            <Badge label={t.state === "approved" ? "Approved" : t.state === "rejected" ? "Rejected" : "In progress"} tone={t.state === "approved" ? "success" : t.state === "rejected" ? "error" : "warning"} />
-          </div>
-          {t.warning && <div style={{ fontSize: "0.7rem", color: "#B45309", marginTop: 2 }}>⚠ {t.warning}</div>}
-          <div style={{ display: "grid", gap: 6, marginTop: 6 }}>
-            {t.stages.map((st) => {
-              const m = STAGE_META[st.state];
-              const decided = new Map(st.approvals.concat(st.rejections).map((x) => [(x.sapUserCode ?? "").toLowerCase(), x]));
-              return (
-                <div key={st.wstCode} style={{ border: `1px solid ${st.state === "current" ? m.color : "var(--color-gray-200, #E2E8F0)"}`, borderRadius: 8, padding: "0.5rem 0.6rem", background: st.state === "current" ? m.bg : undefined }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 6, fontSize: "0.78rem" }}>
-                    <span><span style={{ color: m.color, fontWeight: 800 }}>{m.icon}</span> <strong>Stage {st.sortId}: {st.name}</strong></span>
-                    <span style={{ color: "var(--text-secondary, #64748B)", whiteSpace: "nowrap" }}>{st.approvals.length}/{st.maxReqr} approval{st.maxReqr === 1 ? "" : "s"}</span>
-                  </div>
-                  {st.remarks && <div style={{ fontSize: "0.7rem", color: "var(--text-tertiary)" }}>{st.remarks}</div>}
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 4 }}>
-                    {st.authorizers.map((a) => {
-                      const dec = decided.get(a.userCode.toLowerCase());
-                      return (
-                        <span key={a.userCode} title={a.name ?? undefined} style={{
-                          fontSize: "0.7rem", padding: "0.1rem 0.45rem", borderRadius: 999, fontWeight: isMe(a.userCode) ? 800 : 600,
-                          border: `1px solid ${isMe(a.userCode) ? "var(--color-primary, #2BBCB3)" : "var(--color-gray-200, #E2E8F0)"}`,
-                          background: dec ? (dec.decision === "approved" ? "#D1FAE5" : "#FEE2E2") : "var(--bg-primary, #fff)",
-                        }}>
-                          {dec ? (dec.decision === "approved" ? "✓ " : "✕ ") : ""}{a.userCode}{isMe(a.userCode) ? " (you)" : ""}
-                        </span>
-                      );
-                    })}
-                    {st.authorizers.length === 0 && <span style={{ fontSize: "0.7rem", color: "#B91C1C" }}>No authorizers set in SAP</span>}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      ))}
-      {p.state === "pending" && p.waitingFor.length > 0 && (
-        <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>Waiting for: <strong>{p.waitingFor.join(", ")}</strong></div>
-      )}
+    <div ref={scroll.wrapRef} onScroll={scroll.onWrapScroll} style={{ overflowX: "auto", scrollbarWidth: "none" }}>
+      <table ref={scroll.tableRef} style={{ ...styles.table, fontSize: "0.78rem", tableLayout: "fixed", width: cols.reduce((t, c) => t + widthOf(c), 0) }}>
+        <colgroup>{cols.map((c) => <col key={c} style={{ width: widthOf(c) }} />)}</colgroup>
+        <thead><tr>{cols.map((c) => (
+          <th key={c} style={{ ...styles.th, padding: "0.5rem 0.75rem", textAlign: right(c) ? "right" : "left", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", position: "relative" }}>
+            {c}
+            <span onMouseDown={startResize(c)} onDoubleClick={() => setWidths((w) => { const n = { ...w }; delete n[c]; return n; })}
+              title="Drag to resize · double-click to reset"
+              style={{ position: "absolute", top: 0, right: 0, width: 6, height: "100%", cursor: "col-resize", borderRight: "2px solid var(--color-gray-200, #E2E8F0)" }} />
+          </th>
+        ))}</tr></thead>
+        <tbody>
+          {lines.map((l, i) => (
+            <tr key={i} style={l.gift ? { background: "var(--color-success-light, #ECFDF5)" } : undefined}>
+              {cols.map((c) => (
+                <td key={c} style={{ ...styles.td, padding: "0.4rem 0.75rem", textAlign: right(c) ? "right" : "left", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: c === "Item Name" ? "normal" : "nowrap" }}>
+                  {cell(l, c)}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+      {scroll.bar}
+      {promo && <PromotionModal docEntry={docEntry} code={promo} onClose={closePromo} />}
     </div>
   );
 }
@@ -249,7 +365,9 @@ function SimpleTable({ columns, rows, compact }: { columns: SubTable["columns"];
   );
 }
 
-function CheckTable({ check }: { check: Check }) {
+function CheckTable({ check, docEntry }: { check: Check; docEntry: number }) {
+  const [promo, setPromo] = useState<string | null>(null);
+  const closePromo = useCallback(() => setPromo(null), []);
   // Rows with a nested table (an item's batches) can be opened; failing ones start open.
   const [open, setOpen] = useState<Set<number>>(() => new Set(check.rows.map((r, i) => (r._sub && r._status === "fail" ? i : -1)).filter((i) => i >= 0)));
   if (!check.rows.length) return null;
@@ -274,7 +392,13 @@ function CheckTable({ check }: { check: Check }) {
                   <td style={{ ...styles.td, padding: pad, color: m.color, fontWeight: 800 }}>{m.icon}</td>
                   {check.columns.map((c, ci) => (
                     <td key={c.key} style={{ ...styles.td, padding: pad, textAlign: c.align ?? "left", fontVariantNumeric: "tabular-nums" }}>
-                      {cellText(r[c.key])}
+                      {/* Step 4 "Program" opens the promotion program popup (same as PM Code in Order lines). */}
+                      {check.key === "promotion" && c.key === "program" && typeof r[c.key] === "string" && r[c.key] ? (
+                        <button type="button" onClick={() => setPromo(String(r[c.key]))} title="Click to see the promotion program"
+                          style={{ fontFamily: "monospace", fontSize: "inherit", color: "var(--color-primary, #0F766E)", textDecoration: "underline", background: "none", border: 0, padding: 0, cursor: "pointer" }}>
+                          {String(r[c.key])}
+                        </button>
+                      ) : cellText(r[c.key])}
                       {ci === 0 && sub && (
                         <button onClick={() => setOpen((s) => { const n = new Set(s); if (n.has(i)) n.delete(i); else n.add(i); return n; })}
                           style={{ marginLeft: 6, border: "none", background: "none", color: "var(--color-primary, #2BBCB3)", cursor: "pointer", fontSize: "0.72rem", fontWeight: 700 }}>
@@ -296,13 +420,7 @@ function CheckTable({ check }: { check: Check }) {
           })}
         </tbody>
       </table>
-      {check.key === "stock" && (
-        <div style={{ fontSize: "0.7rem", color: "var(--text-tertiary)", padding: "0.4rem 0.75rem", lineHeight: 1.5 }}>
-          * Committed = open Sales Orders + transfer requests + production orders (SAP QRM_Inventory by Warehouse); &quot;by others&quot; leaves out
-          this order. Available for order = On hand − Committed by others. Meets shelf life = qty of the batches inside the customer&apos;s
-          required range. Usable = the smaller of the two (SAP doesn&apos;t reserve batches, so other orders may take the good ones first).
-        </div>
-      )}
+      {promo && <PromotionModal docEntry={docEntry} code={promo} onClose={closePromo} />}
     </div>
   );
 }
@@ -415,13 +533,18 @@ It goes back to U_DataStatus I in SAP (not released) and waits for approval agai
     }
   };
 
-  if (loading && !d) return <div style={styles.page}><div style={styles.empty}>Loading — checking prices, stock and AR in SAP…</div></div>;
+  if (loading && !d) return <div style={styles.page}><div style={styles.empty}>Loading — checking prices, discounts and AR in SAP…</div></div>;
   if (error && !d) return <div style={styles.page}><div style={styles.container}><BackLink href={`${base}/approvals`} label="← Back to queue" /><div style={{ ...styles.cardPadded, marginTop: "1rem", color: "#B91C1C" }}>{error}</div></div></div>;
   if (!d) return null;
 
   const { order, sap, ar } = d;
   const sapReady = !!d.sapSession || d.sapAccount.hasPassword || d.decide.override;
   const sapAs = d.sapSession?.sapUser ?? (d.sapAccount.hasPassword ? d.sapUserCode : null);
+  // "Approval [SO01. SO - GT] [acc03] checklist": the SAP Approval Template(s) and the approving SAP user.
+  const templateNames = (d.procedure.templates.some((t) => t.state === "pending")
+    ? d.procedure.templates.filter((t) => t.state === "pending") : d.procedure.templates).map((t) => t.name).filter(Boolean);
+  const approver = sapAs ?? d.sapUserCode;
+  const checklistTitle = `Approval ${templateNames.length ? `[${templateNames.join(", ")}] ` : ""}${approver ? `[${approver}] ` : ""}checklist`;
   const statusBadge = order.arStatus === "approved" ? <Badge label="Approved" tone="success" /> : order.arStatus === "rejected" ? <Badge label="Rejected" tone="error" /> : <Badge label="Waiting for approval" tone="warning" />;
 
   return (
@@ -456,6 +579,22 @@ It goes back to U_DataStatus I in SAP (not released) and waits for approval agai
                   {order.supervisorName ? ` · Supervisor ${order.supervisorName}` : ""}{order.createdByStaff ? ` · Created by ${order.createdByStaff}` : ""}
                 </div>
               </div>
+              {/* ── Order information: Bill to, Ship to, Phone, Remarks (from the SAP SO; portal values as fallback) ── */}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "0.6rem 1.5rem", marginTop: "0.75rem", maxWidth: 900 }}>
+                {[
+                  { k: "Bill to", code: sap?.billToCode, v: sap?.billTo },
+                  { k: "Ship to", code: sap?.shipToCode, v: sap?.shipTo ?? order.deliveryAddress },
+                  { k: "Phone", v: sap?.phone ?? order.contactPhone },
+                  { k: "Remarks", v: sap?.comments },
+                ].map((f) => (
+                  <div key={f.k}>
+                    <div style={label}>{f.k}</div>
+                    <div style={{ fontSize: "0.8125rem", whiteSpace: "pre-line", color: f.v || f.code ? undefined : "var(--text-tertiary, #94A3B8)" }}>
+                      {f.code && <strong>{f.code}{f.v ? " · " : ""}</strong>}{f.v || (f.code ? "" : "—")}
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(120px, auto))", gap: "0.5rem 1.5rem", alignContent: "start" }}>
               <div><div style={label}>Excl. tax</div><div style={{ fontSize: "1.1rem", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{money(sap?.totalExclTax)}</div></div>
@@ -463,13 +602,12 @@ It goes back to U_DataStatus I in SAP (not released) and waits for approval agai
               <div><div style={label}>Incl. tax</div><div style={{ fontSize: "1.35rem", fontWeight: 800, color: "var(--color-primary, #2BBCB3)", fontVariantNumeric: "tabular-nums" }}>{money(sap?.totalInclTax)}</div></div>
             </div>
           </div>
-          {sap?.comments && <div style={{ marginTop: "0.75rem", padding: "0.5rem 0.75rem", background: "var(--bg-secondary, #F8FAFC)", borderRadius: 8, fontSize: "0.8125rem" }}><span style={label}>Remarks </span>{sap.comments}</div>}
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 2fr) minmax(300px, 1fr)", gap: "1rem", alignItems: "start" }} className="so-approval-grid">
-          {/* ── Main: checklist stepper ── */}
+        {/* Full width: checklist, decision, order lines, customer credit & AR, history. */}
+        <div>
           <div>
-            <Card title="Approval checklist" right={<span style={{ fontSize: "0.75rem", color: "var(--text-tertiary)" }}>checked {new Date(d.checkedAt).toLocaleTimeString()}</span>}>
+            <Card title={checklistTitle} right={<span style={{ fontSize: "0.75rem", color: "var(--text-tertiary)" }}>checked {new Date(d.checkedAt).toLocaleTimeString()}</span>}>
               <div style={{ display: "grid", gap: "0.5rem" }}>
                 {checks.map((c, i) => {
                   const m = STATUS_META[c.status];
@@ -492,7 +630,7 @@ It goes back to U_DataStatus I in SAP (not released) and waits for approval agai
                       </button>
                       {open && (
                         <div style={{ padding: "0 1rem 1rem" }}>
-                          <CheckTable check={c} />
+                          <CheckTable check={c} docEntry={order.docEntry} />
                           <div style={{ marginTop: "0.75rem", padding: "0.6rem 0.75rem", borderRadius: 8, background: m.bg, color: m.color, fontSize: "0.8125rem", fontWeight: 600 }}>
                             System: {c.recommendation}
                           </div>
@@ -547,7 +685,7 @@ It goes back to U_DataStatus I in SAP (not released) and waits for approval agai
               ) : (
                 <>
                   <div style={{ padding: "0.6rem 0.75rem", borderRadius: 8, background: STATUS_META[overall].bg, color: STATUS_META[overall].color, fontSize: "0.8125rem", fontWeight: 700, marginBottom: "0.75rem" }}>
-                    {overall === "pass" ? "System recommends: APPROVE — all six checks passed."
+                    {overall === "pass" ? "System recommends: APPROVE — all five checks passed."
                       : overall === "fail" ? `System does NOT recommend approving — ${checks.filter((c) => c.status === "fail").map((c) => c.title).join(", ")}.`
                       : `Review needed — ${checks.filter((c) => c.status !== "pass").map((c) => c.title).join(", ")}.`}
                   </div>
@@ -582,7 +720,7 @@ It goes back to U_DataStatus I in SAP (not released) and waits for approval agai
                   <div style={{ display: "flex", gap: 8, marginTop: "0.75rem", flexWrap: "wrap" }}>
                     <button style={btn("success", busy || !allReviewed || !sapReady || !d.decide.canDecide)} disabled={busy || !allReviewed || !sapReady || !d.decide.canDecide} onClick={() => decide("approved")}>
                       {busy ? "Working…" : d.decide.completes
-                        ? `✓ Approve & release in SAP${sapAs ? ` as ${sapAs}` : ""}`
+                        ? "✓ Approve & Release SAP"
                         : `✓ Approve stage${sapAs ? ` as ${sapAs}` : ""}`}
                     </button>
                     <button style={btn("danger", busy || !d.decide.canDecide)} disabled={busy || !d.decide.canDecide} onClick={() => decide("rejected")}>✕ Reject</button>
@@ -599,27 +737,43 @@ It goes back to U_DataStatus I in SAP (not released) and waits for approval agai
 
             {/* ── Order lines ── */}
             <Card title={`Order lines (${order.lines.length})`}>
-              <div style={{ overflowX: "auto" }}>
-                <table style={{ ...styles.table, fontSize: "0.78rem" }}>
-                  <thead><tr>{["Item", "Name", "Qty", "Price", "Disc %", "Total"].map((h, i) => <th key={h} style={{ ...styles.th, padding: "0.5rem 0.75rem", textAlign: i >= 2 ? "right" : "left" }}>{h}</th>)}</tr></thead>
-                  <tbody>
-                    {order.lines.map((l, i) => (
-                      <tr key={i}>
-                        <td style={{ ...styles.td, padding: "0.4rem 0.75rem" }}>
-                          {l.item}
-                          {l.gift && <span style={{ marginLeft: 6 }}><Badge label="Free" tone="success" /></span>}
-                          {l.kind && <span style={{ marginLeft: 6 }}><Badge label={l.kind} tone="neutral" /></span>}
-                        </td>
-                        <td style={{ ...styles.td, padding: "0.4rem 0.75rem" }}>{l.name}</td>
-                        <td style={{ ...styles.td, padding: "0.4rem 0.75rem", textAlign: "right" }}>{l.qty} {l.uom}</td>
-                        <td style={{ ...styles.td, padding: "0.4rem 0.75rem", textAlign: "right" }}>{money(l.price)}</td>
-                        <td style={{ ...styles.td, padding: "0.4rem 0.75rem", textAlign: "right" }}>{l.discountPct ? `${l.discountPct}%` : "—"}</td>
-                        <td style={{ ...styles.td, padding: "0.4rem 0.75rem", textAlign: "right", fontWeight: 600 }}>{money(l.total)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              <OrderLinesTable lines={order.lines} docEntry={order.docEntry} />
+            </Card>
+
+            {/* ── Customer credit & AR ── */}
+            <Card title="Customer credit & AR" right={ar && ar.overdueInvoiceCount > 0 ? <Badge label="Overdue" tone="error" /> : ar && ar.openInvoiceCount ? <Badge label="Open invoices" tone="warning" /> : <Badge label="Clear" tone="success" />}>
+              {!ar ? <div style={{ color: "#B91C1C", fontSize: "0.8125rem" }}>AR data unavailable from SAP.</div> : (
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: "0.5rem 2rem", alignItems: "start" }}>
+                  <div>
+                  <CreditBar ar={ar} />
+                  <div style={{ marginTop: "0.75rem" }}>
+                    <Stat k="AR balance" v={money(ar.balance)} />
+                    <Stat k="Open Sales Orders" v={money(ar.openOrders)} sub="incl. this order" />
+                    <Stat k="Delivered, not invoiced" v={money(ar.openDeliveries)} />
+                    <Stat k="Invoices not reconciled" v={`${ar.openInvoiceCount} · ${money(ar.openInvoiceAmount)}`} tone={ar.openInvoiceCount ? "warn" : "good"} />
+                    <Stat k="Overdue" v={`${ar.overdueInvoiceCount} · ${money(ar.overdueAmount)}`} tone={ar.overdueInvoiceCount ? "bad" : "good"} sub={ar.overdueInvoiceCount ? `oldest ${ar.oldestOverdueDays} days` : undefined} />
+                    {ar.unreconciledCreditCount > 0 && <Stat k="Payments / credits not reconciled" v={`${ar.unreconciledCreditCount} · −${money(ar.unreconciledCredits)}`} tone="warn" />}
+                    <Stat k="Net open (AR aging)" v={money(ar.agingTotal)} />
+                  </div>
+                  </div>
+                  <div>
+                  <div style={{ ...label, margin: "0.875rem 0 0.5rem", display: "flex", justifyContent: "space-between" }}>
+                    <span>AR aging (days past due)</span><span style={{ textTransform: "none", letterSpacing: 0 }}>as of {ar.agingAsOf}</span>
+                  </div>
+                  <Aging ar={ar} />
+                  {d.arBrands && (
+                    <div style={{ fontSize: "0.7rem", color: "var(--text-tertiary)", marginTop: 6 }}>
+                      Aging covers your brands only: {d.arBrands.join(", ")}. AR balance / credit limit are the customer&apos;s totals in SAP.
+                    </div>
+                  )}
+                  <a href={`${base}/ar-aging?card=${encodeURIComponent(ar.cardCode)}`} target="_blank" rel="noreferrer"
+                    style={{ display: "inline-block", marginTop: "0.6rem", fontSize: "0.75rem", fontWeight: 700, color: "var(--color-primary, #2BBCB3)" }}>
+                    Open in AR Aging ↗
+                  </a>
+                  {(ar.phone || ar.email) && <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)", marginTop: "0.75rem" }}>{[ar.phone, ar.email].filter(Boolean).join(" · ")}</div>}
+                  </div>
+                </div>
+              )}
             </Card>
 
             {d.history.length > 0 && (
@@ -650,71 +804,8 @@ It goes back to U_DataStatus I in SAP (not released) and waits for approval agai
             )}
           </div>
 
-          {/* ── Side: SAP approval procedure, customer credit / AR ── */}
-          <div style={{ position: "sticky", top: "1rem" }}>
-            <Card title="SAP approval request" right={d.decide.requestNo ? <span style={{ fontSize: "0.75rem", color: "var(--text-tertiary)" }}>#{d.decide.requestNo}</span> : undefined}>
-              <ProcedureCard p={d.procedure} me={d.sapUserCode} />
-            </Card>
-
-            <Card title="Customer credit & AR" right={ar && ar.overdueInvoiceCount > 0 ? <Badge label="Overdue" tone="error" /> : ar && ar.openInvoiceCount ? <Badge label="Open invoices" tone="warning" /> : <Badge label="Clear" tone="success" />}>
-              {!ar ? <div style={{ color: "#B91C1C", fontSize: "0.8125rem" }}>AR data unavailable from SAP.</div> : (
-                <>
-                  <CreditBar ar={ar} />
-                  <div style={{ marginTop: "0.75rem" }}>
-                    <Stat k="AR balance" v={money(ar.balance)} />
-                    <Stat k="Open Sales Orders" v={money(ar.openOrders)} sub="incl. this order" />
-                    <Stat k="Delivered, not invoiced" v={money(ar.openDeliveries)} />
-                    <Stat k="Invoices not reconciled" v={`${ar.openInvoiceCount} · ${money(ar.openInvoiceAmount)}`} tone={ar.openInvoiceCount ? "warn" : "good"} />
-                    <Stat k="Overdue" v={`${ar.overdueInvoiceCount} · ${money(ar.overdueAmount)}`} tone={ar.overdueInvoiceCount ? "bad" : "good"} sub={ar.overdueInvoiceCount ? `oldest ${ar.oldestOverdueDays} days` : undefined} />
-                    {ar.unreconciledCreditCount > 0 && <Stat k="Payments / credits not reconciled" v={`${ar.unreconciledCreditCount} · −${money(ar.unreconciledCredits)}`} tone="warn" />}
-                    <Stat k="Net open (AR aging)" v={money(ar.agingTotal)} />
-                  </div>
-                  <div style={{ ...label, margin: "0.875rem 0 0.5rem", display: "flex", justifyContent: "space-between" }}>
-                    <span>AR aging (days past due)</span><span style={{ textTransform: "none", letterSpacing: 0 }}>as of {ar.agingAsOf}</span>
-                  </div>
-                  <Aging ar={ar} />
-                  {d.arBrands && (
-                    <div style={{ fontSize: "0.7rem", color: "var(--text-tertiary)", marginTop: 6 }}>
-                      Aging covers your brands only: {d.arBrands.join(", ")}. AR balance / credit limit are the customer&apos;s totals in SAP.
-                    </div>
-                  )}
-                  <a href={`${base}/ar-aging?card=${encodeURIComponent(ar.cardCode)}`} target="_blank" rel="noreferrer"
-                    style={{ display: "inline-block", marginTop: "0.6rem", fontSize: "0.75rem", fontWeight: 700, color: "var(--color-primary, #2BBCB3)" }}>
-                    Open in AR Aging ↗
-                  </a>
-                  {(ar.phone || ar.email) && <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)", marginTop: "0.75rem" }}>{[ar.phone, ar.email].filter(Boolean).join(" · ")}</div>}
-                </>
-              )}
-            </Card>
-
-            <Card title="SAP account">
-              {d.decide.override && !d.sapSession && !d.sapAccount.hasPassword ? (
-                <div style={{ fontSize: "0.8125rem" }}>
-                  Super Admin decisions are released in SAP by the portal&apos;s SAP integration login.
-                </div>
-              ) : !d.sapUserCode || !d.sapAccount.hasPassword ? (
-                <div style={{ fontSize: "0.8125rem" }}>
-                  <div style={{ color: "#B45309", fontWeight: 600 }}>
-                    {d.sapUserCode ? `No SAP password saved for ${d.sapUserCode}.` : "No SAP user is linked to your account."}
-                  </div>
-                  <div style={{ marginTop: 4 }}>Enter your SAP user and password once in My Profile — approving then signs in to SAP automatically.</div>
-                  <a href={`${base}/change-password`} style={{ ...btn("primary"), display: "inline-block", marginTop: 8, textDecoration: "none" }}>Open My Profile →</a>
-                </div>
-              ) : (
-                <div style={{ fontSize: "0.8125rem" }}>
-                  Approving as SAP user <strong>{d.sapUserCode}</strong>
-                  <div style={{ fontSize: "0.75rem", color: "var(--text-tertiary)", marginTop: 2 }}>
-                    Password saved{d.sapAccount.updatedAt ? ` ${d.sapAccount.updatedAt.slice(0, 16).replace("T", " ")}` : ""} (encrypted)
-                    {d.sapSession ? ` · signed in to SAP until about ${new Date(d.sapSession.expiresAt).toLocaleTimeString()}` : " · signs in to SAP when you approve"}
-                  </div>
-                  <a href={`${base}/change-password`} style={{ fontSize: "0.75rem", fontWeight: 700, color: "var(--color-primary, #2BBCB3)" }}>Changed your SAP password? Update it in My Profile</a>
-                </div>
-              )}
-            </Card>
-          </div>
         </div>
       </div>
-      <style>{`@media (max-width: 900px) { .so-approval-grid { grid-template-columns: 1fr !important; } }`}</style>
     </div>
   );
 }

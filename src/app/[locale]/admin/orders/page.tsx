@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { NewBadge, NOTIFICATIONS_EVENT } from "../StaffInbox";
 import { useLocale } from "next-intl";
-import { styles, btn, Badge, LoadingOrEmpty, ORDER_STATUS_LABELS } from "../adminUi";
+import { styles, btn, Badge, LoadingOrEmpty, ORDER_STATUS_LABELS, orderStatusDisplay } from "../adminUi";
 import SelfCreateOrderDialog from "./SelfCreateOrderDialog";
 import { useStaffBase } from "../layout";
 import { VN_TIME_ZONE } from "@/lib/vnTime";
@@ -29,11 +29,6 @@ interface Order {
   sap_outdated_at?: string | null;
 }
 
-const STATUS_TONE: Record<string, "success" | "warning" | "error" | "neutral"> = {
-  draft: "neutral", submitted: "warning", processing: "warning",
-  sap_draft_created: "warning", approved: "success", delivered: "success",
-  completed: "success", rejected: "error", cancelled: "neutral",
-};
 
 function formatPrice(v: string) {
   return new Intl.NumberFormat("vi-VN").format(Number(v)) + "₫";
@@ -152,7 +147,7 @@ export default function AdminOrdersPage() {
 
         {/* ── Status pills ──────────────────────────────────────── */}
         <div style={{ display: "flex", gap: "0.5rem", marginBottom: "1rem", flexWrap: "wrap" }}>
-          {["", "submitted", "processing", "sap_draft_created", "approved", "delivered", "completed", "rejected", "cancelled"].map((s) => (
+          {["", "submitted", "processing", "sap_draft_created", "approved", "ar_approved", "delivered", "completed", "rejected", "cancelled"].map((s) => (
             <button
               key={s || "all"}
               onClick={() => setStatus(s)}
@@ -164,7 +159,7 @@ export default function AdminOrdersPage() {
                 border: status === s ? "none" : "1px solid var(--color-gray-200, #E2E8F0)",
               }}
             >
-              {s ? ORDER_STATUS_LABELS[s] || s : "All"}
+              {s === "ar_approved" ? "AR Approved" : s ? ORDER_STATUS_LABELS[s] || s : "All"}
             </button>
           ))}
         </div>
@@ -203,13 +198,7 @@ export default function AdminOrdersPage() {
                         {o.sap_so_number || "—"}
                       </td>
                       <td style={styles.td}>
-                        <Badge label={ORDER_STATUS_LABELS[o.status] || o.status} tone={STATUS_TONE[o.status] || "neutral"} />
-                        {o.ar_status && (
-                          <div style={{ marginTop: 3 }} title="SO Approval (Accountant)">
-                            <Badge label={o.ar_status === "pending" ? "⏳ Waiting approval" : o.ar_status === "approved" ? "✓ SO approved" : "✕ SO rejected"}
-                              tone={o.ar_status === "pending" ? "warning" : o.ar_status === "approved" ? "success" : "error"} />
-                          </div>
-                        )}
+                        <Badge {...orderStatusDisplay(o.status, o.ar_status)} />
                       </td>
                       <td style={{ ...styles.td, fontSize: "0.75rem", color: "var(--text-tertiary, #94A3B8)" }}>
                         {new Date(o.created_at).toLocaleString(undefined, { timeZone: VN_TIME_ZONE })}

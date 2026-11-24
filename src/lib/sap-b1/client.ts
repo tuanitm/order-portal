@@ -1173,6 +1173,12 @@ export class SapB1Client {
   /**
    * Get a Draft Sales Order by DocEntry
    */
+  /** Read any marketing document (a Draft or an A/R Invoice) as the integration user — read-only. */
+  async getDocument<T = Record<string, unknown>>(entity: 'Drafts' | 'Invoices', docEntry: number): Promise<T> {
+    await this.ensureSession();
+    return this.request<T>('GET', `/${entity}(${Number(docEntry)})`);
+  }
+
   async getDraftSalesOrder(docEntry: number): Promise<SapSalesOrderDraft & SapDocumentResponse> {
     await this.ensureSession();
     return this.request<SapSalesOrderDraft & SapDocumentResponse>(

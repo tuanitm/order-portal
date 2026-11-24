@@ -87,3 +87,32 @@ export async function queryHanaInSchema<T = Record<string, unknown>>(sql: string
     });
   });
 }
+
+/**
+ * CALL a stored procedure with bound IN parameters and return the rows of its
+ * first table OUT parameter (e.g. SAP Query Manager reports that call a
+ * "BTS_QRM_…" procedure). `procName` is the unquoted name in the configured
+ * schema; the HANA user needs EXECUTE on it.
+ */
+export async function callHanaProcedure<T = Record<string, unknown>>(procName: string, inParams: (string | number | null)[], outParams = 1): Promise<T[]> {
+  const { host, port, user, password, schema } = getConnectionParams();
+  const marks = Array.from({ length: inParams.length + outParams }, () => "?").join(", ");
+  const sql = `CALL "${schema.replace(/"/g, '""')}"."${procName.replace(/"/g, '""')}"(${marks})`;
+  return new Promise<T[]>((resolve, reject) => {
+    const client = hdb.createClient({ host, port, user, password });
+    client.on("error", (err) => reject(new Error(`[HANA] Connection error: ${err.message}`)));
+    client.connect((connectErr) => {
+      if (connectErr) { reject(new Error(`[HANA] Connect failed: ${connectErr.message}`)); return; }
+      client.prepare(sql, (prepErr, statement) => {
+        if (prepErr) { client.end(); reject(new Error(`[HANA] ${procName}: ${prepErr.message}`)); return; }
+        statement.exec(inParams, (execErr: Error | null, ...results: unknown[]) => {
+          client.end();
+          if (execErr) { reject(new Error(`[HANA] ${procName}: ${execErr.message}`)); return; }
+          // results = [scalar OUT params, table OUT #1, …]
+          const table = results.find((r) => Array.isArray(r)) as T[] | undefined;
+          resolve(table ?? []);
+        });
+      });
+    });
+  });
+}

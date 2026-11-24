@@ -47,7 +47,7 @@ const FUNCTION_LABEL: Record<string, string> = {
   dashboard: "Dashboard", customers: "Customer Approval", "sap-customers": "SAP Customers", "customer-groups": "Customer Groups",
   "catalog-visibility": "Catalog Visibility", items: "Items", "item-groups": "Item Groups", "price-lists": "Price Lists",
   warehouses: "Warehouses", "contract-discounts": "Contract Discount", promotions: "Promotion Discount", orders: "Orders", inventory: "Inventory",
-  "so-approval": "SO Approval", "ar-aging": "AR Aging",
+  "so-approval": "SO Approval", "ar-aging": "AR Aging", "sales-detail": "Sales Detail", "ar-invoice": "AR Invoice (CK)",
 };
 
 interface Draft {

@@ -27,6 +27,23 @@ export interface SapSoHeader {
   docStatus: string | null;      // O / C
   cancelled: boolean;
   dataStatus: string | null;     // U_DataStatus: I = waiting, C = released
+  /** Bill to / Ship to: address code (PayToCode / ShipToCode) and full text (Address / Address2). */
+  billToCode: string | null; billTo: string | null;
+  shipToCode: string | null; shipTo: string | null;
+  /** U_BPPhone — the order's contact phone (the portal push writes it). */
+  phone: string | null;
+}
+
+/**
+ * SAP's address text (ORDR.Address / Address2): lines separated by CRs and the
+ * country appended ("…, VIỆT NAM" + "VIETNAM") — joined into one line, without
+ * a trailing country the street line already names.
+ */
+function addressText(v: unknown): string | null {
+  const parts = String(v ?? "").split(/[\r\n]+/).map((p) => p.trim()).filter(Boolean);
+  const plain = (x: string) => x.normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/đ/gi, "d").replace(/\s+/g, "").toUpperCase();
+  if (parts.length > 1 && plain(parts.slice(0, -1).join(" ")).includes(plain(parts[parts.length - 1]))) parts.pop();
+  return parts.length ? parts.join(", ") : null;
 }
 
 function mapHeader(r: Record<string, unknown>): SapSoHeader {
@@ -39,6 +56,8 @@ function mapHeader(r: Record<string, unknown>): SapSoHeader {
     totalInclTax: total, vatSum: vat, totalExclTax: total - vat, discSum: num(r.DiscSum),
     comments: str(r.Comments), docStatus: str(r.DocStatus), cancelled: r.CANCELED === "Y",
     dataStatus: str(r.U_DataStatus),
+    billToCode: str(r.PayToCode), billTo: addressText(r.Address), shipToCode: str(r.ShipToCode), shipTo: addressText(r.Address2),
+    phone: str(r.U_BPPhone),
   };
 }
 
@@ -49,7 +68,8 @@ export async function getSapSoHeaders(docEntries: number[]): Promise<Map<number,
   const s = getHanaSchema();
   const rows = await queryHana<Record<string, unknown>>(
     `SELECT "DocEntry", "DocNum", "U_DocNo", "CardCode", "CardName", "DocDate", "DocDueDate", "DocTotal", "VatSum",
-            "DiscSum", "Comments", "DocStatus", "CANCELED", "U_DataStatus"
+            "DiscSum", "Comments", "DocStatus", "CANCELED", "U_DataStatus",
+            "PayToCode", "Address", "ShipToCode", "Address2", "U_BPPhone"
        FROM "${s}"."ORDR" WHERE "DocEntry" IN (${ids.join(",")})`
   );
   return new Map(rows.map((r) => [num(r.DocEntry), mapHeader(r)]));

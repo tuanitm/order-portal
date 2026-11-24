@@ -1,4 +1,4 @@
-
+﻿
 
 The OrdersService_GetApprovalTemplates check ran, and SAP says no approval template applies, even for a GT customer, with U_DataStatus = C, asked by sa02 (an originator of SO01). Nothing was saved: OWDD still has 10,668 requests and the newest SO is still 21770.
 
@@ -14,7 +14,8 @@ select 'TRUE' from OCRD T1
  where T1."CardCode" = $[ORDR."CardCode"]
    and $[ORDR."U_DataStatus"] in ('C')
    and ifnull(T1."U_CusGrp01",'') in ('GT')
-It's $[ORDR."CardCode"] instead of $[$4.0.0]. The consultant must confirm that this form also works in the SAP client, so salespeople's approvals keep working.
+It's $[ORDR."CardCode"] instead of $[$4.0.0]. 
+The consultant must confirm that this form also works in the SAP client, so salespeople's approvals keep working.
 
 Suggested next steps
 

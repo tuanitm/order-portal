@@ -14,7 +14,7 @@ export interface Product {
 }
 
 /** One free gift of a buy-X-get-Y program. */
-export interface GiftRule { code: string | null; name: string | null; buyQty: number; giveItemCode: string; giveItemName: string | null; giveQty: number }
+export interface GiftRule { code: string | null; name: string | null; buyQty: number; giveItemCode: string; giveItemName: string | null; giveQty: number; /** Program end date YYYY-MM-DD (null = open-ended). */ validTo?: string | null }
 
 /**
  * A buy-X-get-Y choice. `extra` is set when the SAME program also gives the
@@ -32,13 +32,16 @@ export interface ProductWithPricing extends Product {
   periodDiscPct: number;
   contractDiscPct: number;
   promoDiscPct: number;
+  /** End date (YYYY-MM-DD) of today's period / contract discount; null = open-ended or none. */
+  periodDiscValidTo?: string | null;
+  contractDiscValidTo?: string | null;
   hasPromotion: boolean;
   promotionTitle?: string;
   /** The chosen (default: best-match) percent-discount program's code — see promotionOptions. */
   promotionCode?: string;
   /** Every currently-valid percent-discount program for this item, best-match first (index 0 matches promoDiscPct/promotionTitle/promotionCode above).
    *  Length > 1 means the customer qualifies for more than one program at once — the product card shows a picker only in that case. */
-  promotionOptions: { code: string | null; name: string | null; pct: number }[];
+  promotionOptions: { code: string | null; name: string | null; pct: number; validTo?: string | null }[];
   /** Buy-X-get-Y ("bonus item") promotion, independent of the percent discount above. */
   hasBuyGivePromo: boolean;
   promoBuyQty?: number;

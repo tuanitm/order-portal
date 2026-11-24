@@ -2,26 +2,22 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams } from "next/navigation";
-import { styles, btn, Badge, BackLink, SyncButton, ORDER_STATUS_LABELS } from "../../adminUi";
+import { styles, btn, Badge, BackLink, SyncButton, ORDER_STATUS_LABELS, orderStatusDisplay } from "../../adminUi";
 import SelfCreateOrderDialog, { type DuplicateSource } from "../SelfCreateOrderDialog";
 import { useStaffBase, useAdminSession } from "../../layout";
 import EditOrderDialog from "../EditOrderDialog";
+import { useFloatingScroll, useColumnWidths } from "../../tableTools";
 import { VN_TIME_ZONE } from "@/lib/vnTime";
 
 // 'cancelled' is excluded from the dropdown — it's set exclusively via the
 // dedicated "Cancel Order" button below, which also removes the SAP Draft
 // if one was already pushed (see POST .../cancel). It stays in
-// ORDER_STATUS_LABELS/STATUS_TONE so an already-cancelled order still
+// ORDER_STATUS_LABELS / orderStatusDisplay so an already-cancelled order still
 // displays correctly.
 const STATUSES = ["draft", "submitted", "processing", "sap_draft_created", "approved", "delivered", "rejected", "completed"];
 const TERMINAL_STATUSES = ["cancelled", "completed", "rejected"];
 /** No Edit order / Update SAP (see NON_EDITABLE_STATUSES in lib/orderSapUpdate.ts). */
 const EDIT_LOCKED_STATUSES = ["cancelled", "completed", "rejected", "delivered"];
-const STATUS_TONE: Record<string, "success" | "warning" | "error" | "neutral"> = {
-  draft: "neutral", submitted: "warning", processing: "warning",
-  sap_draft_created: "warning", approved: "success", delivered: "success",
-  completed: "success", rejected: "error", cancelled: "neutral",
-};
 
 interface OrderDetail {
   id: number; order_number: string; customer_name: string | null; customer_email: string | null;
@@ -34,6 +30,8 @@ interface OrderDetail {
   created_by_admin_id: number | null; created_by_admin_email: string | null;
   bill_to_code: string | null; billing_address: string | null; ship_to_code: string | null;
   supervisor_code: string | null; supervisor_name: string | null;
+  /** SO Approval (Accountant) state — drives the single status badge. */
+  ar_status: "pending" | "approved" | "rejected" | null;
   /** Edit order / Update SAP: set while portal edits are not yet in SAP. */
   sap_outdated_at: string | null; sap_updated_at: string | null; sap_updated_by_email: string | null;
   edited_at: string | null; edited_by_email: string | null;
@@ -294,7 +292,16 @@ function ConfirmQtyInput({ line, onSave }: { line: OrderLine; onSave: (lineId: n
   );
 }
 
+// Order lines table — column order and starting widths (px); the user can drag each header edge (remembered in this browser).
+const LINE_COLS = ["Item Code", "Item Name", "Avail Qty", "Qty", "Cfm Qty", "Uom", "Base Price", "STD Disc %", "CT Disc %", "PM Disc %", "Unit Price", "Line Total", "VAT"] as const;
+const LINE_COL_WIDTH: Record<string, number> = {
+  "Item Code": 120, "Item Name": 320, "Avail Qty": 90, "Qty": 80, "Cfm Qty": 130, "Uom": 70, "Base Price": 110,
+  "STD Disc %": 85, "CT Disc %": 85, "PM Disc %": 85, "Unit Price": 110, "Line Total": 120, "VAT": 140,
+};
+
 export default function AdminOrderDetailPage() {
+  const linesScroll = useFloatingScroll();
+  const lineCols = useColumnWidths((c) => LINE_COL_WIDTH[c] ?? 100, "imv.orderLines.colWidths");
   const params = useParams<{ id: string; locale: string }>();
   const [order, setOrder] = useState<OrderDetail | null>(null);
   const [lines, setLines] = useState<OrderLine[]>([]);
@@ -585,7 +592,7 @@ export default function AdminOrderDetailPage() {
 
         <div style={{ ...styles.cardPadded }}>
           <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", marginBottom: "1rem", flexWrap: "wrap" }}>
-            <Badge label={ORDER_STATUS_LABELS[order.status] || order.status} tone={STATUS_TONE[order.status] || "neutral"} />
+            <Badge {...orderStatusDisplay(order.status, order.ar_status)} />
             {TERMINAL_STATUSES.includes(order.status) && duplicateButton}
             {!TERMINAL_STATUSES.includes(order.status) && (
               <>
@@ -755,31 +762,32 @@ export default function AdminOrderDetailPage() {
           </div>
         </div>
 
-        <div style={styles.card}>
-          <div style={{ overflowX: "auto" }}>
-            <table style={styles.table}>
+        {/* overflow visible (not the card's hidden) so the floating scrollbar can stick to the window bottom */}
+        <div style={{ ...styles.card, overflow: "visible" }}>
+          <div style={{ display: "flex", justifyContent: "flex-end", padding: "0.375rem 0.75rem 0" }}>
+            <button type="button" onClick={lineCols.resetAll} title="Drag a column header's right edge to resize it; double-click it to reset that column"
+              style={{ border: "none", background: "none", cursor: "pointer", fontSize: "0.75rem", color: "var(--text-tertiary, #94A3B8)" }}>
+              ↔ Reset column widths
+            </button>
+          </div>
+          <div ref={linesScroll.wrapRef} onScroll={linesScroll.onWrapScroll} style={{ overflowX: "auto", scrollbarWidth: "none" }}>
+            <table ref={linesScroll.tableRef} style={{ ...styles.table, tableLayout: "fixed", width: LINE_COLS.reduce((t, c) => t + lineCols.widthOf(c), 0) }}>
+              <colgroup>{LINE_COLS.map((c) => <col key={c} style={{ width: lineCols.widthOf(c) }} />)}</colgroup>
               <thead>
                 <tr>
-                  <th style={styles.th}>Item Code</th>
-                  <th style={styles.th}>Item Name</th>
-                  <th style={styles.th}>Avail Qty</th>
-                  <th style={styles.th}>Qty</th>
-                  <th style={styles.th}>Cfm Qty</th>
-                  <th style={styles.th}>Uom</th>
-                  <th style={styles.th}>Base Price</th>
-                  <th style={styles.th}>STD Disc %</th>
-                  <th style={styles.th}>CT Disc %</th>
-                  <th style={styles.th}>PM Disc %</th>
-                  <th style={styles.th}>Unit Price</th>
-                  <th style={styles.th}>Line Total</th>
-                  <th style={styles.th}>VAT</th>
+                  {LINE_COLS.map((c) => (
+                    <th key={c} style={{ ...styles.th, position: "relative", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={c}>
+                      {c}
+                      {lineCols.handle(c)}
+                    </th>
+                  ))}
                 </tr>
               </thead>
               <tbody>
                 {lines.map((l) => (
                   <tr key={l.id} style={!!l.is_gift_line ? { background: "var(--color-success-light, #ECFDF5)" } : undefined}>
-                    <td style={{ ...styles.td, fontFamily: "monospace", fontSize: "0.75rem", fontWeight: 600 }}>{l.sap_item_code}</td>
-                    <td style={styles.td}>
+                    <td style={{ ...styles.td, fontFamily: "monospace", fontSize: "0.75rem", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis" }} title={l.sap_item_code}>{l.sap_item_code}</td>
+                    <td style={{ ...styles.td, whiteSpace: "normal", overflowWrap: "anywhere" }}>
                       <div style={{ display: "flex", alignItems: "center", gap: "0.375rem" }}>
                         {!!l.is_gift_line && <span aria-hidden>🎁</span>}
                         {l.item_name}
@@ -867,6 +875,7 @@ export default function AdminOrderDetailPage() {
               </tbody>
             </table>
           </div>
+          {linesScroll.bar}
           <div style={{ padding: "1rem", textAlign: "right", fontSize: "0.875rem", borderTop: "1px solid var(--color-gray-200, #E2E8F0)" }}>
             <div>Subtotal: {formatPrice(order.subtotal)}</div>
             <div>Discount: -{formatPrice(order.discount_total)}</div>

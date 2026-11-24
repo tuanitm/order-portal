@@ -28,6 +28,10 @@ export const ALL_ADMIN_PERMISSIONS = [
   "so-approval",
   // Credit Control: SAP AR aging report (QRM_Q504_AR_Aging2, live from HANA).
   "ar-aging",
+  // SAP Query "Q202. Sales Details" (procedure BTS_QRM_FIN_GROSSPROFIT_DETAIL, live from HANA).
+  "sales-detail",
+  // AR Invoice entered on the portal, added to SAP as the user's own SAP user (SAP's AR approval templates apply).
+  "ar-invoice",
 ] as const;
 
 export type AdminPermission = (typeof ALL_ADMIN_PERMISSIONS)[number];

@@ -68,6 +68,9 @@ export interface AppConfig {
    *  "'GT'" or "'D1','L1'") spliced directly into master-data sync queries'
    *  WHERE clauses — see getCustomerGroupHierarchy in sap-b1/client.ts. */
   masterdata: {
+    /** The portal's brands — SAP Product Brand cost centers (OOCR dimension 1), e.g. "'A1','A2','D1','N1'".
+     *  Every user (System Admin too) sees only these; a role's Brands are limited to them. Absent = no limit. */
+    brandList?: string;
     customerGroup: string;
     itemGroup: string;
     wareHouse: string;

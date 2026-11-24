@@ -58,14 +58,37 @@ export const ORDER_STATUS_LABELS: Record<string, string> = {
   submitted: "Submitted",
   processing: "Processing",
   sap_draft_created: "SAP Draft Created",
-  approved: "Approved",
+  approved: "Adm Confirmed",
   delivered: "Delivered",
   rejected: "Rejected",
   completed: "Completed",
   cancelled: "Cancelled by Customer",
 };
 
-export function Badge({ label, tone }: { label: string; tone: "success" | "warning" | "error" | "neutral" }) {
+/**
+ * One status per order: "Adm Confirmed" once staff checked the order (info, stock,
+ * free items) and pushed it; "AR Approved" / "AR Rejected" once the Accountant's
+ * SO Approval (price, discount, overdue invoices...) decided it. Later statuses
+ * (delivered, completed ...) take over again.
+ */
+export const AR_OVERRIDABLE_STATUSES = ["processing", "sap_draft_created", "approved"];
+export function orderStatusDisplay(status: string, arStatus?: string | null): {
+  label: string; tone: "success" | "warning" | "error" | "neutral"; title?: string;
+} {
+  if (arStatus && AR_OVERRIDABLE_STATUSES.includes(status)) {
+    if (arStatus === "approved") return { label: "AR Approved", tone: "success", title: "Fully approved in SO Approval (Accountant)" };
+    if (arStatus === "rejected") return { label: "AR Rejected", tone: "error", title: "Not approved in SO Approval (Accountant)" };
+    if (arStatus === "pending") return { label: ORDER_STATUS_LABELS[status] || status, tone: "warning", title: "Waiting for AR approval (SO Approval)" };
+  }
+  const tones: Record<string, "success" | "warning" | "error" | "neutral"> = {
+    draft: "neutral", submitted: "warning", processing: "warning",
+    sap_draft_created: "warning", approved: "success", delivered: "success",
+    completed: "success", rejected: "error", cancelled: "neutral",
+  };
+  return { label: ORDER_STATUS_LABELS[status] || status, tone: tones[status] || "neutral" };
+}
+
+export function Badge({ label, tone, title }: { label: string; tone: "success" | "warning" | "error" | "neutral"; title?: string }) {
   const tones: Record<string, { bg: string; color: string }> = {
     success: { bg: "#D1FAE5", color: "#065F46" },
     warning: { bg: "#FEF3C7", color: "#92400E" },
@@ -74,7 +97,7 @@ export function Badge({ label, tone }: { label: string; tone: "success" | "warni
   };
   const t = tones[tone];
   return (
-    <span style={{
+    <span title={title} style={{
       display: "inline-block", padding: "0.25rem 0.75rem", borderRadius: "var(--radius-full)",
       fontSize: "0.75rem", fontWeight: 600, background: t.bg, color: t.color,
     }}>

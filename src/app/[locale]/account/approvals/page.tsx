@@ -8,7 +8,7 @@ import { useStaffBase } from "../../admin/layout";
 /**
  * SO Approval — SAP's Sales Order approval requests (the same as SAP's
  * Approval Status Report): created in SAP by a salesperson or pushed from the
- * portal, DocDate on/after Settings → "Approve SO from date". An Accountant
+ * portal, DocDate on/after Settings → "Sync SO AR from". An Accountant
  * sees the requests their SAP user is an authorizer on; "Pending" = waiting
  * for their decision now. Filters: Status, Brand, DocDate, SO No, Business
  * Partner, Creator (SAP user).
@@ -62,20 +62,8 @@ function RiskFlags({ ar }: { ar: Row["ar"] }) {
   return <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>{flags.map((f) => <Badge key={f.label} label={f.label} tone={f.tone} />)}</div>;
 }
 
-function SapStage({ p, status }: { p: Row["sapApproval"]; status: Row["status"] }) {
-  return (
-    <div style={{ fontSize: "0.75rem" }}>
-      <div style={{ fontWeight: 600 }}>{p.templates.join(", ") || "—"}{p.requestNo ? <span style={{ fontWeight: 400, color: "var(--text-tertiary, #94A3B8)" }}> · #{p.requestNo}</span> : null}</div>
-      {status === "pending" && p.stage && <div style={{ color: "var(--text-secondary, #64748B)" }}>Stage {p.stage}</div>}
-      {status === "pending" && (p.waitingOnMe
-        ? <Badge label="Waiting for you" tone="warning" />
-        : p.waitingFor.length > 0 && <div style={{ color: "var(--text-tertiary, #94A3B8)" }}>→ {p.waitingFor.join(", ")}</div>)}
-    </div>
-  );
-}
-
 type CheckStatus = "pass" | "warn" | "fail" | "error";
-/** Six-check summary of one SO (from its detail). */
+/** Five-check summary of one SO (from its detail). */
 interface CheckSummary { status: CheckStatus | "loading"; notPass: string[]; error?: string }
 /** Outcome of a bulk decision on one SO. */
 interface BulkResult { ok: boolean; text: string; /** left for one-by-one review */ manual?: boolean; /** no (valid) SAP login — stop the run */ stop?: boolean }
@@ -125,12 +113,13 @@ export default function ApprovalQueuePage() {
   const [checks, setChecks] = useState<Map<number, CheckSummary>>(new Map());
   const [results, setResults] = useState<Map<number, BulkResult>>(new Map());
   const [bulkNote, setBulkNote] = useState("");
+  const [approveOpen, setApproveOpen] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
   const [progress, setProgress] = useState("");
   const toggle = (d: number) => setSelected((s) => { const n = new Set(s); if (n.has(d)) n.delete(d); else n.add(d); return n; });
 
   /**
-   * The six checks of these SOs, two at a time (each reads SAP live; the
+   * The five checks of these SOs, two at a time (each reads SAP live; the
    * server keeps the result 15 min, and the approval uses that same result).
    */
   const runChecks = async (docs: number[]): Promise<Map<number, CheckSummary>> => {
@@ -180,7 +169,7 @@ export default function ApprovalQueuePage() {
   };
 
   /**
-   * Multi-SO approval: check every selected SO; those whose six checks ALL
+   * Multi-SO approval: check every selected SO; those whose five checks ALL
    * pass are approved in SAP automatically; the rest are left untouched and
    * marked for one-by-one review (each needs its own checking notes).
    */
@@ -201,10 +190,10 @@ export default function ApprovalQueuePage() {
       }
       setResults(new Map(out));
       if (ready.length === 0) {
-        setProgress(`None of the ${docs.length} SO(s) passed all six checks — review them one by one (marked below).`);
+        setProgress(`None of the ${docs.length} SO(s) passed all five checks — review them one by one (marked below).`);
         return;
       }
-      if (!confirm(`${ready.length} of ${docs.length} SO(s) passed all six checks.\n\nApprove these ${ready.length} in SAP as ${data?.me}?` +
+      if (!confirm(`${ready.length} of ${docs.length} SO(s) passed all five checks.\n\nApprove these ${ready.length} in SAP as ${data?.me}?` +
         (docs.length > ready.length ? `\n\nThe other ${docs.length - ready.length} are left for one-by-one review.` : ""))) {
         setProgress(`${ready.length} ready, ${docs.length - ready.length} need manual review — nothing approved.`);
         return;
@@ -212,7 +201,7 @@ export default function ApprovalQueuePage() {
       let ok = 0;
       for (const [i, d] of ready.entries()) {
         setProgress(`Approving ${i + 1} of ${ready.length}…`);
-        const r = await decide(d, "approved", bulkNote.trim() || "Approved in a multi-SO approval — all six checks passed.");
+        const r = await decide(d, "approved", bulkNote.trim() || "Approved in a multi-SO approval — all five checks passed.");
         out.set(d, r);
         setResults(new Map(out));
         if (r.ok) ok++;
@@ -227,31 +216,6 @@ export default function ApprovalQueuePage() {
     }
   };
 
-  const rejectSelected = async () => {
-    const docs = rows.filter((r) => selected.has(r.docEntry)).map((r) => r.docEntry);
-    if (!docs.length) return;
-    if (!bulkNote.trim()) { setProgress("Write the reason for rejecting in the note."); return; }
-    if (!confirm(`Reject ${docs.length} Sales Order(s) in SAP as ${data?.me}?\n\nReason: ${bulkNote.trim()}`)) return;
-    setBulkBusy(true);
-    const out = new Map<number, BulkResult>();
-    let ok = 0;
-    try {
-      for (const [i, d] of docs.entries()) {
-        setProgress(`Rejecting ${i + 1} of ${docs.length}…`);
-        const r = await decide(d, "rejected", bulkNote.trim());
-        out.set(d, r);
-        setResults(new Map(out));
-        if (r.ok) ok++;
-        if (r.stop) break;
-      }
-      setProgress(`Done — ${ok} of ${docs.length} rejected${ok < docs.length ? "; see the rows marked ✕" : ""}.`);
-    } finally {
-      setResults(new Map(out));
-      setBulkBusy(false);
-      setSelected(new Set());
-      await load(applied);
-    }
-  };
   const rows = useMemo(() => data?.rows ?? [], [data]);
   const kpi = useMemo(() => {
     const value = rows.reduce((s, r) => s + (r.totalInclTax ?? 0), 0);
@@ -277,12 +241,7 @@ export default function ApprovalQueuePage() {
         <div style={styles.header}>
           <div>
             <h1 style={styles.title}>SO Approval</h1>
-            <p style={styles.subtitle}>
-              SAP Sales Order approval requests (as in SAP&apos;s Approval Status Report){data?.me ? ` for SAP user ${data.me}` : ""}
-              {data?.fromDate ? ` · DocDate from ${fmtDate(data.fromDate)}` : ""}. Open one to run the six checks and approve or reject it in SAP.
-            </p>
           </div>
-          <button style={btn("secondary", loading)} disabled={loading} onClick={() => load(applied)}>↻ Refresh</button>
         </div>
 
         {/* ── Filters ── */}
@@ -316,49 +275,50 @@ export default function ApprovalQueuePage() {
           <div style={{ display: "flex", gap: 6 }}>
             <button type="submit" style={btn("primary", loading)} disabled={loading}>Search</button>
             <button type="button" style={btn("secondary")} onClick={() => search(BLANK)}>Clear</button>
+            <button type="button" style={btn("secondary", loading)} disabled={loading} onClick={() => load(applied)}>↻ Refresh</button>
+            {/* Multi-SO approval: enabled once at least one SO is ticked; opens a small dialog for the note. */}
+            <button type="button" style={btn("success", bulkBusy || !selected.size || !data?.sapReady)} disabled={bulkBusy || !selected.size || !data?.sapReady}
+              onClick={() => setApproveOpen(true)}
+              title={!data?.sapReady ? "Save your SAP user and password in My Profile first" : selected.size ? `Runs the five checks on the ${selected.size} selected SO(s); those that pass all five are approved in SAP` : "Tick at least one SO in the list"}>
+              {bulkBusy ? "Working…" : `✓ Check & Approve SOs${selected.size ? ` (${selected.size})` : ""}`}
+            </button>
           </div>
         </form>
+        {(progress || (selectable.length > 0 && !data?.sapReady)) && (
+          <div style={{ fontSize: "0.8125rem", marginTop: "-0.5rem", marginBottom: "1rem" }}>
+            {selectable.length > 0 && !data?.sapReady && (
+              <div style={{ fontSize: "0.75rem", color: "#B45309" }}>
+                Save your SAP user and password once in <a href={`${base}/change-password`} style={{ color: "inherit", fontWeight: 700 }}>My Profile</a> to approve.
+              </div>
+            )}
+            {progress && <div style={{ fontWeight: 600 }}>{progress}</div>}
+          </div>
+        )}
+        {approveOpen && (
+          <div onClick={() => setApproveOpen(false)} style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+            <div role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}
+              style={{ background: "var(--bg-primary, #fff)", borderRadius: 12, width: "min(460px, 100%)", padding: "1.25rem", boxShadow: "0 20px 50px rgba(0,0,0,0.25)" }}>
+              <div style={{ fontWeight: 800, fontSize: "1rem", marginBottom: 4 }}>Check &amp; Approve {selected.size} SO(s)</div>
+              <div style={{ fontSize: "0.8125rem", color: "var(--text-secondary, #64748B)", marginBottom: "0.75rem" }}>SOs pass 5 checking steps -&gt; approved automatically.</div>
+              <textarea autoFocus value={bulkNote} onChange={(e) => setBulkNote(e.target.value)} placeholder="Note - optional remark for approvals"
+                style={{ ...styles.input, width: "100%", minHeight: 70, fontFamily: "inherit" }} />
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: "0.875rem" }}>
+                <button type="button" style={btn("secondary")} onClick={() => setApproveOpen(false)}>Cancel</button>
+                <button type="button" style={btn("success")} onClick={() => { setApproveOpen(false); checkAndApprove(); }}>✓ Check &amp; Approve</button>
+              </div>
+            </div>
+          </div>
+        )}
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: "1rem", marginBottom: "1.25rem" }}>
           <Tile title={applied.status === "all" ? "Sales Orders" : STATUS_LABEL[applied.status].label} value={String(rows.length)} hint={rows.length >= 500 ? "first 500 — narrow the filters" : undefined} />
-          {applied.status === "pending" && <Tile title="Waiting for you" value={String(kpi.mine)} tone={kpi.mine ? "warn" : undefined} />}
+          {applied.status === "pending" && <Tile title={`Waiting for you${data?.me ? `(${data.me})` : ""}`} value={String(kpi.mine)} tone={kpi.mine ? "warn" : undefined} />}
           <Tile title="Value (incl. tax)" value={money(kpi.value)} hint="₫" />
           <Tile title="Customers with overdue invoices" value={String(kpi.overdueCustomers)} tone={kpi.overdueCustomers ? "bad" : undefined} />
           <Tile title="Customers over credit limit" value={String(kpi.overLimit)} tone={kpi.overLimit ? "bad" : undefined} />
         </div>
 
         {error && <div style={{ ...styles.cardPadded, color: "#B91C1C" }}>{error}</div>}
-
-        {/* ── Multi-SO approval ── */}
-        {selectable.length > 0 && (
-          <div style={{ ...styles.cardPadded, padding: "0.875rem 1.25rem", marginBottom: "1rem", position: "sticky", top: 8, zIndex: 5,
-            border: selected.size ? "1px solid var(--color-primary, #2BBCB3)" : undefined }}>
-            <div style={{ display: "flex", gap: "0.75rem", alignItems: "flex-start", flexWrap: "wrap" }}>
-              <div style={{ minWidth: 170 }}>
-                <div style={{ fontWeight: 800, fontSize: "0.9rem" }}>{selected.size} of {selectable.length} selected</div>
-                <div style={{ fontSize: "0.72rem", color: "var(--text-secondary, #64748B)", maxWidth: 230 }}>
-                  SOs waiting for you. Ready SOs (all six checks pass) are approved automatically; the rest you review one by one.
-                </div>
-              </div>
-              <textarea value={bulkNote} onChange={(e) => setBulkNote(e.target.value)} disabled={bulkBusy}
-                placeholder="Note — optional remark on the approvals; required to reject"
-                style={{ ...styles.input, flex: "1 1 320px", minHeight: 44, fontFamily: "inherit" }} />
-              <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                <button style={btn("success", bulkBusy || !selected.size || !data?.sapReady)} disabled={bulkBusy || !selected.size || !data?.sapReady} onClick={checkAndApprove}
-                  title="Runs the six checks; SOs that pass all six are approved in SAP, the others are left for one-by-one review">
-                  {bulkBusy ? "Working…" : "✓ Check & approve ready SOs"}
-                </button>
-                <button style={btn("danger", bulkBusy || !selected.size || !data?.sapReady)} disabled={bulkBusy || !selected.size || !data?.sapReady} onClick={rejectSelected}>✕ Reject selected</button>
-              </div>
-            </div>
-            {!data?.sapReady && (
-              <div style={{ fontSize: "0.75rem", color: "#B45309", marginTop: 6 }}>
-                Save your SAP user and password once in <a href={`${base}/change-password`} style={{ color: "inherit", fontWeight: 700 }}>My Profile</a> to approve.
-              </div>
-            )}
-            {progress && <div style={{ fontSize: "0.8125rem", fontWeight: 600, marginTop: 6 }}>{progress}</div>}
-          </div>
-        )}
 
         <div style={styles.card}>
           <LoadingOrEmpty isLoading={loading} isEmpty={!loading && rows.length === 0} emptyLabel="No Sales Orders for these filters" />
@@ -381,10 +341,7 @@ export default function ApprovalQueuePage() {
                     <th style={th("right")}>Excl. tax</th>
                     <th style={th("right")}>Incl. tax</th>
                     <th style={th()}>AR / Credit</th>
-                    <th style={th()}>SAP approval</th>
-                    <th style={th()}>Remarks</th>
                     <th style={th()}>Status</th>
-                    <th style={th()}></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -394,7 +351,7 @@ export default function ApprovalQueuePage() {
                     const st = STATUS_LABEL[r.status];
                     return (
                       <tr key={r.docEntry} style={{ cursor: "pointer", background: risky && r.status === "pending" ? "#FEF2F2" : undefined }}
-                        onClick={() => { window.location.href = href; }}>
+                        onClick={() => { window.location.href = href; }} title="Open the approval detail">
                         <td style={td()} onClick={(e) => e.stopPropagation()}>
                           {r.status === "pending" && r.sapApproval.waitingOnMe && (
                             <input type="checkbox" checked={selected.has(r.docEntry)} disabled={bulkBusy} onChange={() => toggle(r.docEntry)} />
@@ -417,10 +374,6 @@ export default function ApprovalQueuePage() {
                         <td style={{ ...td("right"), fontVariantNumeric: "tabular-nums" }}>{money(r.totalExclTax)}</td>
                         <td style={{ ...td("right"), fontVariantNumeric: "tabular-nums", fontWeight: 700 }}>{money(r.totalInclTax)}</td>
                         <td style={td()}><RiskFlags ar={r.ar} /></td>
-                        <td style={td()}><SapStage p={r.sapApproval} status={r.status} /></td>
-                        <td style={{ ...td(), maxWidth: 240, color: "var(--text-secondary, #64748B)" }}>
-                          <div style={{ overflow: "hidden", textOverflow: "ellipsis", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }} title={r.remarks ?? ""}>{r.remarks || "—"}</div>
-                        </td>
                         <td style={td()}>
                           <Badge label={st.label} tone={st.tone} />
                           {r.reopened && <div style={{ marginTop: 4 }} title="Its approval was undone earlier — approve it manually"><Badge label="↶ undone" tone="warning" /></div>}
@@ -440,11 +393,6 @@ export default function ApprovalQueuePage() {
                               )}
                             </div>
                           )}
-                        </td>
-                        <td style={td()}>
-                          <a href={href} style={{ ...btn(r.sapApproval.waitingOnMe ? "primary" : "secondary"), textDecoration: "none", whiteSpace: "nowrap" }} onClick={(e) => e.stopPropagation()}>
-                            {r.sapApproval.waitingOnMe ? "Review →" : "Open"}
-                          </a>
                         </td>
                       </tr>
                     );

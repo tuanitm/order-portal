@@ -32,7 +32,7 @@ export function useStaffBase() {
 }
 
 /** Pages that exist under /sales (Sales users see only these, within their role's functions). */
-const SALES_AREA_PAGES = new Set(["orders", "inventory", "change-password"]);
+const SALES_AREA_PAGES = new Set(["orders", "inventory", "sales-detail", "change-password"]);
 // /account — the Accountant (AR / Credit Control) area: its menu is whatever
 // functions the Accountant role has (SO Approval always), like /admin.
 
@@ -240,16 +240,24 @@ const NAV_GROUPS: NavGroup[] = [
     items: [{ key: "orders", label: "Orders", href: "orders", icon: "🧾" }],
   },
   {
-    label: "Credit Control", icon: "💳",
-    items: [
-      { key: "so-approval", label: "SO Approval", href: "approvals", icon: "✅" },
-      { key: "auto-approval", label: "Auto SO Approval", href: "auto-approval", icon: "🤖", accountantOnly: "so-approval" },
-      { key: "ar-aging", label: "AR Aging", href: "ar-aging", icon: "⏳" },
-    ],
+    label: "SO Approval", icon: "✅",
+    items: [{ key: "so-approval", label: "SO Approval", href: "approvals", icon: "✅" }],
+  },
+  {
+    label: "AR Invoice (CK)", icon: "🧮",
+    items: [{ key: "ar-invoice", label: "AR Invoice (CK)", href: "ar-invoices", icon: "🧮" }],
   },
   {
     label: "Inventory", icon: "📊",
     items: [{ key: "inventory", label: "Inventory", href: "inventory", icon: "📊" }],
+  },
+  {
+    label: "Sales Detail", icon: "📈",
+    items: [{ key: "sales-detail", label: "Sales Detail", href: "sales-detail", icon: "📈" }],
+  },
+  {
+    label: "AR Aging", icon: "⏳",
+    items: [{ key: "ar-aging", label: "AR Aging", href: "ar-aging", icon: "⏳" }],
   },
   {
     label: "Master Data", icon: "🗄️",
@@ -275,6 +283,7 @@ const NAV_GROUPS: NavGroup[] = [
       { key: "change-password",    label: "My Profile",        href: "change-password",    icon: "👤" },
       { key: "catalog-visibility", label: "Catalog Visibility",href: "catalog-visibility", icon: "🔒" },
       { key: "settings",           label: "SAP Sync Config",  href: "settings",           icon: "🔄", rootOnly: true },
+      { key: "auto-approval",      label: "Auto SO Approval",  href: "auto-approval",      icon: "🤖", accountantOnly: "so-approval" },
       { key: "id-reset",           label: "Reset the Id",      href: "id-reset",           icon: "🔢", rootOnly: true },
       { key: "admin-roles",        label: "Roles",             href: "admin-roles",        icon: "🛡️", rootOnly: true },
       { key: "admin-users",        label: "Users",             href: "admin-users",        icon: "🔑", rootOnly: true },

@@ -18,7 +18,7 @@ interface Item {
 }
 
 const ICON: Record<string, string> = {
-  so_approval_request: "📝", so_approved: "✅", so_rejected: "⛔", so_stage_approved: "➡️", so_undone: "↶",
+  so_approval_request: "📝", so_approved: "✅", so_rejected: "⛔", so_stage_approved: "➡️", so_undone: "↶", ar_approval_request: "🧮",
 };
 
 /** Ask other components (SO Approval list, Orders list) to refresh their NEW markers. */

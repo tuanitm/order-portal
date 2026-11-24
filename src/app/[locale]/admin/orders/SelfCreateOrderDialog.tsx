@@ -4,6 +4,7 @@ import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback, typ
 import { styles, btn, Badge } from "../adminUi";
 import { useStaffBase } from "../layout";
 import type { ProductWithPricing } from "@/types/product";
+import { IMPORT_TEMPLATE_COLUMNS_EN, IMPORT_TEMPLATE_COLUMNS_VI } from "@/lib/importTemplate";
 
 /**
  * "Self create" sales order dialog (Admin → Orders): an admin creates an
@@ -67,6 +68,47 @@ const money = (v: number) => new Intl.NumberFormat("vi-VN").format(Math.round(v)
 const num = (v: number | null | undefined) => (v == null ? "—" : new Intl.NumberFormat("vi-VN").format(v));
 const pct = (v: number) => (v ? `${Number(v.toFixed(2))}%` : "—");
 const itemName = (p: ProductWithPricing) => p.itemNameVi || p.itemNameEn || p.sapItemCode;
+
+// ── Import Excel — same template / columns as the storefront's Excel Import ──
+const IMPORT_MAX_CODES = 500;
+const HEADER_ALIASES = {
+  itemCode: [IMPORT_TEMPLATE_COLUMNS_EN[0], IMPORT_TEMPLATE_COLUMNS_VI[0], "sap item code", "item code", "code"].map((x) => x.toLowerCase()),
+  quantity: [IMPORT_TEMPLATE_COLUMNS_EN[2], IMPORT_TEMPLATE_COLUMNS_VI[2], "qty"].map((x) => x.toLowerCase()),
+};
+interface ImportResult { added: number; merged: number; notFound: string[]; invalid: string[] }
+/** Items from the file with more than one promotion / gift program — the user picks which one applies. */
+interface ImportChoice {
+  found: ProductWithPricing[];
+  qty: Map<string, number>;
+  picks: Map<string, { promotionCode: string | null; giveawayKey: string | null }>;
+  result: Omit<ImportResult, "added" | "merged">;
+}
+
+/** Excel rows → quantity per item code (summed, case-insensitive) + the rows that couldn't be read. */
+async function readImportFile(file: File): Promise<{ qty: Map<string, { code: string; qty: number }>; invalid: string[] }> {
+  const XLSX = await import("xlsx");
+  const wb = XLSX.read(await file.arrayBuffer(), { type: "array" });
+  const rows: unknown[][] = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1 });
+  const head = rows[0] ?? [];
+  const col = (k: keyof typeof HEADER_ALIASES) => head.findIndex((c) => typeof c === "string" && HEADER_ALIASES[k].includes(c.trim().toLowerCase()));
+  const codeIdx = col("itemCode"), qtyIdx = col("quantity");
+  if (codeIdx === -1 || qtyIdx === -1) throw new Error("The file needs an Item Code (Mã hàng) and a Quantity (Số lượng) column — use the template.");
+  const qty = new Map<string, { code: string; qty: number }>();
+  const invalid: string[] = [];
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i];
+    if (!row || row.every((c) => c === undefined || c === null || c === "")) continue;
+    const code = row[codeIdx] == null ? "" : String(row[codeIdx]).trim();
+    const raw = row[qtyIdx];
+    const q = typeof raw === "number" ? raw : parseFloat(String(raw ?? "").trim());
+    if (!code) { invalid.push(`Row ${i + 1}: no item code`); continue; }
+    if (!Number.isFinite(q) || q <= 0 || !Number.isInteger(q)) { invalid.push(`Row ${i + 1} (${code}): quantity must be a whole number above 0`); continue; }
+    const k = code.toUpperCase();
+    const prev = qty.get(k);
+    if (prev) prev.qty += q; else qty.set(k, { code, qty: q });
+  }
+  return { qty, invalid };
+}
 
 /** Same formula as the server (buildOrderLines) and the storefront — preview only. */
 function priceLine(line: Line) {
@@ -238,6 +280,10 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
   const [itemActive, setItemActive] = useState(0);
   const [itemLoading, setItemLoading] = useState(false);
   const [repricing, setRepricing] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState<ImportResult | null>(null);
+  const [importChoice, setImportChoice] = useState<ImportChoice | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   // ── Footer ──
   const [remark, setRemark] = useState("");
@@ -465,6 +511,72 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
   const updateLine = (code: string, patch: Partial<Line>) =>
     setLines((prev) => prev.map((l) => (l.product.sapItemCode === code ? { ...l, ...patch } : l)));
   const removeLine = (code: string) => setLines((prev) => prev.filter((l) => l.product.sapItemCode !== code));
+
+  /** Put the imported items on the order: an item already there gets the quantity added (and the program picked). */
+  const applyImport = (found: ProductWithPricing[], qty: Map<string, number>, picks: ImportChoice["picks"], result: ImportChoice["result"]) => {
+    const merged = found.filter((p) => lines.some((l) => l.product.sapItemCode === p.sapItemCode)).length;
+    setLines((prev) => {
+      const next = [...prev];
+      for (const p of found) {
+        const q = qty.get(p.sapItemCode.toUpperCase()) ?? 0;
+        if (q <= 0) continue;
+        const pick = picks.get(p.sapItemCode);
+        const i = next.findIndex((l) => l.product.sapItemCode === p.sapItemCode);
+        if (i >= 0) {
+          next[i] = { ...next[i], product: p, unavailable: false, qty: next[i].qty + q, ...(pick ?? {}) };
+        } else {
+          next.push({
+            product: p, qty: q,
+            promotionCode: pick ? pick.promotionCode : p.promotionOptions[0]?.code ?? null,
+            giveawayKey: pick ? pick.giveawayKey : (p.giveawayOptions[0] ? giveawayKeyOf(p.giveawayOptions[0]) : null),
+          });
+        }
+      }
+      return next;
+    });
+    setImportResult({ ...result, added: found.length - merged, merged });
+    setImportChoice(null);
+  };
+
+  const importExcel = async (file: File) => {
+    if (!detail || !warehouse) return;
+    setImporting(true);
+    setImportResult(null);
+    setError(null);
+    try {
+      const { qty, invalid } = await readImportFile(file);
+      const codes = [...qty.values()].map((x) => x.code);
+      if (codes.length === 0) { setImportResult({ added: 0, merged: 0, notFound: [], invalid }); return; }
+      if (codes.length > IMPORT_MAX_CODES) throw new Error(`The file has ${codes.length} items — at most ${IMPORT_MAX_CODES} per import.`);
+      const res = await fetch("/api/admin/orders/create/pricing", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ customer: detail.customer.sap_card_code, warehouse, codes }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to price the imported items");
+      const found: ProductWithPricing[] = data.items || [];
+      const foundKeys = new Set(found.map((p) => p.sapItemCode.toUpperCase()));
+      const result = { notFound: codes.filter((c) => !foundKeys.has(c.toUpperCase())), invalid };
+      const qtyByCode = new Map([...qty].map(([k, v]) => [k, v.qty]));
+      const multi = found.filter((p) => p.promotionOptions.length > 1 || p.giveawayOptions.length > 1);
+      if (multi.length === 0) { applyImport(found, qtyByCode, new Map(), result); return; }
+      // Several programs → ask which one applies (preselected: the line's current choice, else the best match).
+      const picks: ImportChoice["picks"] = new Map();
+      for (const p of multi) {
+        const cur = lines.find((l) => l.product.sapItemCode === p.sapItemCode);
+        picks.set(p.sapItemCode, {
+          promotionCode: cur && p.promotionOptions.some((o) => o.code === cur.promotionCode) ? cur.promotionCode : p.promotionOptions[0]?.code ?? null,
+          giveawayKey: cur && p.giveawayOptions.some((o) => giveawayKeyOf(o) === cur.giveawayKey) ? cur.giveawayKey : (p.giveawayOptions[0] ? giveawayKeyOf(p.giveawayOptions[0]) : null),
+        });
+      }
+      setImportChoice({ found, qty: qtyByCode, picks, result });
+    } catch (e) {
+      setError({ text: `Import Excel: ${e instanceof Error ? e.message : "could not read the file"}` });
+    } finally {
+      setImporting(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  };
 
   const listKeys = <T,>(e: KeyboardEvent, items: T[], active: number, setActive: (n: number) => void, choose: (t: T) => void) => {
     if (e.key === "ArrowDown") { e.preventDefault(); setActive(Math.min(items.length - 1, active + 1)); }
@@ -704,6 +816,13 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
                   </div>
                 )}
               </div>
+              <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{ display: "none" }}
+                onChange={(e) => { const f = e.target.files?.[0]; if (f) void importExcel(f); }} />
+              <button type="button" style={btn("secondary", !detail || !warehouse || importing || repricing)} disabled={!detail || !warehouse || importing || repricing}
+                onClick={() => fileRef.current?.click()} title="Add items from an Excel file (Item Code + Quantity columns)">
+                {importing ? "Reading…" : "📥 Import Excel"}
+              </button>
+              <a href={`/api/products/template?locale=${locale === "en" ? "en" : "vi"}`} style={{ ...hint, marginTop: 0, color: "var(--color-primary, #2BBCB3)", whiteSpace: "nowrap" }}>Template</a>
               <span style={hint}>
                 {repricing ? "Updating prices…" : lines.length > 0 ? `${lines.length} item${lines.length > 1 ? "s" : ""}` : ""}
               </span>
@@ -882,6 +1001,14 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
                     <ul style={{ margin: "0.125rem 0 0 1rem" }}>{notice.map((n) => <li key={n}>{n}</li>)}</ul>
                   </div>
                 )}
+                {importResult && (
+                  <div style={{ ...hint, color: importResult.notFound.length || importResult.invalid.length ? "#B45309" : "#059669" }}>
+                    📥 Imported: {importResult.added} new item{importResult.added === 1 ? "" : "s"}{importResult.merged ? `, ${importResult.merged} added to lines already on the order` : ""}.
+                    {importResult.notFound.length > 0 && <> Not available for this customer in {warehouse} (or not found): <span style={{ fontFamily: "monospace" }}>{importResult.notFound.join(", ")}</span>.</>}
+                    {importResult.invalid.length > 0 && <ul style={{ margin: "0.125rem 0 0 1rem" }}>{importResult.invalid.map((n) => <li key={n}>{n}</li>)}</ul>}
+                    <button type="button" onClick={() => setImportResult(null)} style={{ border: "none", background: "none", cursor: "pointer", color: "inherit", marginLeft: 6 }} aria-label="Dismiss">✕</button>
+                  </div>
+                )}
                 {overStock.length > 0 && (
                   <div style={{ ...hint, color: "#DC2626" }}>⚠ {overStock.length} line(s) exceed the available quantity in {warehouse}.</div>
                 )}
@@ -910,6 +1037,110 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
             </div>
           </>
         )}
+      </div>
+      {importChoice && (
+        <ImportProgramPrompt
+          choice={importChoice}
+          onPick={(code, patch) => setImportChoice((c) => {
+            if (!c) return c;
+            const picks = new Map(c.picks);
+            picks.set(code, { ...picks.get(code)!, ...patch });
+            return { ...c, picks };
+          })}
+          onCancel={() => setImportChoice(null)}
+          onApply={() => applyImport(importChoice.found, importChoice.qty, importChoice.picks, importChoice.result)}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Import Excel: items with more than one promotion / gift program — pick
+ * which one applies to each (preselected: the best match, as on the
+ * storefront). Free quantities shown for the imported quantity.
+ */
+function ImportProgramPrompt({ choice, onPick, onCancel, onApply }: {
+  choice: ImportChoice;
+  onPick: (code: string, patch: Partial<{ promotionCode: string | null; giveawayKey: string | null }>) => void;
+  onCancel: () => void;
+  onApply: () => void;
+}) {
+  const multi = choice.found.filter((p) => p.promotionOptions.length > 1 || p.giveawayOptions.length > 1);
+  const opt: CSSProperties = { display: "flex", gap: 8, alignItems: "flex-start", padding: "0.375rem 0.5rem", borderRadius: 6, cursor: "pointer", fontSize: "0.8125rem" };
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 350, background: "rgba(15,23,42,0.45)", display: "flex", alignItems: "center", justifyContent: "center", padding: "1rem" }}
+      onMouseDown={(e) => { if (e.target === e.currentTarget) onCancel(); }}>
+      <div role="dialog" aria-modal="true" aria-label="Choose promotion programs" style={{
+        width: "min(760px, 100%)", maxHeight: "86vh", display: "flex", flexDirection: "column", background: "var(--bg-primary, #fff)",
+        borderRadius: "var(--radius-xl, 12px)", boxShadow: "0 24px 64px rgba(15,23,42,0.35)", overflow: "hidden",
+      }}>
+        <div style={{ padding: "0.875rem 1.25rem", borderBottom: "1px solid var(--color-gray-200, #E2E8F0)" }}>
+          <h3 style={{ fontSize: "1rem", fontWeight: 800 }}>Choose the promotion program</h3>
+          <p style={{ ...hint, marginTop: 2 }}>
+            {multi.length} imported item{multi.length > 1 ? "s have" : " has"} more than one program running now — pick which one applies. The best match is preselected.
+          </p>
+        </div>
+        <div style={{ flex: 1, overflowY: "auto", padding: "0.75rem 1.25rem" }}>
+          {multi.map((p) => {
+            const q = choice.qty.get(p.sapItemCode.toUpperCase()) ?? 0;
+            const pick = choice.picks.get(p.sapItemCode)!;
+            return (
+              <div key={p.sapItemCode} style={{ border: "1px solid var(--color-gray-200, #E2E8F0)", borderRadius: 8, padding: "0.625rem 0.75rem", marginBottom: "0.625rem" }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "baseline", marginBottom: 4 }}>
+                  <span style={{ fontFamily: "monospace", fontWeight: 700 }}>{p.sapItemCode}</span>
+                  <span style={{ flex: 1, minWidth: 0, fontWeight: 600 }}>{itemName(p)}</span>
+                  <span style={{ whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>Qty <b>{num(q)}</b> {p.uom}</span>
+                </div>
+                {p.promotionOptions.length > 1 && (
+                  <div style={{ marginTop: 4 }}>
+                    <span style={label}>🏷 Promotion discount</span>
+                    {p.promotionOptions.map((o) => {
+                      const key = o.code ?? "";
+                      const on = (pick.promotionCode ?? "") === key;
+                      const unit = Math.max(0, p.basePrice * (1 - (p.contractDiscPct + Number(o.pct)) / 100));
+                      return (
+                        <label key={key} style={{ ...opt, background: on ? "rgba(43,188,179,0.10)" : undefined }}>
+                          <input type="radio" name={`promo-${p.sapItemCode}`} checked={on} onChange={() => onPick(p.sapItemCode, { promotionCode: o.code ?? null })} />
+                          <span style={{ flex: 1 }}><b>{o.code ?? "—"} · {Number(o.pct)}%</b> <span style={{ color: "var(--text-secondary, #64748B)" }}>{o.name}</span></span>
+                          <span style={{ whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>{money(unit)} · {money(unit * q)}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+                {p.giveawayOptions.length > 1 && (
+                  <div style={{ marginTop: 4 }}>
+                    <span style={label}>🎁 Free items</span>
+                    {p.giveawayOptions.map((o) => {
+                      const key = giveawayKeyOf(o);
+                      const on = pick.giveawayKey === key;
+                      const free = o.buyQty && o.giveQty ? Math.floor(q / o.buyQty) * o.giveQty : 0;
+                      const extraFree = o.extra && o.extra.buyQty && o.extra.giveQty ? Math.floor(q / o.extra.buyQty) * o.extra.giveQty : 0;
+                      const same = o.giveItemCode === p.sapItemCode;
+                      return (
+                        <label key={key} style={{ ...opt, background: on ? "rgba(43,188,179,0.10)" : undefined }}>
+                          <input type="radio" name={`gift-${p.sapItemCode}`} checked={on} onChange={() => onPick(p.sapItemCode, { giveawayKey: key })} />
+                          <span style={{ flex: 1 }}>
+                            <b>Buy {o.buyQty} get {o.giveQty} · {same ? "same item" : o.giveItemCode}</b>{" "}
+                            <span style={{ color: "var(--text-secondary, #64748B)" }}>{same ? "" : `${o.giveItemName ?? ""} — `}{o.name || o.code}</span>
+                          </span>
+                          <span style={{ whiteSpace: "nowrap", color: free + extraFree > 0 ? "#059669" : "var(--text-tertiary, #94A3B8)", fontWeight: 700 }}>
+                            {free + extraFree > 0 ? `Free ${[extraFree > 0 && `${num(extraFree)} same item`, free > 0 && `${num(free)} ${same ? "" : o.giveItemCode}`].filter(Boolean).join(" + ")}` : "No free qty at this qty"}
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+        <div style={{ padding: "0.75rem 1.25rem", borderTop: "1px solid var(--color-gray-200, #E2E8F0)", display: "flex", justifyContent: "flex-end", gap: "0.5rem", background: "var(--bg-secondary, #F8FAFC)" }}>
+          <button type="button" style={btn("secondary")} onClick={onCancel}>Cancel import</button>
+          <button type="button" style={btn("primary")} onClick={onApply}>Add {choice.found.length} item{choice.found.length > 1 ? "s" : ""} to the order</button>
+        </div>
       </div>
     </div>
   );
