@@ -30,7 +30,8 @@ export async function GET(
 
   const order = await queryOne(
     `SELECT id, order_number, customer_name, delivery_address, billing_address, contact_phone, contact_email,
-            subtotal, discount_total, grand_total, remark, status, sap_doc_entry, sap_doc_num, created_at
+            subtotal, discount_total, grand_total, remark, status, sap_doc_entry, sap_doc_num, created_at,
+            bill_to_code, ship_to_code, ar_status
      FROM orders WHERE company_id = ? AND id = ? AND user_id = ?`,
     [companyId, orderId, user.id]
   );
@@ -40,7 +41,7 @@ export async function GET(
 
   const rawLines = await query<{ id: number; sap_item_code: string; is_gift_line: number; source_line_id: number | null; line_total: string; vat_group: string | null }[]>(
     `SELECT ol.id, ol.sap_item_code, ol.item_name, ol.quantity, ol.uom, ol.unit_price, ol.discount_percent, ol.line_total,
-            ol.confirm_qty, ol.customer_confirm_status, ol.is_gift_line, ol.source_line_id, i.vat_group
+            ol.confirm_qty, ol.customer_confirm_status, ol.is_gift_line, ol.source_line_id, ol.promotion_code, ol.giveaway_promotion_code, i.vat_group
      FROM order_lines ol
      LEFT JOIN items i ON i.company_id = ol.company_id AND i.sap_item_code = ol.sap_item_code
      WHERE ol.company_id = ? AND ol.order_id = ?`,

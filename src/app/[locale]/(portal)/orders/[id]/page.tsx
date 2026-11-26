@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { useTranslations, useLocale } from "next-intl";
+import CustomerOrderEditDialog from "@/components/orders/CustomerOrderEditDialog";
 import { Link } from "@/i18n/navigation";
 import OrderStatusBadge from "@/components/order/OrderStatusBadge";
 import ReorderButton from "@/components/order/ReorderButton";
@@ -24,6 +25,9 @@ interface OrderDetail {
   status: string;
   created_at: string;
   sap_doc_entry: number | null;
+  bill_to_code: string | null;
+  ship_to_code: string | null;
+  ar_status: "pending" | "approved" | "rejected" | null;
 }
 
 interface OrderLine {
@@ -36,6 +40,10 @@ interface OrderLine {
   line_total: string;
   confirm_qty: number;
   customer_confirm_status: "pending" | "accepted" | "rejected";
+  is_gift_line: number;
+  source_line_id: number | null;
+  promotion_code: string | null;
+  giveaway_promotion_code: string | null;
   /** VAT % of the item's SAP VAT group, and the tax on Line Total; null when unknown. */
   vat_rate: number | null;
   vat_amount: number | null;
@@ -198,6 +206,10 @@ export default function OrderDetailPage({
   const [isSavingInfo, setIsSavingInfo] = useState(false);
   const [infoError, setInfoError] = useState("");
 
+  // Full Order Edit (header + items) — see components/orders/CustomerOrderEditDialog.
+  const [isEditOpen, setIsEditOpen] = useState(false);
+  const [editNotice, setEditNotice] = useState("");
+
   const [isCancelling, setIsCancelling] = useState(false);
   const [cancelError, setCancelError] = useState("");
 
@@ -333,6 +345,8 @@ export default function OrderDetailPage({
 
   const discountTotal = Number(order.discount_total);
   const isEditable = !order.sap_doc_entry;
+  // Full edit: not yet confirmed into SAP and not AR Approved (server re-checks — lib/orderEdit.ts).
+  const canFullEdit = isEditable && order.ar_status !== "approved" && ["draft", "submitted", "processing"].includes(order.status);
   const canCancel = isEditable && !["cancelled", "completed", "rejected"].includes(order.status);
   const hasAnyAdjustment = lines.some((l) => l.confirm_qty !== l.quantity);
 
@@ -359,7 +373,12 @@ export default function OrderDetailPage({
             </div>
             <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
               <OrderStatusBadge orderId={order.id} status={order.status} large />
-              <ReorderButton orderId={order.id} />
+              <ReorderButton orderId={order.id} size="md" />
+              {canFullEdit && (
+                <button onClick={() => { setEditNotice(""); setIsEditOpen(true); }} className="btn btn-primary">
+                  {t("orderEdit.button")}
+                </button>
+              )}
               {canCancel && (
                 <button onClick={cancelOrder} disabled={isCancelling} className="btn btn-secondary" style={{ color: "#DC2626", borderColor: "#DC2626" }}>
                   {isCancelling
@@ -370,6 +389,7 @@ export default function OrderDetailPage({
             </div>
           </div>
           {cancelError && <div style={{ color: "#DC2626", fontSize: "0.8125rem", marginTop: "0.5rem" }}>{cancelError}</div>}
+          {editNotice && <div style={{ color: "#065F46", background: "#ECFDF5", borderRadius: 8, padding: "0.5rem 0.75rem", fontSize: "0.8125rem", marginTop: "0.75rem" }}>✓ {editNotice}</div>}
         </div>
 
         {/* Customer Info */}
@@ -379,11 +399,6 @@ export default function OrderDetailPage({
               <h3 style={{ fontSize: "0.875rem", fontWeight: 700, color: "var(--text-tertiary)", textTransform: "uppercase", letterSpacing: "0.05em" }}>
                 {t("checkout.deliveryInfo")}
               </h3>
-              {isEditable && !isEditingInfo && (
-                <button onClick={startEditInfo} className="btn btn-secondary" style={{ fontSize: "0.75rem", padding: "0.375rem 0.75rem" }}>
-                  {locale === "vi" ? "Chỉnh sửa" : "Edit"}
-                </button>
-              )}
             </div>
 
             {isEditingInfo ? (
@@ -593,9 +608,18 @@ export default function OrderDetailPage({
         </div>
 
         <div style={{ marginTop: "1.5rem" }}>
-          <MessagesThread orderId={order.id} locale={locale} />
+          <MessagesThread key={editNotice || "thread"} orderId={order.id} locale={locale} />
         </div>
       </div>
+      {isEditOpen && (
+        <CustomerOrderEditDialog
+          order={order}
+          lines={lines}
+          beforeWithTax={tax ? tax.grandTotalWithTax : Number(order.grand_total)}
+          onClose={() => setIsEditOpen(false)}
+          onSaved={(msg) => { setIsEditOpen(false); setEditNotice(msg); load(); }}
+        />
+      )}
     </div>
   );
 }

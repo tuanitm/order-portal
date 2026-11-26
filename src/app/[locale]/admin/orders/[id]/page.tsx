@@ -18,6 +18,11 @@ const STATUSES = ["draft", "submitted", "processing", "sap_draft_created", "appr
 const TERMINAL_STATUSES = ["cancelled", "completed", "rejected"];
 /** No Edit order / Update SAP (see NON_EDITABLE_STATUSES in lib/orderSapUpdate.ts). */
 const EDIT_LOCKED_STATUSES = ["cancelled", "completed", "rejected", "delivered"];
+/**
+ * Full Order Edit (header + add / remove / change SKUs; lib/orderEdit.ts) — Submitted, SAP Draft Created,
+ * Adm Confirmed (and Draft / Processing); never once AR Approved. An order already in SAP is then sent with Update SAP.
+ */
+const FULL_EDIT_STATUSES = ["draft", "submitted", "processing", "sap_draft_created", "approved"];
 
 interface OrderDetail {
   id: number; order_number: string; customer_name: string | null; customer_email: string | null;
@@ -307,6 +312,7 @@ export default function AdminOrderDetailPage() {
   const [lines, setLines] = useState<OrderLine[]>([]);
   const [isSaving, setIsSaving] = useState(false);
   const [duplicateFrom, setDuplicateFrom] = useState<DuplicateSource | null>(null);
+  const [fullEditFrom, setFullEditFrom] = useState<DuplicateSource | null>(null);
   const staffBase = useStaffBase();
   const me = useAdminSession();
   const [editOpen, setEditOpen] = useState(false);
@@ -489,8 +495,14 @@ export default function AdminOrderDetailPage() {
     return <div style={styles.page}><div style={styles.container}>Loading...</div></div>;
   }
 
-  // Edit order / Update SAP: Admin, Accountant and System Admin, while the order is still open.
-  const canEdit = !!me && me.kind !== "sales" && !EDIT_LOCKED_STATUSES.includes(order.status);
+  // Full edit (every staff role, Sales too): before SAP. After Adm Confirmed: Edit order + Update SAP
+  // (header + quantities) for Admin, Accountant and System Admin, while the order is still open.
+  // AR Approved = locked. In SAP already: only staff who can Update SAP (not Sales).
+  const arApproved = order.ar_status === "approved";
+  const canFullEdit = !!me && !arApproved && FULL_EDIT_STATUSES.includes(order.status) && (!isPushedToSap || me.kind !== "sales");
+  const canUpdateSap = !!me && me.kind !== "sales" && !arApproved && !EDIT_LOCKED_STATUSES.includes(order.status);
+  // The older header / quantity edit stays only for an in-SAP order whose status isn't one of the full-edit ones.
+  const canEdit = !canFullEdit && canUpdateSap;
   const fmtTime = (v: string | null) => (v ? new Date(v).toLocaleString("vi-VN", { timeZone: VN_TIME_ZONE }) : "");
 
   /** Alerts for the result of a push or an Update SAP (approval, stock caps, rejected lines). */
@@ -525,13 +537,13 @@ export default function AdminOrderDetailPage() {
   // "Duplicate": open the Self create dialog pre-filled with this order —
   // header and items (ordered quantity, chosen promotion / gift programs);
   // gift lines are rebuilt there, prices are today's.
-  const openDuplicate = () => {
-    if (!order) return;
+  const sourceOf = (forEdit: boolean): DuplicateSource | null => {
+    if (!order) return null;
     if (!order.sap_card_code) {
-      alert("This order has no SAP customer code, so it can't be duplicated.");
-      return;
+      alert(`This order has no SAP customer code, so it can't be ${forEdit ? "edited" : "duplicated"}.`);
+      return null;
     }
-    setDuplicateFrom({
+    return {
       orderNumber: order.order_number,
       customerCode: order.sap_card_code,
       billTo: order.bill_to_code,
@@ -539,6 +551,7 @@ export default function AdminOrderDetailPage() {
       warehouse: order.warehouse_code,
       supervisor: order.supervisor_code,
       remark: order.remark,
+      contactPhone: order.contact_phone,
       lines: lines.filter((l) => !l.is_gift_line).map((l) => {
         // With two gifts (promotion "case c") the choice is the different-item one;
         // the same-item gift comes back with it automatically.
@@ -546,13 +559,16 @@ export default function AdminOrderDetailPage() {
         const gift = gifts.find((g) => g.sap_item_code !== l.sap_item_code) ?? gifts[0];
         return {
           sapItemCode: l.sap_item_code,
-          quantity: Number(l.quantity),
+          // Edit starts from what will be delivered: the quantity the customer accepted (staff suggestion), else the ordered one.
+          quantity: forEdit && l.customer_confirm_status === "accepted" ? Number(l.confirm_qty) : Number(l.quantity),
           promotionCode: l.promotion_code,
           giveawayKey: gift ? `${l.giveaway_promotion_code ?? ""}::${gift.sap_item_code}` : null,
         };
-      }),
-    });
+      }).filter((l) => l.quantity > 0),
+    };
   };
+  const openDuplicate = () => { const src = sourceOf(false); if (src) setDuplicateFrom(src); };
+  const openFullEdit = () => { const src = sourceOf(true); if (src) setFullEditFrom(src); };
   const duplicateButton = (
     <button
       type="button"
@@ -620,13 +636,19 @@ export default function AdminOrderDetailPage() {
                     disabled={!selectedWarehouse}
                   />
                 )}
-                {canEdit && (
-                  <button type="button" onClick={() => setEditOpen(true)} disabled={isSaving} style={btn("secondary", isSaving)}
-                    title="Change warehouse, addresses, supervisor, phone, remark and quantities">
+                {canFullEdit && (
+                  <button type="button" onClick={openFullEdit} disabled={isSaving} style={btn("secondary", isSaving)}
+                    title="Change the header and the lines: add, remove or change SKUs, quantities and programs — re-priced with today's setup">
                     ✎ Edit order
                   </button>
                 )}
-                {canEdit && isPushedToSap && (
+                {canEdit && (
+                  <button type="button" onClick={() => setEditOpen(true)} disabled={isSaving} style={btn("secondary", isSaving)}
+                    title="In SAP already: change warehouse, addresses, supervisor, phone, remark and quantities, then Update SAP">
+                    ✎ Edit order
+                  </button>
+                )}
+                {canUpdateSap && isPushedToSap && (
                   <SyncButton
                     url={`/api/admin/orders/${params.id}/confirm?mode=update&warehouseCode=${encodeURIComponent(order.warehouse_code || selectedWarehouse)}`}
                     label={order.sap_outdated_at ? "⟳ Update SAP (changes pending)" : "⟳ Update SAP"}
@@ -873,6 +895,43 @@ export default function AdminOrderDetailPage() {
                   </tr>
                 ))}
               </tbody>
+              <tfoot>
+                {(() => {
+                  // Row 1: the bought items; row 2 (only when there are any): the free items.
+                  const sum = (ls: OrderLine[]) => ({
+                    qty: ls.reduce((t, l) => t + Number(l.quantity || 0), 0),
+                    cfm: ls.reduce((t, l) => t + Number(l.confirm_qty || 0), 0),
+                    total: ls.reduce((t, l) => t + Number(l.line_total || 0), 0),
+                    vat: ls.reduce((t, l) => t + (lineVat(l) ?? 0), 0),
+                  });
+                  const buy = sum(lines.filter((l) => !l.is_gift_line));
+                  const gifts = lines.filter((l) => !!l.is_gift_line);
+                  const free = sum(gifts);
+                  const rows = [
+                    { key: "buy", label: "Total", s: buy, bg: "var(--bg-secondary, #F8FAFC)" },
+                    ...(gifts.length ? [{ key: "free", label: "🎁 Free items", s: free, bg: "var(--color-success-light, #ECFDF5)" }] : []),
+                  ];
+                  const qtyCols = new Set(["Qty", "Cfm Qty"]);
+                  return rows.map((r, i) => {
+                    const value: Record<string, string> = {
+                      "Item Name": r.label, "Qty": formatQty(r.s.qty), "Cfm Qty": formatQty(r.s.cfm),
+                      "Line Total": formatPrice(String(r.s.total)), "VAT": formatPrice(String(r.s.vat)),
+                    };
+                    return (
+                      <tr key={r.key}>
+                        {LINE_COLS.map((c) => (
+                          <td key={c} title={value[c]} style={{
+                            ...styles.td, fontWeight: 800, whiteSpace: "nowrap", background: r.bg,
+                            borderTop: i === 0 ? "2px solid var(--color-gray-200, #E2E8F0)" : undefined,
+                            // Qty totals in the same style as the Line Total total (never cut off).
+                            ...(qtyCols.has(c) ? { overflow: "visible" } : { overflow: "hidden", textOverflow: "ellipsis" }),
+                          }}>{value[c] ?? ""}</td>
+                        ))}
+                      </tr>
+                    );
+                  });
+                })()}
+              </tfoot>
             </table>
           </div>
           {linesScroll.bar}
@@ -918,6 +977,16 @@ export default function AdminOrderDetailPage() {
             if (sapResult) showSapResult(sapResult);
             load();
           }}
+        />
+      )}
+
+      {fullEditFrom && (
+        <SelfCreateOrderDialog
+          locale={params.locale}
+          initial={fullEditFrom}
+          editOrder={{ orderId: order.id, orderNumber: order.order_number, previousTotal: Number(order.grand_total) }}
+          onClose={() => setFullEditFrom(null)}
+          onCreated={() => load()}
         />
       )}
 

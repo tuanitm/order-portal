@@ -7,7 +7,10 @@ import { getOrderWarehouses } from "@/lib/adminOrderCreate";
 import { recalculateLinkedGiftQty } from "@/lib/orderGifts";
 import { recalculateOrderTotals } from "@/lib/orderTotals";
 import { canEditOrders, NON_EDITABLE_STATUSES, resolveSapOrderTarget } from "@/lib/orderSapUpdate";
-import { audited } from "@/lib/auditLog";
+import { audited, logAuditEvent } from "@/lib/auditLog";
+import { getCustomerForAdmin } from "@/lib/adminOrderCreate";
+import { loadOrderForEdit, fullEditLock, orderBrandOf, staffEditPricer, saveOrderEdit, editNote, OrderEditError, type OrderEditInput } from "@/lib/orderEdit";
+import { postOrderMessage } from "@/lib/orderMessages";
 
 interface EditBody {
   warehouse?: string;
@@ -50,8 +53,8 @@ async function PATCHHandler(request: NextRequest, { params }: { params: Promise<
   if (!body || typeof body !== "object") return NextResponse.json({ error: "Invalid request" }, { status: 400 });
 
   const companyId = getCompanyId();
-  const order = await queryOne<{ id: number; order_number: string; status: string; sap_doc_entry: number | null; sap_card_code: string | null }>(
-    `SELECT o.id, o.order_number, o.status, o.sap_doc_entry, COALESCE(o.sap_card_code, u.sap_card_code) AS sap_card_code
+  const order = await queryOne<{ id: number; order_number: string; status: string; sap_doc_entry: number | null; sap_card_code: string | null; ar_status: string | null }>(
+    `SELECT o.id, o.order_number, o.status, o.sap_doc_entry, COALESCE(o.sap_card_code, u.sap_card_code) AS sap_card_code, o.ar_status
        FROM orders o LEFT JOIN users u ON u.company_id = o.company_id AND u.id = o.user_id
       WHERE o.company_id = ? AND o.id = ?`,
     [companyId, orderId]
@@ -60,6 +63,7 @@ async function PATCHHandler(request: NextRequest, { params }: { params: Promise<
   if (NON_EDITABLE_STATUSES.includes(order.status)) {
     return NextResponse.json({ error: `A ${order.status} order can't be edited` }, { status: 409 });
   }
+  if (order.ar_status === "approved") return NextResponse.json({ error: "This order is AR Approved — it can't be edited" }, { status: 409 });
   if (order.sap_doc_entry) {
     try {
       await resolveSapOrderTarget(order);
@@ -160,3 +164,56 @@ async function PATCHHandler(request: NextRequest, { params }: { params: Promise<
 
 // Every call is written to the audit log (who, role, target, request, outcome).
 export const PATCH = audited({ action: "order_edit", entityType: "order", entityParam: "id" }, PATCHHandler);
+
+/**
+ * PUT /api/admin/orders/[id]/edit — full Order Edit while the order is not
+ * yet in SAP (see lib/orderEdit.ts): header + lines (add / remove / change
+ * SKU, quantity, program), every line re-priced with today's setup.
+ * Body: { warehouse, billTo, shipTo, supervisor, remark, contactPhone, lines: [{ sapItemCode, quantity, promotionCode, giveawayKey }] }.
+ * Any staff role with Orders, for orders within their data permissions (Sales too).
+ */
+async function PUTHandler(request: NextRequest, { params }: { params: Promise<{ id: string }> }) {
+  const guard = await requireAdminPermission(request, "orders");
+  if (guard.response) return guard.response;
+  const session = guard.session;
+  const orderId = parseInt((await params).id, 10);
+  if (isNaN(orderId)) return NextResponse.json({ error: "Invalid order ID" }, { status: 400 });
+  if (!(await isOrderInAdminScope(session, orderId))) return NextResponse.json({ error: "Order not found" }, { status: 404 });
+  const order = await loadOrderForEdit(orderId);
+  if (!order) return NextResponse.json({ error: "Order not found" }, { status: 404 });
+  const lock = fullEditLock(order, "staff");
+  if (lock) return NextResponse.json({ error: `${lock} — it can't be edited` }, { status: 409 });
+  if (order.sap_doc_entry) {
+    // In SAP: only staff who can Update SAP, and only while the SAP document is still open (not delivered / invoiced).
+    if (!canEditOrders(session)) return NextResponse.json({ error: "This order is in SAP — only Admin, Accountant and System Admin can edit it" }, { status: 403 });
+    try {
+      await resolveSapOrderTarget(order);
+    } catch (e) {
+      return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 409 });
+    }
+  }
+  const body = (await request.json().catch(() => null)) as OrderEditInput | null;
+  if (!body || !Array.isArray(body.lines)) return NextResponse.json({ error: "Invalid request" }, { status: 400 });
+
+  const customer = order.sap_card_code ? await getCustomerForAdmin(session, order.sap_card_code) : null;
+  if (!customer) return NextResponse.json({ error: "This order's customer is outside your customer groups" }, { status: 403 });
+  const warehouse = String(body.warehouse ?? order.warehouse_code ?? "").trim();
+  if (!warehouse) return NextResponse.json({ error: "Select a warehouse" }, { status: 400 });
+  try {
+    const pricer = await staffEditPricer(session, orderId, customer, warehouse, await orderBrandOf(orderId));
+    const result = await saveOrderEdit(order, { ...body, warehouse }, { pricer, staff: session });
+    const who = session.fullName || session.userid || session.email || "staff";
+    await postOrderMessage(orderId, "admin", who, editNote(result, who, "vi")).catch(() => undefined);
+    await logAuditEvent({
+      actorType: "admin", actorId: session.adminId, actorLabel: session.email, action: "order_edit_full", entityType: "order", entityId: orderId,
+      details: { previousTotal: result.previousTotal, grandTotal: result.grandTotal, added: result.added, removed: result.removed, lines: body.lines }, request,
+    });
+    return NextResponse.json({ success: true, ...result, sapOutdated: !!order.sap_doc_entry });
+  } catch (e) {
+    if (e instanceof OrderEditError) return NextResponse.json({ error: e.message, problems: e.problems }, { status: e.status });
+    console.error("[Admin] Order edit failed:", e);
+    return NextResponse.json({ error: "Failed to save the order" }, { status: 500 });
+  }
+}
+
+export const PUT = audited({ action: "order_edit_full", entityType: "order", entityParam: "id", failuresOnly: true }, PUTHandler);

@@ -12,6 +12,11 @@ import { IMPORT_TEMPLATE_COLUMNS_EN, IMPORT_TEMPLATE_COLUMNS_VI } from "@/lib/im
  * the customer's own storefront prices and are only a preview — the server
  * recomputes every line on Create (POST /api/admin/orders/create). The new
  * order(s) then follow the normal review flow ("Confirm & Push to SAP").
+ *
+ * Edit mode (`editOrder`): the same dialog edits an order that is not yet in
+ * SAP — customer fixed, items limited to the order's brand, lines already on
+ * the order priced even when out of stock; Save re-prices everything on the
+ * server (PUT /api/admin/orders/[id]/edit, see lib/orderEdit.ts).
  */
 
 interface CustomerRow {
@@ -59,6 +64,8 @@ export interface DuplicateSource {
   warehouse: string | null;
   supervisor: string | null;
   remark: string | null;
+  /** Edit mode: the order's contact phone. */
+  contactPhone?: string | null;
   /** Buy lines only — gift lines are rebuilt from giveawayKey. */
   lines: { sapItemCode: string; quantity: number; promotionCode: string | null; giveawayKey: string | null }[];
 }
@@ -203,7 +210,8 @@ function ProgramChip({ icon, options, value, onChange }: { icon: string; options
   if (!current) return null;
 
   const chip: CSSProperties = {
-    display: "inline-flex", alignItems: "center", gap: 4, maxWidth: "100%", padding: "1px 8px",
+    // Shrinks (with "…") so the discount % and the buy / give chips stay on one line; full text on hover / in the list.
+    display: "inline-flex", alignItems: "center", gap: 4, maxWidth: "100%", minWidth: 0, flexShrink: 1, padding: "1px 8px",
     borderRadius: 999, fontSize: "0.75rem", lineHeight: 1.6, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
     background: "var(--bg-secondary, #F1F5F9)", border: "1px solid var(--color-gray-200, #E2E8F0)", color: "var(--text-secondary, #475569)",
   };
@@ -251,13 +259,16 @@ function ProgramChip({ icon, options, value, onChange }: { icon: string; options
   );
 }
 
-export default function SelfCreateOrderDialog({ locale, onClose, onCreated, initial }: {
+export default function SelfCreateOrderDialog({ locale, onClose, onCreated, initial, editOrder }: {
   locale: string;
   onClose: () => void;
   onCreated: () => void;
   /** Pre-fill from an existing order (Duplicate); everything stays editable. */
   initial?: DuplicateSource;
+  /** Edit that order (with `initial` = its current content) instead of creating a new one. */
+  editOrder?: { orderId: number; orderNumber: string; previousTotal: number };
 }) {
+  const editId = editOrder?.orderId;
   // /admin or /sales — links to the new order stay in the current area.
   const staffBase = useStaffBase();
 
@@ -280,6 +291,9 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
   const [itemActive, setItemActive] = useState(0);
   const [itemLoading, setItemLoading] = useState(false);
   const [repricing, setRepricing] = useState(false);
+  // 🔄 next to Warehouse: refresh that warehouse's stock from SAP, then re-price the lines (new Avail Qty).
+  const [stockRefreshing, setStockRefreshing] = useState(false);
+  const [stockRefreshNote, setStockRefreshNote] = useState("");
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [importChoice, setImportChoice] = useState<ImportChoice | null>(null);
@@ -287,6 +301,9 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
 
   // ── Footer ──
   const [remark, setRemark] = useState("");
+  // Edit mode: the order's contact phone, and the header section (collapsed by default so the lines get the room).
+  const [contactPhone, setContactPhone] = useState(initial?.contactPhone ?? "");
+  const [headerOpen, setHeaderOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<{ text: string; problems?: string[] } | null>(null);
   const [created, setCreated] = useState<CreatedOrder[] | null>(null);
@@ -305,7 +322,7 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
   const dirty = !!detail || lines.length > 0 || remark.trim() !== "";
   const requestClose = useCallback(() => {
     if (saving) return;
-    if (!created && dirty && !confirm("Discard this sales order?")) return;
+    if (!created && dirty && !confirm(editOrder ? "Discard your changes to this order?" : "Discard this sales order?")) return;
     onClose();
   }, [saving, created, dirty, onClose]);
 
@@ -337,7 +354,7 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
     try {
       const res = await fetch("/api/admin/orders/create/pricing", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ customer: cardCode, warehouse: wh, codes: current.map((l) => l.product.sapItemCode) }),
+        body: JSON.stringify({ customer: cardCode, warehouse: wh, codes: current.map((l) => l.product.sapItemCode), orderId: editId }),
       });
       const data = await res.json();
       const byCode = new Map<string, ProductWithPricing>((data.items || []).map((p: ProductWithPricing) => [p.sapItemCode, p]));
@@ -428,7 +445,7 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
       try {
         const res = await fetch("/api/admin/orders/create/pricing", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ customer: initial.customerCode, warehouse: wh, codes: [...merged.keys()] }),
+          body: JSON.stringify({ customer: initial.customerCode, warehouse: wh, codes: [...merged.keys()], orderId: editId }),
         });
         const data = await res.json();
         const byCode = new Map<string, ProductWithPricing>((data.items || []).map((p: ProductWithPricing) => [p.sapItemCode, p]));
@@ -462,6 +479,26 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
   // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once for the given source order
   }, [initial]);
 
+  const refreshStock = async () => {
+    if (!warehouse || !detail) return;
+    setStockRefreshing(true);
+    setStockRefreshNote("");
+    try {
+      const res = await fetch("/api/admin/orders/create/stock-refresh", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ warehouse }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setError({ text: data.error || "Stock refresh failed" }); return; }
+      const at = new Date(data.refreshedAt).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+      setStockRefreshNote(`${warehouse} stock refreshed from SAP at ${at}${data.cached ? " (just now)" : ` — ${data.rows} items`}`);
+      setLines(await reprice(detail.customer.sap_card_code, warehouse, lines));
+    } catch {
+      setError({ text: "Network error — stock not refreshed" });
+    } finally {
+      setStockRefreshing(false);
+    }
+  };
+
   const changeWarehouse = async (wh: string) => {
     setWarehouse(wh);
     if (detail) setLines(await reprice(detail.customer.sap_card_code, wh, lines));
@@ -476,7 +513,7 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
       try {
         const res = await fetch("/api/admin/orders/create/pricing", {
           method: "POST", headers: { "Content-Type": "application/json" }, signal: ctl.signal,
-          body: JSON.stringify({ customer: detail.customer.sap_card_code, warehouse, search: itemQuery }),
+          body: JSON.stringify({ customer: detail.customer.sap_card_code, warehouse, search: itemQuery, orderId: editId }),
         });
         const data = await res.json();
         setItemResults(data.items || []);
@@ -484,7 +521,7 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
       } catch { /* aborted */ } finally { setItemLoading(false); }
     }, 250);
     return () => { clearTimeout(t); ctl.abort(); };
-  }, [itemQuery, itemOpen, detail, warehouse]);
+  }, [itemQuery, itemOpen, detail, warehouse, editId]);
 
   const addItem = (p: ProductWithPricing) => {
     setItemOpen(false);
@@ -550,7 +587,7 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
       if (codes.length > IMPORT_MAX_CODES) throw new Error(`The file has ${codes.length} items — at most ${IMPORT_MAX_CODES} per import.`);
       const res = await fetch("/api/admin/orders/create/pricing", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ customer: detail.customer.sap_card_code, warehouse, codes }),
+        body: JSON.stringify({ customer: detail.customer.sap_card_code, warehouse, codes, orderId: editId }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to price the imported items");
@@ -603,20 +640,32 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
     setSaving(true);
     setError(null);
     try {
+      const payload = {
+        customer: detail.customer.sap_card_code, warehouse, billTo: billTo || null, shipTo: shipTo || null,
+        supervisor: supervisor || null, remark,
+        ...(editOrder ? { contactPhone } : {}),
+        lines: lines.map((l) => ({ sapItemCode: l.product.sapItemCode, quantity: l.qty, promotionCode: l.promotionCode, giveawayKey: l.giveawayKey })),
+      };
+      if (editOrder) {
+        if (!contactPhone.trim()) { setHeaderOpen(true); setError({ text: "Enter a contact phone (Order header)" }); return; }
+        const res = await fetch(`/api/admin/orders/${editOrder.orderId}/edit`, {
+          method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok) { setError({ text: data.error || "Failed to save the order", problems: data.problems }); return; }
+        onCreated();
+        onClose();
+        return;
+      }
       const res = await fetch("/api/admin/orders/create", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          customer: detail.customer.sap_card_code, warehouse, billTo: billTo || null, shipTo: shipTo || null,
-          supervisor: supervisor || null, remark,
-          lines: lines.map((l) => ({ sapItemCode: l.product.sapItemCode, quantity: l.qty, promotionCode: l.promotionCode, giveawayKey: l.giveawayKey })),
-        }),
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
       });
       const data = await res.json();
       if (!res.ok) { setError({ text: data.error || "Failed to create the order", problems: data.problems }); return; }
       setCreated(data.orders);
       onCreated();
     } catch {
-      setError({ text: "Network error — the order was not created" });
+      setError({ text: editOrder ? "Network error — the order was not saved" : "Network error — the order was not created" });
     } finally {
       setSaving(false);
     }
@@ -624,6 +673,8 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
 
   const c = detail?.customer;
   const addressOf = (list: { name: string; address: string | null }[], name: string) => list.find((a) => a.name === name)?.address;
+  /** customer_addresses.full_address on one line (SAP stores it with line breaks); the address name when there's none. */
+  const flatAddress = (list: { name: string; address: string | null }[], name: string) => (addressOf(list, name) ?? "").replace(/\s+/g, " ").trim() || name;
 
   return (
     <div
@@ -639,14 +690,14 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0.875rem 1.25rem", borderBottom: "1px solid var(--color-gray-200, #E2E8F0)" }}>
           <div>
             <h2 style={{ fontSize: "1.125rem", fontWeight: 800, color: "var(--text-primary, #0F172A)" }}>
-              Create sales order
-              {initial && (
+              {editOrder ? `Edit order ${editOrder.orderNumber}` : "Create sales order"}
+              {initial && !editOrder && (
                 <span style={{ fontWeight: 500, fontSize: "0.875rem", color: "var(--text-secondary, #64748B)", marginLeft: "0.5rem" }}>
                   — copy of {initial.orderNumber}
                 </span>
               )}
             </h2>
-            <p style={{ ...hint, marginTop: 2 }}>Prices follow the customer&apos;s own price list, contract and promotions. The order is reviewed and pushed to SAP from its order page.</p>
+            {!editOrder && <p style={{ ...hint, marginTop: 2 }}>Prices follow the customer&apos;s own price list, contract and promotions. The order is reviewed and pushed to SAP from its order page.</p>}
           </div>
           <button onClick={requestClose} aria-label="Close" style={{ ...btn("secondary"), padding: "0.375rem 0.625rem" }}>✕</button>
         </div>
@@ -673,8 +724,25 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
           </div>
         ) : (
           <>
-            {/* ── Header ── */}
-            <div style={{ padding: "1rem 1.25rem", borderBottom: "1px solid var(--color-gray-200, #E2E8F0)", background: "var(--bg-secondary, #F8FAFC)" }}>
+            {/* ── Header ── (edit mode: a collapsible section, collapsed by default) */}
+            <div style={{ borderBottom: "1px solid var(--color-gray-200, #E2E8F0)", background: "var(--bg-secondary, #F8FAFC)" }}>
+              {editOrder && (
+                <button type="button" aria-expanded={headerOpen} onClick={() => setHeaderOpen((v) => !v)} style={{
+                  display: "flex", alignItems: "center", gap: "0.5rem", width: "100%", padding: "0.6rem 1.25rem", border: "none", background: "transparent",
+                  cursor: "pointer", textAlign: "left", fontSize: "0.875rem", fontWeight: 700, color: "var(--text-primary, #0F172A)",
+                }}>
+                  <span aria-hidden style={{ display: "inline-block", width: 14, transition: "transform .15s", transform: headerOpen ? "rotate(90deg)" : "none" }}>▶</span>
+                  <span>Order header</span>
+                  {!headerOpen && (
+                    <span style={{ flex: 1, minWidth: 0, fontWeight: 400, fontSize: "0.78rem", color: "var(--text-secondary, #64748B)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {[c && `${c.sap_card_code} · ${c.card_name ?? ""}`, warehouse && `WH ${warehouse}`, detail && shipTo && flatAddress(detail.shipTo, shipTo), contactPhone && `☎ ${contactPhone}`,
+                        supervisor && `Sup. ${detail?.supervisors.find((x) => x.code === supervisor)?.name ?? supervisor}`].filter(Boolean).join(" · ")}
+                    </span>
+                  )}
+                  <span style={{ marginLeft: "auto", fontWeight: 400, fontSize: "0.75rem", color: "var(--color-primary, #2BBCB3)", whiteSpace: "nowrap" }}>{headerOpen ? "Hide ▴" : "Show ▾"}</span>
+                </button>
+              )}
+              <div style={{ padding: editOrder ? "0 1.25rem 1rem" : "1rem 1.25rem", display: !editOrder || headerOpen ? "block" : "none" }}>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "0.875rem 1rem" }}>
                 {/* Customer */}
                 <div style={{ position: "relative", gridColumn: "span 2", minWidth: 0 }}>
@@ -683,9 +751,11 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
                     ref={customerInputRef}
                     style={field}
                     placeholder="🔍 Customer code, name or tax code"
+                    readOnly={!!editOrder}
+                    title={editOrder ? "The customer of an order can't be changed" : undefined}
                     value={customerQuery}
-                    onChange={(e) => { setCustomerQuery(e.target.value); setCustomerOpen(true); }}
-                    onFocus={(e) => { e.target.select(); setCustomerOpen(true); }}
+                    onChange={(e) => { if (editOrder) return; setCustomerQuery(e.target.value); setCustomerOpen(true); }}
+                    onFocus={(e) => { if (editOrder) return; e.target.select(); setCustomerOpen(true); }}
                     onBlur={() => setTimeout(() => setCustomerOpen(false), 150)}
                     onKeyDown={(e) => listKeys(e, customerResults, customerActive, setCustomerActive, pickCustomer)}
                   />
@@ -714,7 +784,7 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
                       ))}
                     </div>
                   )}
-                  {c && (
+                  {c && !editOrder && (
                     <div style={hint}>
                       Price list {c.price_list_num ?? "base"} · {[c.cus_grp01, c.cus_grp02, c.cus_grp03].filter(Boolean).join(" / ")}
                       {c.phone ? ` · ☎ ${c.phone}` : ""}
@@ -728,11 +798,19 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
                 {/* Warehouse */}
                 <div>
                   <span style={label}>Warehouse *</span>
-                  <select style={field} value={warehouse} disabled={!detail} onChange={(e) => changeWarehouse(e.target.value)}>
-                    {!detail && <option value="">Select a customer first</option>}
-                    {detail?.warehouses.map((w) => <option key={w.code} value={w.code}>{w.code}{w.name ? ` – ${w.name}` : ""}</option>)}
-                  </select>
-                  <div style={hint}>Avail Qty is this warehouse&apos;s stock (last inventory sync).</div>
+                  <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                    <select style={{ ...field, flex: 1, minWidth: 0 }} value={warehouse} disabled={!detail} onChange={(e) => changeWarehouse(e.target.value)}>
+                      {!detail && <option value="">Select a customer first</option>}
+                      {detail?.warehouses.map((w) => <option key={w.code} value={w.code}>{w.code}{w.name ? ` – ${w.name}` : ""}</option>)}
+                    </select>
+                    <button type="button" onClick={refreshStock} disabled={!warehouse || stockRefreshing || repricing}
+                      aria-label="Refresh stock from SAP" title={stockRefreshNote || (warehouse ? `Refresh ${warehouse}'s stock from SAP (Avail Qty)` : "Select a warehouse first")}
+                      style={{ ...btn("secondary", !warehouse || stockRefreshing || repricing), padding: "0.35rem 0.5rem", lineHeight: 1, flexShrink: 0 }}>
+                      <span aria-hidden style={{ display: "inline-block", animation: stockRefreshing ? "spin 0.9s linear infinite" : undefined }}>🔄</span>
+                    </button>
+                  </div>
+                  <style>{"@keyframes spin { to { transform: rotate(360deg); } }"}</style>
+                  {!editOrder && <div style={hint}>Avail Qty is this warehouse&apos;s stock (last inventory sync).</div>}
                 </div>
 
                 {/* Supervisor */}
@@ -742,9 +820,10 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
                     <option value="">— None —</option>
                     {detail?.supervisors.map((s) => <option key={s.code} value={s.code}>{s.name || s.code}</option>)}
                   </select>
-                  {c && c.supervisor_code && supervisor === c.supervisor_code && <div style={hint}>Customer&apos;s default in SAP</div>}
+                  {!editOrder && c && c.supervisor_code && supervisor === c.supervisor_code && <div style={hint}>Customer&apos;s default in SAP</div>}
                 </div>
 
+                {!editOrder && (<>
                 {/* Bill to */}
                 <div style={{ gridColumn: "span 2", minWidth: 0 }}>
                   <span style={label}>Bill to</span>
@@ -766,6 +845,34 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
                   </select>
                   {detail && shipTo && <div style={hint}>{addressOf(detail.shipTo, shipTo) || "—"}</div>}
                 </div>
+                </>)}
+              </div>
+              {editOrder && (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: "0.875rem 1rem", marginTop: "0.875rem", alignItems: "flex-start" }}>
+                  <div style={{ width: 350 }}>
+                    <span style={label}>Bill to</span>
+                    <select style={{ ...field, textOverflow: "ellipsis" }} value={billTo} title={detail ? flatAddress(detail.billTo, billTo) : undefined}
+                      disabled={!detail || detail.billTo.length === 0} onChange={(e) => setBillTo(e.target.value)}>
+                      {detail && detail.billTo.length === 0 && <option value="">No bill-to address in SAP</option>}
+                      {!detail && <option value="">—</option>}
+                      {detail?.billTo.map((a) => <option key={a.name} value={a.name}>{flatAddress(detail.billTo, a.name)}</option>)}
+                    </select>
+                  </div>
+                  <div style={{ width: 350 }}>
+                    <span style={label}>Ship to</span>
+                    <select style={{ ...field, textOverflow: "ellipsis" }} value={shipTo} title={detail ? flatAddress(detail.shipTo, shipTo) : undefined}
+                      disabled={!detail || detail.shipTo.length === 0} onChange={(e) => setShipTo(e.target.value)}>
+                      {detail && detail.shipTo.length === 0 && <option value="">No ship-to address in SAP</option>}
+                      {!detail && <option value="">—</option>}
+                      {detail?.shipTo.map((a) => <option key={a.name} value={a.name}>{flatAddress(detail.shipTo, a.name)}</option>)}
+                    </select>
+                  </div>
+                  <div style={{ width: 250 }}>
+                    <span style={label}>Phone number *</span>
+                    <input style={{ ...field, borderColor: contactPhone.trim() ? undefined : "#F87171" }} value={contactPhone} maxLength={50} onChange={(e) => setContactPhone(e.target.value)} />
+                  </div>
+                </div>
+              )}
               </div>
             </div>
 
@@ -829,7 +936,7 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
             </div>
 
             {/* ── Lines ── */}
-            <div style={{ flex: 1, overflow: "auto" }}>
+            <div className={editOrder ? "order-edit-scroll" : undefined} style={{ flex: 1, overflow: "auto" }}>
               {lines.length === 0 ? (
                 <div style={{ ...styles.empty, padding: "4rem 1rem" }}>
                   <div style={{ fontSize: "2rem", marginBottom: "0.5rem" }}>🧾</div>
@@ -882,7 +989,7 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
                             <ClampedName text={itemName(p)} expanded={expandedNames.has(p.sapItemCode)} onToggle={() => toggleName(p.sapItemCode)} />
                             {line.unavailable && <div style={{ ...hint, color: "#DC2626" }}>Not available for this customer in {warehouse} — remove it or pick another warehouse.</div>}
                             {(p.promotionOptions.length > 0 && (promoPct > 0 || p.promotionOptions.length > 1) || p.giveawayOptions.length > 0) && (
-                              <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 4, minWidth: 0 }}>
+                              <div style={{ display: "flex", flexWrap: "nowrap", gap: 4, marginTop: 4, minWidth: 0, overflow: "hidden" }}>
                                 {p.promotionOptions.length > 0 && (promoPct > 0 || p.promotionOptions.length > 1) && (
                                   <ProgramChip
                                     icon="🏷"
@@ -982,6 +1089,35 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
                       ];
                     })}
                   </tbody>
+                  <tfoot>
+                    {(() => {
+                      // Row 1: the bought items; row 2 (only when there are any): the free items. Sticky at the bottom of the lines area.
+                      const buyQty = priced.reduce((t, x) => t + x.line.qty, 0);
+                      const freeQty = priced.reduce((t, x) => t + x.freeQty + x.extraQty, 0);
+                      const rows = [
+                        { key: "buy", label: "Total", qty: buyQty, total: money(total), bg: "var(--bg-secondary, #F8FAFC)" },
+                        ...(freeQty > 0 ? [{ key: "free", label: "🎁 Free items", qty: freeQty, total: money(0), bg: "#ECFDF5" }] : []),
+                      ];
+                      return rows.map((r, i) => {
+                        const cell: CSSProperties = {
+                          ...td, fontWeight: 800, background: r.bg, position: "sticky", bottom: (rows.length - 1 - i) * 37, zIndex: 1,
+                          borderTop: i === 0 ? "2px solid var(--color-gray-200, #E2E8F0)" : undefined, height: 37, boxSizing: "border-box",
+                        };
+                        const big: CSSProperties = { ...cell, textAlign: "right", whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }; // same style as the Line Total total
+                        return (
+                          <tr key={r.key}>
+                            <td style={cell}></td>
+                            <td style={cell}>{r.label}</td>
+                            <td style={cell}></td>
+                            <td style={big}>{num(r.qty)}</td>
+                            <td style={cell}></td><td style={cell}></td><td style={cell}></td><td style={cell}></td><td style={cell}></td><td style={cell}></td>
+                            <td style={{ ...cell, textAlign: "right", whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>{r.total}</td>
+                            <td style={cell}></td>
+                          </tr>
+                        );
+                      });
+                    })()}
+                  </tfoot>
                 </table>
               )}
             </div>
@@ -997,7 +1133,7 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
                 )}
                 {notice.length > 0 && (
                   <div style={{ ...hint, color: "#B45309" }}>
-                    ⓘ Copied at today&apos;s prices. Changed while copying:
+                    ⓘ {editOrder ? "Priced with today's setup. Changed while loading:" : "Copied at today's prices. Changed while copying:"}
                     <ul style={{ margin: "0.125rem 0 0 1rem" }}>{notice.map((n) => <li key={n}>{n}</li>)}</ul>
                   </div>
                 )}
@@ -1025,12 +1161,18 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
                     <tr><td style={{ paddingRight: "1.5rem", color: "var(--text-secondary, #64748B)" }}>Subtotal</td><td style={{ textAlign: "right" }}>{money(subtotal)}</td></tr>
                     <tr><td style={{ paddingRight: "1.5rem", color: "var(--text-secondary, #64748B)" }}>Discount</td><td style={{ textAlign: "right" }}>{subtotal - total > 0 ? `−${money(subtotal - total)}` : money(0)}</td></tr>
                     <tr><td style={{ paddingRight: "1.5rem", fontWeight: 800 }}>Total</td><td style={{ textAlign: "right", fontWeight: 800, fontSize: "1rem" }}>{money(total)}</td></tr>
+                    {editOrder && (
+                      <tr><td style={{ paddingRight: "1.5rem", color: "var(--text-secondary, #64748B)" }}>Before edit</td>
+                        <td style={{ textAlign: "right", color: total === editOrder.previousTotal ? "var(--text-secondary, #64748B)" : "#B45309" }}>
+                          {money(editOrder.previousTotal)}{total !== editOrder.previousTotal ? ` (${total > editOrder.previousTotal ? "+" : "−"}${money(Math.abs(total - editOrder.previousTotal))})` : ""}
+                        </td></tr>
+                    )}
                   </tbody>
                 </table>
                 <div style={{ display: "flex", gap: "0.5rem" }}>
                   <button style={btn("secondary", saving)} onClick={requestClose} disabled={saving}>Cancel</button>
                   <button style={btn("primary", !canCreate)} onClick={create} disabled={!canCreate}>
-                    {saving ? "Creating…" : brands.length > 1 ? `Create ${brands.length} orders` : "Create order"}
+                    {editOrder ? (saving ? "Saving…" : "💾 Save changes") : saving ? "Creating…" : brands.length > 1 ? `Create ${brands.length} orders` : "Create order"}
                   </button>
                 </div>
               </div>

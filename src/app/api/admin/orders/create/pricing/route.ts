@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { getCustomerForAdmin, getOrderWarehouses, priceItemsForCustomer } from "@/lib/adminOrderCreate";
-import { getAllowedBrandCodes } from "@/lib/adminScope";
+import { getAllowedBrandCodes, isOrderInAdminScope } from "@/lib/adminScope";
+import { orderBrandOf, staffEditPricer } from "@/lib/orderEdit";
 
 /**
- * POST /api/admin/orders/create/pricing { customer, warehouse, search? | codes? }
+ * POST /api/admin/orders/create/pricing { customer, warehouse, search? | codes?, orderId? }
+ * (orderId = Order Edit: limited to that order's brand; its own lines priced even when out of stock)
  * — items priced for that customer with Avail Qty from that warehouse: the
  * dialog's item picker (`search`) and the re-pricing of its lines (`codes`)
  * when the customer or warehouse changes.
@@ -14,8 +16,8 @@ export async function POST(request: NextRequest) {
   if (guard.response) return guard.response;
 
   const body = await request.json().catch(() => ({}));
-  const { customer: cardCode, warehouse, search, codes } = body as {
-    customer?: string; warehouse?: string; search?: string; codes?: string[];
+  const { customer: cardCode, warehouse, search, codes, orderId } = body as {
+    customer?: string; warehouse?: string; search?: string; codes?: string[]; orderId?: number;
   };
   if (!cardCode || !warehouse) {
     return NextResponse.json({ error: "customer and warehouse are required" }, { status: 400 });
@@ -30,6 +32,14 @@ export async function POST(request: NextRequest) {
   }
 
   try {
+    // Order Edit: the order's brand only; lines already on the order are priced even if their stock ran out.
+    if (orderId) {
+      if (!(await isOrderInAdminScope(guard.session, Number(orderId)))) return NextResponse.json({ error: "Order not found" }, { status: 404 });
+      const brand = await orderBrandOf(Number(orderId));
+      const pricer = await staffEditPricer(guard.session, Number(orderId), customer, warehouse, brand);
+      const list = codes ? codes.map((c) => String(c).trim()).filter(Boolean) : undefined;
+      return NextResponse.json({ items: await pricer(list ? { codes: list } : { search: typeof search === "string" ? search : "" }), brand });
+    }
     const items = await priceItemsForCustomer(customer, warehouse, {
       brands: getAllowedBrandCodes(guard.session),
       search: typeof search === "string" ? search : undefined,

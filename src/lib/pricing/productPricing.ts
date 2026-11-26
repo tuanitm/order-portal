@@ -420,6 +420,12 @@ export interface PricingContext {
    * the Inventory Stock setting (getStorefrontStockTable).
    */
   stockTable?: StockTable;
+  /**
+   * Price and show Avail Qty as usual, but don't drop items with no stock left —
+   * Order Edit re-prices the lines already on an order this way (a line that ran
+   * out of stock is still on the order; staff adjust its quantity at review).
+   */
+  skipStockGate?: boolean;
 }
 
 /**
@@ -584,7 +590,7 @@ export async function queryPricedProducts(
   // warehouse "Included" — until then this is a no-op, so turning the
   // feature on is opt-in and never silently empties the result set.
   const stockGate = buildStockGateClause(stockWarehouseCodes, companyId, cusGrp01, cusGrp02, cusGrp03, stockTable);
-  if (stockGate.clause) {
+  if (stockGate.clause && !ctx.skipStockGate) {
     whereClauses.push(stockGate.clause);
     params.push(...stockGate.params);
   }

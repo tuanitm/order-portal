@@ -1719,6 +1719,14 @@ ul, ol {
   background: var(--color-gray-400);
 }
 
+/* Edit Order dialogs: a thicker vertical scrollbar (double the 6px default) — easier to grab on long orders. */
+.order-edit-scroll::-webkit-scrollbar {
+  width: 12px;
+}
+.order-edit-scroll::-webkit-scrollbar-thumb {
+  border-radius: 6px;
+}
+
 /* ── Order Success ── */
 .order-success {
   display: flex;

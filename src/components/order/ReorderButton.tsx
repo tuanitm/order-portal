@@ -19,7 +19,8 @@ interface OrderLineRow {
  * buy-give gifts itself from the quantity. Items no longer sellable are
  * skipped and reported.
  */
-export default function ReorderButton({ orderId }: { orderId: number }) {
+/** `size="md"` = the full-size button (order detail page, next to "Edit order"); default small (order list rows). */
+export default function ReorderButton({ orderId, size = "sm" }: { orderId: number; size?: "sm" | "md" }) {
   const t = useTranslations();
   const locale = useLocale();
   const { addItem, openCart } = useCart();
@@ -103,7 +104,7 @@ export default function ReorderButton({ orderId }: { orderId: number }) {
     <>
       <button
         type="button"
-        className="btn btn-primary btn-sm"
+        className={size === "md" ? "btn btn-primary" : "btn btn-primary btn-sm"}
         onClick={reorder}
         disabled={isBusy}
         style={{ flexShrink: 0 }}

@@ -63,6 +63,60 @@ export interface CreatedOrder {
   brandCode: string | null;
 }
 
+/** A line rounded to whole VND, as written to order_lines (see roundOrderLines). */
+export type RoundedOrderLine = OrderLineInput & { baseUnitPrice: number; netUnitPrice: number; lineTotal: number };
+
+/**
+ * Prices are whole VND: base_unit_price, unit_price and line_total are
+ * rounded to 0 decimals before being written (line_total from the exact
+ * unitPrice x qty, not from the rounded unit price). unitPrice is already
+ * the net price (contract / promotion discounts applied) — discountPercent
+ * is informational and must NOT be applied again.
+ */
+export function roundOrderLines(lines: OrderLineInput[]): RoundedOrderLine[] {
+  return lines.map((line) => ({
+    ...line,
+    baseUnitPrice: Math.round(line.originalPrice ?? line.unitPrice),
+    netUnitPrice: Math.round(line.unitPrice),
+    lineTotal: Math.round(line.unitPrice * line.quantity),
+  }));
+}
+
+/** subtotal (base price x qty) / discount / total of these lines — the same formulas as checkout. */
+export function orderTotalsOf(lines: RoundedOrderLine[]) {
+  const subtotal = lines.reduce((t, l) => t + l.baseUnitPrice * l.quantity, 0);
+  const grandTotal = lines.reduce((t, l) => t + l.lineTotal, 0);
+  return { subtotal, discountTotal: subtotal - grandTotal, grandTotal };
+}
+
+type Executor = Pick<import("mysql2/promise").PoolConnection, "execute">;
+
+/**
+ * Insert an order's lines (buy lines before their gift lines — a gift line's
+ * source_line_id points at the buy line inserted just before it, by item code).
+ */
+export async function insertOrderLines(conn: Executor, companyId: string, orderId: number, lines: RoundedOrderLine[]): Promise<void> {
+  const lineIdBySapItemCode = new Map<string, number>();
+  for (const line of lines) {
+    const sourceLineId = line.isGift && line.sourceSapItemCode ? lineIdBySapItemCode.get(line.sourceSapItemCode) ?? null : null;
+    const [lineResult] = (await conn.execute(
+      `INSERT INTO order_lines (
+         company_id, order_id, sap_item_code, item_name, quantity, uom, base_unit_price, unit_price, discount_percent, line_total, confirm_qty,
+         is_gift_line, source_line_id, promo_buy_qty, promo_give_qty, remark, period_disc_pct, contract_disc_pct, promo_disc_pct,
+         promotion_code, promotion_name, giveaway_promotion_code, giveaway_promotion_name)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        companyId, orderId, line.sapItemCode, line.itemName, line.quantity, line.uom,
+        line.baseUnitPrice, line.netUnitPrice, line.discountPercent || 0, line.lineTotal, line.quantity,
+        !!line.isGift, sourceLineId, line.promoBuyQty ?? null, line.promoGiveQty ?? null,
+        line.remark?.trim() || null, line.periodDiscPct ?? null, line.contractDiscPct ?? null, line.promoDiscPct ?? null,
+        line.promotionCode ?? null, line.promotionName ?? null, line.giveawayCode ?? null, line.giveawayName ?? null,
+      ]
+    )) as unknown as [{ insertId: number }];
+    if (!line.isGift) lineIdBySapItemCode.set(line.sapItemCode, lineResult.insertId);
+  }
+}
+
 /** One brand-group's lines plus the order totals computed from just that group. */
 interface OrderGroup {
   brandCode: string | null;
@@ -131,12 +185,7 @@ export async function createOrdersFromLines(header: OrderHeaderInput, lines: Ord
   // unitPrice is already the net price (contract/promotion discounts
   // applied) — discountPercent is informational and must NOT be applied
   // again; the discount is originalPrice vs unitPrice.
-  const roundedLines = lines.map((line) => ({
-    ...line,
-    baseUnitPrice: Math.round(line.originalPrice ?? line.unitPrice),
-    netUnitPrice: Math.round(line.unitPrice),
-    lineTotal: Math.round(line.unitPrice * line.quantity),
-  }));
+  const roundedLines = roundOrderLines(lines);
 
   // Authoritative, server-trusted brand per item code — a client's own
   // brandCode field is display-only and never consulted here.
@@ -205,34 +254,8 @@ export async function createOrdersFromLines(header: OrderHeaderInput, lines: Ord
         [companyId, orderId]
       );
 
-      // Buy lines are always listed before their gift line, so by the time
-      // a gift line is reached its "buy" line's own just-inserted id is
-      // already in this map — reset per group/order, since source_line_id
-      // only ever needs to resolve within the SAME order.
-      const lineIdBySapItemCode = new Map<string, number>();
-      for (const line of group.lines) {
-        const sourceLineId = line.isGift && line.sourceSapItemCode
-          ? lineIdBySapItemCode.get(line.sourceSapItemCode) ?? null
-          : null;
-
-        const [lineResult] = await conn.execute(
-          `INSERT INTO order_lines (
-             company_id, order_id, sap_item_code, item_name, quantity, uom, base_unit_price, unit_price, discount_percent, line_total, confirm_qty,
-             is_gift_line, source_line_id, promo_buy_qty, promo_give_qty, remark, period_disc_pct, contract_disc_pct, promo_disc_pct,
-             promotion_code, promotion_name, giveaway_promotion_code, giveaway_promotion_name)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            companyId, orderId, line.sapItemCode, line.itemName, line.quantity, line.uom,
-            line.baseUnitPrice, line.netUnitPrice, line.discountPercent || 0, line.lineTotal, line.quantity,
-            !!line.isGift, sourceLineId, line.promoBuyQty ?? null, line.promoGiveQty ?? null,
-            line.remark?.trim() || null, line.periodDiscPct ?? null, line.contractDiscPct ?? null, line.promoDiscPct ?? null,
-            line.promotionCode ?? null, line.promotionName ?? null, line.giveawayCode ?? null, line.giveawayName ?? null,
-          ]
-        );
-        if (!line.isGift) {
-          lineIdBySapItemCode.set(line.sapItemCode, (lineResult as { insertId: number }).insertId);
-        }
-      }
+      // Buy lines are always listed before their gift line (source_line_id resolves within this order).
+      await insertOrderLines(conn, companyId, orderId, group.lines);
 
       createdOrders.push({
         orderId, orderNumber, subtotal: group.subtotal, discountTotal: group.discountTotal,

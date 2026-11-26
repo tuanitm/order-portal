@@ -136,7 +136,7 @@ export async function findCustomerLogin(cardCode: string): Promise<SelfCreateCus
 export async function priceItemsForCustomer(
   customer: SelfCreateCustomerRow,
   warehouseCode: string,
-  { search, codes, limit = 20, brands = null }: { search?: string; codes?: string[]; limit?: number; brands?: Set<string> | null }
+  { search, codes, limit = 20, brands = null, skipStockGate = false }: { search?: string; codes?: string[]; limit?: number; brands?: Set<string> | null; skipStockGate?: boolean }
 ): Promise<ProductWithPricing[]> {
   const hidden = await resolveHiddenItemCategories(customer.cus_grp01, customer.cus_grp02, customer.cus_grp03);
   const { clauses, params } = buildHiddenCategoryClauses(hidden);
@@ -148,6 +148,7 @@ export async function priceItemsForCustomer(
     priceListNum: customer.price_list_num,
     basePriceListNum: await getBasePriceListNum(),
     stockWarehouseCodes: [warehouseCode],
+    skipStockGate,
   };
   const extraSql: string[] = [];
   const extraParams: string[] = [];
