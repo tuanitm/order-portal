@@ -45,6 +45,8 @@ interface CustomerDetail {
 }
 
 interface Line {
+  /** Row id — the same item can be on the order twice with different programs (Import Excel split). */
+  uid: string;
   product: ProductWithPricing;
   qty: number;
   promotionCode: string | null;
@@ -71,6 +73,9 @@ export interface DuplicateSource {
 }
 
 const giveawayKeyOf = (o: { code: string | null; giveItemCode: string }) => `${o.code ?? ""}::${o.giveItemCode}`;
+let uidSeq = 0;
+const newUid = () => `l${++uidSeq}`;
+const programKey = (code: string, promotionCode: string | null, giveawayKey: string | null) => `${code.toUpperCase()}|${promotionCode ?? ""}|${giveawayKey ?? ""}`;
 const money = (v: number) => new Intl.NumberFormat("vi-VN").format(Math.round(v)) + "₫";
 const num = (v: number | null | undefined) => (v == null ? "—" : new Intl.NumberFormat("vi-VN").format(v));
 const pct = (v: number) => (v ? `${Number(v.toFixed(2))}%` : "—");
@@ -83,12 +88,41 @@ const HEADER_ALIASES = {
   quantity: [IMPORT_TEMPLATE_COLUMNS_EN[2], IMPORT_TEMPLATE_COLUMNS_VI[2], "qty"].map((x) => x.toLowerCase()),
 };
 interface ImportResult { added: number; merged: number; notFound: string[]; invalid: string[] }
-/** Items from the file with more than one promotion / gift program — the user picks which one applies. */
+/**
+ * Items from the file with more than one promotion / gift program: a buy
+ * quantity per program (split along one axis — the gift programs when there
+ * are several, else the promotion discounts; the other axis is one pick).
+ */
+interface ImportSplit {
+  axis: "gift" | "promo";
+  /** gift axis: the promotion discount for every row; promo axis: the gift program. */
+  promotionCode: string | null;
+  giveawayKey: string | null;
+  /** Option key (giveawayKeyOf / promotion code) → buy quantity. */
+  qty: Record<string, number>;
+}
 interface ImportChoice {
   found: ProductWithPricing[];
   qty: Map<string, number>;
-  picks: Map<string, { promotionCode: string | null; giveawayKey: string | null }>;
+  splits: Map<string, ImportSplit>;
   result: Omit<ImportResult, "added" | "merged">;
+}
+
+/** Default split: the gift program whose free item is the bought item itself gets the Excel qty
+ *  (none → the best match); every other program starts at 0. */
+function defaultSplit(p: ProductWithPricing, q: number): ImportSplit {
+  if (p.giveawayOptions.length > 1) {
+    const same = p.giveawayOptions.findIndex((o) => o.giveItemCode === p.sapItemCode);
+    const def = same >= 0 ? same : 0;
+    return {
+      axis: "gift", promotionCode: p.promotionOptions[0]?.code ?? null, giveawayKey: null,
+      qty: Object.fromEntries(p.giveawayOptions.map((o, i) => [giveawayKeyOf(o), i === def ? q : 0])),
+    };
+  }
+  return {
+    axis: "promo", promotionCode: null, giveawayKey: p.giveawayOptions[0] ? giveawayKeyOf(p.giveawayOptions[0]) : null,
+    qty: Object.fromEntries(p.promotionOptions.map((o, i) => [o.code ?? "", i === 0 ? q : 0])),
+  };
 }
 
 /** Excel rows → quantity per item code (summed, case-insensitive) + the rows that couldn't be read. */
@@ -354,7 +388,7 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
     try {
       const res = await fetch("/api/admin/orders/create/pricing", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ customer: cardCode, warehouse: wh, codes: current.map((l) => l.product.sapItemCode), orderId: editId }),
+        body: JSON.stringify({ customer: cardCode, warehouse: wh, codes: [...new Set(current.map((l) => l.product.sapItemCode))], orderId: editId }),
       });
       const data = await res.json();
       const byCode = new Map<string, ProductWithPricing>((data.items || []).map((p: ProductWithPricing) => [p.sapItemCode, p]));
@@ -430,22 +464,23 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
         notes.push(`Warehouse ${initial.warehouse} isn't available to this customer any more — using ${wh}.`);
       }
 
-      // One row per item (the storefront allows the same item twice with different gifts).
+      // One row per item + program (the same item twice with different programs stays two rows).
       const merged = new Map<string, DuplicateSource["lines"][number]>();
       for (const l of initial.lines) {
-        const prev = merged.get(l.sapItemCode);
+        const k = programKey(l.sapItemCode, l.promotionCode, l.giveawayKey);
+        const prev = merged.get(k);
         if (prev) {
           prev.quantity += l.quantity;
-          notes.push(`${l.sapItemCode} was on the order twice — merged into one line.`);
+          notes.push(`${l.sapItemCode} was on the order twice with the same programs — merged into one line.`);
         } else {
-          merged.set(l.sapItemCode, { ...l });
+          merged.set(k, { ...l });
         }
       }
       setRepricing(true);
       try {
         const res = await fetch("/api/admin/orders/create/pricing", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ customer: initial.customerCode, warehouse: wh, codes: [...merged.keys()], orderId: editId }),
+          body: JSON.stringify({ customer: initial.customerCode, warehouse: wh, codes: [...new Set([...merged.values()].map((l) => l.sapItemCode))], orderId: editId }),
         });
         const data = await res.json();
         const byCode = new Map<string, ProductWithPricing>((data.items || []).map((p: ProductWithPricing) => [p.sapItemCode, p]));
@@ -463,7 +498,7 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
             notes.push(`${p.sapItemCode}: the gift program has ended — ${p.giveawayOptions.length ? "using the current one" : "no gift now"}.`);
           }
           copied.push({
-            product: p, qty: l.quantity,
+            uid: newUid(), product: p, qty: l.quantity,
             promotionCode: promoKept ? l.promotionCode : p.promotionOptions[0]?.code ?? null,
             giveawayKey: giftKept ? l.giveawayKey : (p.giveawayOptions[0] ? giveawayKeyOf(p.giveawayOptions[0]) : null),
           });
@@ -529,14 +564,16 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
     const existing = lines.find((l) => l.product.sapItemCode === p.sapItemCode);
     if (existing) {
       setLines(lines.map((l) => (l === existing ? { ...l, qty: l.qty + 1 } : l)));
+      focusQtyOf.current = existing.uid;
     } else {
+      const uid = newUid();
       setLines([...lines, {
-        product: p, qty: 1,
+        uid, product: p, qty: 1,
         promotionCode: p.promotionOptions[0]?.code ?? null,
         giveawayKey: p.giveawayOptions[0] ? giveawayKeyOf(p.giveawayOptions[0]) : null,
       }]);
+      focusQtyOf.current = uid;
     }
-    focusQtyOf.current = p.sapItemCode;
   };
   useEffect(() => {
     if (!focusQtyOf.current) return;
@@ -545,33 +582,45 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
     el?.focus(); el?.select();
   }, [lines]);
 
-  const updateLine = (code: string, patch: Partial<Line>) =>
-    setLines((prev) => prev.map((l) => (l.product.sapItemCode === code ? { ...l, ...patch } : l)));
-  const removeLine = (code: string) => setLines((prev) => prev.filter((l) => l.product.sapItemCode !== code));
+  const updateLine = (uid: string, patch: Partial<Line>) =>
+    setLines((prev) => prev.map((l) => (l.uid === uid ? { ...l, ...patch } : l)));
+  const removeLine = (uid: string) => setLines((prev) => prev.filter((l) => l.uid !== uid));
 
-  /** Put the imported items on the order: an item already there gets the quantity added (and the program picked). */
-  const applyImport = (found: ProductWithPricing[], qty: Map<string, number>, picks: ImportChoice["picks"], result: ImportChoice["result"]) => {
-    const merged = found.filter((p) => lines.some((l) => l.product.sapItemCode === p.sapItemCode)).length;
+  /**
+   * Put the imported items on the order. Each (item, programs) pair is one
+   * line — an item split between programs in the popup becomes one line per
+   * program given a quantity; a line already on the order with the same
+   * programs gets the quantity added.
+   */
+  const applyImport = (found: ProductWithPricing[], qty: Map<string, number>, splits: ImportChoice["splits"], result: ImportChoice["result"]) => {
+    const wanted: { p: ProductWithPricing; q: number; promotionCode: string | null; giveawayKey: string | null }[] = [];
+    for (const p of found) {
+      const split = splits.get(p.sapItemCode);
+      if (split) {
+        for (const [k, q] of Object.entries(split.qty)) {
+          if (q <= 0) continue;
+          wanted.push(split.axis === "gift"
+            ? { p, q, promotionCode: split.promotionCode, giveawayKey: k }
+            : { p, q, promotionCode: k || null, giveawayKey: split.giveawayKey });
+        }
+      } else {
+        const q = qty.get(p.sapItemCode.toUpperCase()) ?? 0;
+        if (q > 0) wanted.push({ p, q, promotionCode: p.promotionOptions[0]?.code ?? null, giveawayKey: p.giveawayOptions[0] ? giveawayKeyOf(p.giveawayOptions[0]) : null });
+      }
+    }
+    const keyOf = (code: string, pc: string | null, gk: string | null) => programKey(code, pc, gk);
+    const onOrder = new Set(lines.map((l) => keyOf(l.product.sapItemCode, l.promotionCode, l.giveawayKey)));
+    const merged = wanted.filter((w) => onOrder.has(keyOf(w.p.sapItemCode, w.promotionCode, w.giveawayKey))).length;
     setLines((prev) => {
       const next = [...prev];
-      for (const p of found) {
-        const q = qty.get(p.sapItemCode.toUpperCase()) ?? 0;
-        if (q <= 0) continue;
-        const pick = picks.get(p.sapItemCode);
-        const i = next.findIndex((l) => l.product.sapItemCode === p.sapItemCode);
-        if (i >= 0) {
-          next[i] = { ...next[i], product: p, unavailable: false, qty: next[i].qty + q, ...(pick ?? {}) };
-        } else {
-          next.push({
-            product: p, qty: q,
-            promotionCode: pick ? pick.promotionCode : p.promotionOptions[0]?.code ?? null,
-            giveawayKey: pick ? pick.giveawayKey : (p.giveawayOptions[0] ? giveawayKeyOf(p.giveawayOptions[0]) : null),
-          });
-        }
+      for (const w of wanted) {
+        const i = next.findIndex((l) => keyOf(l.product.sapItemCode, l.promotionCode, l.giveawayKey) === keyOf(w.p.sapItemCode, w.promotionCode, w.giveawayKey));
+        if (i >= 0) next[i] = { ...next[i], product: w.p, unavailable: false, qty: next[i].qty + w.q };
+        else next.push({ uid: newUid(), product: w.p, qty: w.q, promotionCode: w.promotionCode, giveawayKey: w.giveawayKey });
       }
       return next;
     });
-    setImportResult({ ...result, added: found.length - merged, merged });
+    setImportResult({ ...result, added: wanted.length - merged, merged });
     setImportChoice(null);
   };
 
@@ -597,16 +646,10 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
       const qtyByCode = new Map([...qty].map(([k, v]) => [k, v.qty]));
       const multi = found.filter((p) => p.promotionOptions.length > 1 || p.giveawayOptions.length > 1);
       if (multi.length === 0) { applyImport(found, qtyByCode, new Map(), result); return; }
-      // Several programs → ask which one applies (preselected: the line's current choice, else the best match).
-      const picks: ImportChoice["picks"] = new Map();
-      for (const p of multi) {
-        const cur = lines.find((l) => l.product.sapItemCode === p.sapItemCode);
-        picks.set(p.sapItemCode, {
-          promotionCode: cur && p.promotionOptions.some((o) => o.code === cur.promotionCode) ? cur.promotionCode : p.promotionOptions[0]?.code ?? null,
-          giveawayKey: cur && p.giveawayOptions.some((o) => giveawayKeyOf(o) === cur.giveawayKey) ? cur.giveawayKey : (p.giveawayOptions[0] ? giveawayKeyOf(p.giveawayOptions[0]) : null),
-        });
-      }
-      setImportChoice({ found, qty: qtyByCode, picks, result });
+      // Several programs → popup: a buy quantity per program (same-item gift program preselected with the Excel qty).
+      const splits: ImportChoice["splits"] = new Map();
+      for (const p of multi) splits.set(p.sapItemCode, defaultSplit(p, qtyByCode.get(p.sapItemCode.toUpperCase()) ?? 0));
+      setImportChoice({ found, qty: qtyByCode, splits, result });
     } catch (e) {
       setError({ text: `Import Excel: ${e instanceof Error ? e.message : "could not read the file"}` });
     } finally {
@@ -983,10 +1026,10 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
                       const over = p.availableQty != null && line.qty > (p.availableQty ?? 0);
                       const giftSame = giveaway && giveaway.giveItemCode === p.sapItemCode;
                       return [
-                        <tr key={p.sapItemCode} style={{ background: line.unavailable ? "#FEF2F2" : undefined }}>
+                        <tr key={line.uid} style={{ background: line.unavailable ? "#FEF2F2" : undefined }}>
                           <td style={{ ...td, fontFamily: "monospace", fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={p.sapItemCode}>{p.sapItemCode}</td>
                           <td style={td}>
-                            <ClampedName text={itemName(p)} expanded={expandedNames.has(p.sapItemCode)} onToggle={() => toggleName(p.sapItemCode)} />
+                            <ClampedName text={itemName(p)} expanded={expandedNames.has(line.uid)} onToggle={() => toggleName(line.uid)} />
                             {line.unavailable && <div style={{ ...hint, color: "#DC2626" }}>Not available for this customer in {warehouse} — remove it or pick another warehouse.</div>}
                             {(p.promotionOptions.length > 0 && (promoPct > 0 || p.promotionOptions.length > 1) || p.giveawayOptions.length > 0) && (
                               <div style={{ display: "flex", flexWrap: "nowrap", gap: 4, marginTop: 4, minWidth: 0, overflow: "hidden" }}>
@@ -994,7 +1037,7 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
                                   <ProgramChip
                                     icon="🏷"
                                     value={line.promotionCode ?? ""}
-                                    onChange={(key) => updateLine(p.sapItemCode, { promotionCode: key || null })}
+                                    onChange={(key) => updateLine(line.uid, { promotionCode: key || null })}
                                     options={p.promotionOptions.map((o) => ({
                                       key: o.code ?? "",
                                       short: `${o.code ?? "—"} · ${Number(o.pct)}%`,
@@ -1006,7 +1049,7 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
                                   <ProgramChip
                                     icon="🎁"
                                     value={line.giveawayKey}
-                                    onChange={(key) => updateLine(p.sapItemCode, { giveawayKey: key })}
+                                    onChange={(key) => updateLine(line.uid, { giveawayKey: key })}
                                     options={p.giveawayOptions.map((o) => ({
                                       key: giveawayKeyOf(o),
                                       short: `Buy ${o.buyQty} get ${o.giveQty} · ${o.giveItemCode === p.sapItemCode ? "same item" : o.giveItemCode}`,
@@ -1020,9 +1063,9 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
                           <td style={{ ...num_, color: over ? "#DC2626" : undefined, fontWeight: over ? 700 : undefined }}>{num(p.availableQty)}</td>
                           <td style={num_}>
                             <input
-                              ref={(el) => { if (el) qtyRefs.current.set(p.sapItemCode, el); else qtyRefs.current.delete(p.sapItemCode); }}
+                              ref={(el) => { if (el) qtyRefs.current.set(line.uid, el); else qtyRefs.current.delete(line.uid); }}
                               type="number" min={1} step={1} value={line.qty || ""}
-                              onChange={(e) => updateLine(p.sapItemCode, { qty: Math.max(0, Math.floor(Number(e.target.value) || 0)) })}
+                              onChange={(e) => updateLine(line.uid, { qty: Math.max(0, Math.floor(Number(e.target.value) || 0)) })}
                               onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); itemInputRef.current?.focus(); } }}
                               style={{ ...styles.input, width: "100%", boxSizing: "border-box", textAlign: "right", padding: "0.3rem 0.5rem", borderColor: over || !line.qty ? "#F87171" : undefined }}
                             />
@@ -1035,19 +1078,19 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
                           <td style={{ ...num_, fontWeight: 700 }}>{money(unit)}</td>
                           <td style={{ ...num_, fontWeight: 700 }}>{money(lineTotal)}</td>
                           <td style={td}>
-                            <button onClick={() => removeLine(p.sapItemCode)} aria-label={`Remove ${p.sapItemCode}`} title="Remove" style={{ ...btn("secondary"), padding: "0.25rem 0.5rem" }}>🗑</button>
+                            <button onClick={() => removeLine(line.uid)} aria-label={`Remove ${p.sapItemCode}`} title="Remove" style={{ ...btn("secondary"), padding: "0.25rem 0.5rem" }}>🗑</button>
                           </td>
                         </tr>,
                         extraQty > 0 ? (
-                          <tr key={`${p.sapItemCode}-gift-same`} style={{ background: "rgba(16,185,129,0.06)" }}>
+                          <tr key={`${line.uid}-gift-same`} style={{ background: "rgba(16,185,129,0.06)" }}>
                             <td style={{ ...td, fontFamily: "monospace", paddingLeft: "1rem", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", color: "var(--text-secondary, #64748B)" }} title={p.sapItemCode}>└ {p.sapItemCode}</td>
                             <td style={td}>
                               <div style={{ display: "flex", gap: 6, alignItems: "flex-start", minWidth: 0 }}>
                                 <Badge label="Gift" tone="success" />
                                 <ClampedName
                                   text={itemName(p)}
-                                  expanded={expandedNames.has(`${p.sapItemCode}-gift-same`)}
-                                  onToggle={() => toggleName(`${p.sapItemCode}-gift-same`)}
+                                  expanded={expandedNames.has(`${line.uid}-gift-same`)}
+                                  onToggle={() => toggleName(`${line.uid}-gift-same`)}
                                   style={{ minWidth: 0, flex: 1 }}
                                 />
                               </div>
@@ -1063,15 +1106,15 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
                           </tr>
                         ) : null,
                         freeQty > 0 && giveaway ? (
-                          <tr key={`${p.sapItemCode}-gift`} style={{ background: "rgba(16,185,129,0.06)" }}>
+                          <tr key={`${line.uid}-gift`} style={{ background: "rgba(16,185,129,0.06)" }}>
                             <td style={{ ...td, fontFamily: "monospace", paddingLeft: "1rem", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", color: "var(--text-secondary, #64748B)" }} title={giveaway.giveItemCode}>└ {giveaway.giveItemCode}</td>
                             <td style={td}>
                               <div style={{ display: "flex", gap: 6, alignItems: "flex-start", minWidth: 0 }}>
                                 <Badge label="Gift" tone="success" />
                                 <ClampedName
                                   text={giftSame ? itemName(p) : giveaway.giveItemName || giveaway.giveItemCode}
-                                  expanded={expandedNames.has(`${p.sapItemCode}-gift`)}
-                                  onToggle={() => toggleName(`${p.sapItemCode}-gift`)}
+                                  expanded={expandedNames.has(`${line.uid}-gift`)}
+                                  onToggle={() => toggleName(`${line.uid}-gift`)}
                                   style={{ minWidth: 0, flex: 1 }}
                                 />
                               </div>
@@ -1183,14 +1226,15 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
       {importChoice && (
         <ImportProgramPrompt
           choice={importChoice}
-          onPick={(code, patch) => setImportChoice((c) => {
+          onChange={(code, patch) => setImportChoice((c) => {
             if (!c) return c;
-            const picks = new Map(c.picks);
-            picks.set(code, { ...picks.get(code)!, ...patch });
-            return { ...c, picks };
+            const splits = new Map(c.splits);
+            const cur = splits.get(code)!;
+            splits.set(code, { ...cur, ...patch, qty: { ...cur.qty, ...(patch.qty ?? {}) } });
+            return { ...c, splits };
           })}
           onCancel={() => setImportChoice(null)}
-          onApply={() => applyImport(importChoice.found, importChoice.qty, importChoice.picks, importChoice.result)}
+          onApply={() => applyImport(importChoice.found, importChoice.qty, importChoice.splits, importChoice.result)}
         />
       )}
     </div>
@@ -1198,90 +1242,137 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
 }
 
 /**
- * Import Excel: items with more than one promotion / gift program — pick
- * which one applies to each (preselected: the best match, as on the
- * storefront). Free quantities shown for the imported quantity.
+ * Import Excel: items with more than one promotion program. Each program has
+ * its own buy quantity — the gift program whose free item is the bought item
+ * itself starts with the Excel quantity (none → the best match), the others
+ * at 0; the admin moves quantity between them. OK puts one order line per
+ * program given a quantity.
  */
-function ImportProgramPrompt({ choice, onPick, onCancel, onApply }: {
+function ImportProgramPrompt({ choice, onChange, onCancel, onApply }: {
   choice: ImportChoice;
-  onPick: (code: string, patch: Partial<{ promotionCode: string | null; giveawayKey: string | null }>) => void;
+  onChange: (code: string, patch: Partial<ImportSplit>) => void;
   onCancel: () => void;
   onApply: () => void;
 }) {
-  const multi = choice.found.filter((p) => p.promotionOptions.length > 1 || p.giveawayOptions.length > 1);
-  const opt: CSSProperties = { display: "flex", gap: 8, alignItems: "flex-start", padding: "0.375rem 0.5rem", borderRadius: 6, cursor: "pointer", fontSize: "0.8125rem" };
+  const multi = choice.found.filter((p) => choice.splits.has(p.sapItemCode));
+  const cell: CSSProperties = { padding: "0.375rem 0.5rem", fontSize: "0.8125rem", verticalAlign: "top", borderBottom: "1px solid var(--color-gray-100, #F1F5F9)" };
+  const head: CSSProperties = { ...cell, fontSize: "0.6875rem", fontWeight: 700, color: "var(--text-secondary, #64748B)", textTransform: "uppercase", borderBottom: "1px solid var(--color-gray-200, #E2E8F0)" };
+  const qtyInput = (value: number, set: (n: number) => void) => (
+    <input type="number" min={0} step={1} value={value}
+      onChange={(e) => set(Math.max(0, Math.floor(Number(e.target.value) || 0)))}
+      style={{ ...styles.input, width: 90, boxSizing: "border-box", textAlign: "right", padding: "0.3rem 0.5rem" }} />
+  );
+  const totalLines = multi.reduce((n, p) => n + Object.values(choice.splits.get(p.sapItemCode)!.qty).filter((q) => q > 0).length, 0)
+    + choice.found.filter((p) => !choice.splits.has(p.sapItemCode) && (choice.qty.get(p.sapItemCode.toUpperCase()) ?? 0) > 0).length;
   return (
     <div style={{ position: "fixed", inset: 0, zIndex: 350, background: "rgba(15,23,42,0.45)", display: "flex", alignItems: "center", justifyContent: "center", padding: "1rem" }}
       onMouseDown={(e) => { if (e.target === e.currentTarget) onCancel(); }}>
       <div role="dialog" aria-modal="true" aria-label="Choose promotion programs" style={{
-        width: "min(760px, 100%)", maxHeight: "86vh", display: "flex", flexDirection: "column", background: "var(--bg-primary, #fff)",
+        width: "min(900px, 100%)", maxHeight: "88vh", display: "flex", flexDirection: "column", background: "var(--bg-primary, #fff)",
         borderRadius: "var(--radius-xl, 12px)", boxShadow: "0 24px 64px rgba(15,23,42,0.35)", overflow: "hidden",
       }}>
         <div style={{ padding: "0.875rem 1.25rem", borderBottom: "1px solid var(--color-gray-200, #E2E8F0)" }}>
-          <h3 style={{ fontSize: "1rem", fontWeight: 800 }}>Choose the promotion program</h3>
+          <h3 style={{ fontSize: "1rem", fontWeight: 800 }}>Promotion Programs</h3>
           <p style={{ ...hint, marginTop: 2 }}>
-            {multi.length} imported item{multi.length > 1 ? "s have" : " has"} more than one program running now — pick which one applies. The best match is preselected.
+            {multi.length} imported item{multi.length > 1 ? "s have" : " has"} more than one program running now. Enter the buy quantity for each program —
+            the program giving the same item free starts with the Excel quantity; you can split it between programs.
           </p>
         </div>
         <div style={{ flex: 1, overflowY: "auto", padding: "0.75rem 1.25rem" }}>
           {multi.map((p) => {
-            const q = choice.qty.get(p.sapItemCode.toUpperCase()) ?? 0;
-            const pick = choice.picks.get(p.sapItemCode)!;
+            const excel = choice.qty.get(p.sapItemCode.toUpperCase()) ?? 0;
+            const split = choice.splits.get(p.sapItemCode)!;
+            const chosen = Object.values(split.qty).reduce((s, q) => s + q, 0);
+            const unitFor = (promoCode: string | null) => {
+              const o = p.promotionOptions.find((x) => x.code === promoCode) ?? p.promotionOptions[0];
+              return Math.max(0, p.basePrice * (1 - (p.contractDiscPct + (o ? Number(o.pct) : 0)) / 100));
+            };
             return (
-              <div key={p.sapItemCode} style={{ border: "1px solid var(--color-gray-200, #E2E8F0)", borderRadius: 8, padding: "0.625rem 0.75rem", marginBottom: "0.625rem" }}>
-                <div style={{ display: "flex", gap: 8, alignItems: "baseline", marginBottom: 4 }}>
+              <div key={p.sapItemCode} style={{ border: "1px solid var(--color-gray-200, #E2E8F0)", borderRadius: 8, padding: "0.625rem 0.75rem", marginBottom: "0.75rem" }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap", marginBottom: 6 }}>
                   <span style={{ fontFamily: "monospace", fontWeight: 700 }}>{p.sapItemCode}</span>
                   <span style={{ flex: 1, minWidth: 0, fontWeight: 600 }}>{itemName(p)}</span>
-                  <span style={{ whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>Qty <b>{num(q)}</b> {p.uom}</span>
+                  <span style={{ whiteSpace: "nowrap", fontSize: "0.8125rem", fontVariantNumeric: "tabular-nums" }}>
+                    Excel qty <b>{num(excel)}</b> · Chosen <b style={{ color: chosen === excel ? "#059669" : "#B45309" }}>{num(chosen)}</b> {p.uom}
+                  </span>
                 </div>
-                {p.promotionOptions.length > 1 && (
-                  <div style={{ marginTop: 4 }}>
-                    <span style={label}>🏷 Promotion discount</span>
-                    {p.promotionOptions.map((o) => {
-                      const key = o.code ?? "";
-                      const on = (pick.promotionCode ?? "") === key;
-                      const unit = Math.max(0, p.basePrice * (1 - (p.contractDiscPct + Number(o.pct)) / 100));
-                      return (
-                        <label key={key} style={{ ...opt, background: on ? "rgba(43,188,179,0.10)" : undefined }}>
-                          <input type="radio" name={`promo-${p.sapItemCode}`} checked={on} onChange={() => onPick(p.sapItemCode, { promotionCode: o.code ?? null })} />
-                          <span style={{ flex: 1 }}><b>{o.code ?? "—"} · {Number(o.pct)}%</b> <span style={{ color: "var(--text-secondary, #64748B)" }}>{o.name}</span></span>
-                          <span style={{ whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>{money(unit)} · {money(unit * q)}</span>
-                        </label>
-                      );
-                    })}
-                  </div>
+                {/* The other axis (one pick for all rows of this item) */}
+                {split.axis === "gift" && p.promotionOptions.length > 1 && (
+                  <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: "0.8125rem", marginBottom: 6 }}>
+                    <span style={{ ...label, marginBottom: 0 }}>🏷 Promotion discount</span>
+                    <select value={split.promotionCode ?? ""} onChange={(e) => onChange(p.sapItemCode, { promotionCode: e.target.value || null })}
+                      style={{ ...styles.input, padding: "0.25rem 0.5rem" }}>
+                      {p.promotionOptions.map((o) => <option key={o.code ?? ""} value={o.code ?? ""}>{o.code ?? "—"} · {Number(o.pct)}% {o.name ?? ""}</option>)}
+                    </select>
+                  </label>
                 )}
-                {p.giveawayOptions.length > 1 && (
-                  <div style={{ marginTop: 4 }}>
-                    <span style={label}>🎁 Free items</span>
-                    {p.giveawayOptions.map((o) => {
-                      const key = giveawayKeyOf(o);
-                      const on = pick.giveawayKey === key;
-                      const free = o.buyQty && o.giveQty ? Math.floor(q / o.buyQty) * o.giveQty : 0;
-                      const extraFree = o.extra && o.extra.buyQty && o.extra.giveQty ? Math.floor(q / o.extra.buyQty) * o.extra.giveQty : 0;
-                      const same = o.giveItemCode === p.sapItemCode;
-                      return (
-                        <label key={key} style={{ ...opt, background: on ? "rgba(43,188,179,0.10)" : undefined }}>
-                          <input type="radio" name={`gift-${p.sapItemCode}`} checked={on} onChange={() => onPick(p.sapItemCode, { giveawayKey: key })} />
-                          <span style={{ flex: 1 }}>
-                            <b>Buy {o.buyQty} get {o.giveQty} · {same ? "same item" : o.giveItemCode}</b>{" "}
-                            <span style={{ color: "var(--text-secondary, #64748B)" }}>{same ? "" : `${o.giveItemName ?? ""} — `}{o.name || o.code}</span>
-                          </span>
-                          <span style={{ whiteSpace: "nowrap", color: free + extraFree > 0 ? "#059669" : "var(--text-tertiary, #94A3B8)", fontWeight: 700 }}>
-                            {free + extraFree > 0 ? `Free ${[extraFree > 0 && `${num(extraFree)} same item`, free > 0 && `${num(free)} ${same ? "" : o.giveItemCode}`].filter(Boolean).join(" + ")}` : "No free qty at this qty"}
-                          </span>
-                        </label>
-                      );
-                    })}
-                  </div>
-                )}
+                <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                  <thead>
+                    <tr>
+                      <th style={{ ...head, textAlign: "left" }}>{split.axis === "gift" ? "🎁 Free-item program" : "🏷 Promotion discount"}</th>
+                      <th style={{ ...head, textAlign: "left" }}>Free items</th>
+                      <th style={{ ...head, textAlign: "right" }}>Unit price</th>
+                      <th style={{ ...head, textAlign: "right" }}>Line total</th>
+                      <th style={{ ...head, textAlign: "right" }}>Buy qty</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {split.axis === "gift"
+                      ? p.giveawayOptions.map((o) => {
+                          const key = giveawayKeyOf(o);
+                          const q = split.qty[key] ?? 0;
+                          const free = o.buyQty && o.giveQty ? Math.floor(q / o.buyQty) * o.giveQty : 0;
+                          const extraFree = o.extra && o.extra.buyQty && o.extra.giveQty ? Math.floor(q / o.extra.buyQty) * o.extra.giveQty : 0;
+                          const same = o.giveItemCode === p.sapItemCode;
+                          const unit = unitFor(split.promotionCode);
+                          return (
+                            <tr key={key} style={{ background: q > 0 ? "rgba(43,188,179,0.08)" : undefined }}>
+                              <td style={cell}>
+                                <b>Buy {o.buyQty} get {o.giveQty} · {same ? "same item" : o.giveItemCode}</b>
+                                <div style={{ ...hint, marginTop: 0 }}>{same ? "" : `${o.giveItemName ?? ""} — `}{o.name || o.code}</div>
+                              </td>
+                              <td style={{ ...cell, color: free + extraFree > 0 ? "#059669" : "var(--text-tertiary, #94A3B8)", fontWeight: 700, whiteSpace: "nowrap" }}>
+                                {free + extraFree > 0
+                                  ? [extraFree > 0 && `${num(extraFree)} same item`, free > 0 && `${num(free)} ${same ? "same item" : o.giveItemCode}`].filter(Boolean).join(" + ")
+                                  : "—"}
+                              </td>
+                              <td style={{ ...cell, textAlign: "right", whiteSpace: "nowrap" }}>{money(unit)}</td>
+                              <td style={{ ...cell, textAlign: "right", whiteSpace: "nowrap" }}>{money(unit * q)}</td>
+                              <td style={{ ...cell, textAlign: "right" }}>{qtyInput(q, (n) => onChange(p.sapItemCode, { qty: { [key]: n } }))}</td>
+                            </tr>
+                          );
+                        })
+                      : p.promotionOptions.map((o) => {
+                          const key = o.code ?? "";
+                          const q = split.qty[key] ?? 0;
+                          const unit = unitFor(o.code ?? null);
+                          const g = p.giveawayOptions.find((x) => giveawayKeyOf(x) === split.giveawayKey);
+                          const free = g && g.buyQty && g.giveQty ? Math.floor(q / g.buyQty) * g.giveQty : 0;
+                          return (
+                            <tr key={key} style={{ background: q > 0 ? "rgba(43,188,179,0.08)" : undefined }}>
+                              <td style={cell}>
+                                <b>{o.code ?? "—"} · {Number(o.pct)}%</b>
+                                <div style={{ ...hint, marginTop: 0 }}>{o.name}</div>
+                              </td>
+                              <td style={{ ...cell, color: free > 0 ? "#059669" : "var(--text-tertiary, #94A3B8)", fontWeight: 700, whiteSpace: "nowrap" }}>
+                                {free > 0 && g ? `${num(free)} ${g.giveItemCode === p.sapItemCode ? "same item" : g.giveItemCode}` : "—"}
+                              </td>
+                              <td style={{ ...cell, textAlign: "right", whiteSpace: "nowrap" }}>{money(unit)}</td>
+                              <td style={{ ...cell, textAlign: "right", whiteSpace: "nowrap" }}>{money(unit * q)}</td>
+                              <td style={{ ...cell, textAlign: "right" }}>{qtyInput(q, (n) => onChange(p.sapItemCode, { qty: { [key]: n } }))}</td>
+                            </tr>
+                          );
+                        })}
+                  </tbody>
+                </table>
               </div>
             );
           })}
         </div>
-        <div style={{ padding: "0.75rem 1.25rem", borderTop: "1px solid var(--color-gray-200, #E2E8F0)", display: "flex", justifyContent: "flex-end", gap: "0.5rem", background: "var(--bg-secondary, #F8FAFC)" }}>
+        <div style={{ padding: "0.75rem 1.25rem", borderTop: "1px solid var(--color-gray-200, #E2E8F0)", display: "flex", justifyContent: "flex-end", alignItems: "center", gap: "0.5rem", background: "var(--bg-secondary, #F8FAFC)" }}>
+          <span style={{ ...hint, marginTop: 0, marginRight: "auto" }}>{totalLines} line{totalLines === 1 ? "" : "s"} will be added</span>
           <button type="button" style={btn("secondary")} onClick={onCancel}>Cancel import</button>
-          <button type="button" style={btn("primary")} onClick={onApply}>Add {choice.found.length} item{choice.found.length > 1 ? "s" : ""} to the order</button>
+          <button type="button" style={btn("primary")} onClick={onApply}>OK</button>
         </div>
       </div>
     </div>

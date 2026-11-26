@@ -155,7 +155,15 @@
     "columnItemCode": "Item Code",
     "columnItemName": "Item Name",
     "columnQuantity": "Quantity",
-    "columnRemark": "Remark"
+    "columnRemark": "Remark",
+    "chooseTitle": "Choose promotion programs",
+    "chooseHint": "{count, plural, one {# item has} other {# items have}} more than one promotion program running now. Enter the buy quantity for each program you want — you can split the quantity between programs.",
+    "excelQty": "Excel qty",
+    "chosenQty": "Chosen",
+    "program": "Program",
+    "buyGet": "Buy {buy} get {get}",
+    "sameItem": "(same item)",
+    "changePrograms": "Change programs"
   },
   "cart": {
     "title": "Shopping Cart",

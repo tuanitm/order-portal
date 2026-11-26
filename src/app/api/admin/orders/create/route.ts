@@ -47,8 +47,10 @@ async function POSTHandler(request: NextRequest) {
   if (lines.length > MAX_LINES) return NextResponse.json({ error: `At most ${MAX_LINES} items per order` }, { status: 400 });
   const codes = lines.map((l) => String(l?.sapItemCode ?? "").trim());
   if (codes.some((c) => !c)) return NextResponse.json({ error: "Every line needs an item" }, { status: 400 });
-  const duplicate = codes.find((c, i) => codes.indexOf(c) !== i);
-  if (duplicate) return NextResponse.json({ error: `${duplicate} is on the order twice — change its quantity instead` }, { status: 400 });
+  // The same item may be on the order twice with different programs (Import Excel split) — not with the same ones.
+  const lineKeys = lines.map((l, i) => `${codes[i].toUpperCase()}|${l.promotionCode ?? ""}|${l.giveawayKey ?? ""}`);
+  const dupIdx = lineKeys.findIndex((k, i) => lineKeys.indexOf(k) !== i);
+  if (dupIdx >= 0) return NextResponse.json({ error: `${codes[dupIdx]} is on the order twice with the same programs — change its quantity instead` }, { status: 400 });
 
   const companyId = getCompanyId();
   const customer = await getCustomerForAdmin(session, cardCode);
@@ -80,7 +82,7 @@ async function POSTHandler(request: NextRequest) {
   if (supervisor && !supervisorRow) return NextResponse.json({ error: `Sales supervisor ${supervisor} not found` }, { status: 400 });
 
   try {
-    const products = await priceItemsForCustomer(customer, warehouse, { codes, brands: getAllowedBrandCodes(guard.session) });
+    const products = await priceItemsForCustomer(customer, warehouse, { codes: [...new Set(codes)], brands: getAllowedBrandCodes(guard.session) });
     const { lines: orderLines, problems } = buildOrderLines(
       products,
       lines.map((l, i) => ({ ...l, sapItemCode: codes[i] }))

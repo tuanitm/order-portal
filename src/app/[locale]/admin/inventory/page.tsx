@@ -17,10 +17,35 @@ interface StockRow {
   on_hand: number;
   committed: number;
   available: number;
+  item_group: string | null;
+  item_cat1: string | null;
   /** Worst (lowest) remaining shelf life among the row's batches; null = no dated batches. */
   shelf_life_pct: number | null;
-  batches: { pct: number; qty: number }[];
+  batches: Batch[];
 }
+
+type Bucket = "expired" | "0-3" | "3-6" | "6-9" | "9-12" | "12+";
+const BUCKETS: { key: Bucket; label: string }[] = [
+  { key: "expired", label: "Expired" }, { key: "0-3", label: "0 - 3" }, { key: "3-6", label: "3 - 6" },
+  { key: "6-9", label: "6 - 9" }, { key: "9-12", label: "9 - 12" }, { key: "12+", label: "12+" },
+];
+interface Batch {
+  batch: string | null;
+  lot: string | null;
+  bin: string | null;
+  binName: string | null;
+  mnfDate: string | null;
+  expDate: string | null;
+  pct: number | null;
+  qty: number;
+  status: string;
+  bucket: Bucket | null;
+}
+
+type View = "item" | "batch";
+const VIEW_KEY = "imv.inventory.view";
+const dmy = (s: string | null) => (s ? `${s.slice(8, 10)}/${s.slice(5, 7)}/${s.slice(0, 4)}` : "");
+const statusColor = (st: string) => (st === "NORMAL" ? "#059669" : st === "CẬN DATE" ? "#B45309" : "#DC2626");
 
 function fmt(val: number): string {
   return new Intl.NumberFormat("en-US", { maximumFractionDigits: 3 }).format(val);
@@ -100,6 +125,15 @@ export default function InventoryPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState("");
   const limit = 50;
+  // "By batch" = report R403's layout (one row per batch); remembered per browser.
+  const [view, setView] = useState<View>("batch");
+  useEffect(() => {
+    try { const v = localStorage.getItem(VIEW_KEY); if (v === "item" || v === "batch") setView(v); } catch { /* storage blocked */ }
+  }, []);
+  const changeView = (v: View) => {
+    setView(v);
+    try { localStorage.setItem(VIEW_KEY, v); } catch { /* storage blocked */ }
+  };
   const debounce = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const load = useCallback(async (whs: string[], pg: number, q: string) => {
@@ -145,7 +179,7 @@ export default function InventoryPage() {
     setExporting(true);
     setError("");
     try {
-      const sp = new URLSearchParams({ warehouses: selectedWarehouses.join(","), search, format: "xlsx" });
+      const sp = new URLSearchParams({ warehouses: selectedWarehouses.join(","), search, format: "xlsx", view });
       const res = await fetch(`/api/admin/inventory?${sp}`);
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -177,7 +211,9 @@ export default function InventoryPage() {
             <h1 style={styles.title}>Inventory</h1>
             <p style={styles.subtitle}>
               Live stock from SAP — OnHand, Committed (Open SO + Transfer Requests + Production Orders), Available.
-              Shelf life % is the batch with the least remaining shelf life (hover for every batch).
+              {view === "batch"
+                ? "By batch: one row per batch, same columns as report R403 (Inventory by Remaining Shelf Life). Lot Status: NORMAL > 50% shelf life left, CẬN DATE ≤ 50%."
+                : "Shelf life % × Qty lists every batch in the warehouse, lowest shelf life first (hover for batch numbers)."}
             </p>
           </div>
         </div>
@@ -187,6 +223,16 @@ export default function InventoryPage() {
           display: "flex", gap: "1rem", marginBottom: "1.5rem",
           flexWrap: "wrap", alignItems: "center",
         }}>
+          <div role="tablist" aria-label="View" style={{ display: "inline-flex", border: "1px solid var(--color-gray-200, #E2E8F0)", borderRadius: "var(--radius-lg, 8px)", overflow: "hidden" }}>
+            {([["item", "By item"], ["batch", "By batch (R403)"]] as const).map(([v, label]) => (
+              <button key={v} type="button" role="tab" aria-selected={view === v} onClick={() => changeView(v)}
+                style={{ padding: "0.45rem 0.85rem", fontSize: "0.8125rem", fontWeight: 600, border: "none", cursor: "pointer",
+                  background: view === v ? "var(--color-primary, #2BBCB3)" : "var(--bg-primary, #fff)", color: view === v ? "#fff" : "var(--text-secondary, #64748B)" }}>
+                {label}
+              </button>
+            ))}
+          </div>
+
           <WarehousePicker warehouses={warehouses} selected={selectedWarehouses} onChange={onWarehousesChange} />
 
           <input
@@ -233,6 +279,8 @@ export default function InventoryPage() {
                 ? "No warehouses are assigned to you — ask the super admin (Admin Users → Warehouse)."
                 : "No items with stock in the selected warehouses."}
             </div>
+          ) : view === "batch" ? (
+            <BatchTable items={items} warehouseName={warehouseName} />
           ) : (
             <div style={{ overflowX: "auto" }}>
               <table style={styles.table}>
@@ -243,7 +291,7 @@ export default function InventoryPage() {
                     <th style={styles.th}>Item Name</th>
                     <th style={styles.th}>Warehouse</th>
                     <th style={styles.th}>UoM</th>
-                    <th style={{ ...styles.th, textAlign: "right" }}>Shelf life %</th>
+                    <th style={{ ...styles.th, textAlign: "right" }}>Shelf life % × Qty</th>
                     <th style={{ ...styles.th, textAlign: "right" }}>OnHand</th>
                     <th style={{ ...styles.th, textAlign: "right" }}>Committed</th>
                     <th style={{ ...styles.th, textAlign: "right" }}>Available</th>
@@ -271,20 +319,20 @@ export default function InventoryPage() {
                         <td
                           style={{ ...styles.td, textAlign: "right", fontFamily: "monospace", whiteSpace: "nowrap" }}
                           title={item.batches.length
-                            ? `${item.batches.length} batch${item.batches.length > 1 ? "es" : ""}:\n` + item.batches.map((b) => `${b.pct}% — qty ${fmt(b.qty)}`).join("\n")
+                            ? item.batches.map((b) => `${b.batch ?? "(no batch no.)"}: ${b.pct}% — qty ${fmt(b.qty)}`).join("\n")
                             : "No dated batches"}
                         >
                           {sl === null ? (
                             <span style={{ color: "var(--text-tertiary, #94A3B8)" }}>—</span>
                           ) : (
-                            <>
-                              <span style={{ color: shelfLifeColor(sl), fontWeight: 700 }}>{sl}%</span>
-                              {item.batches.length > 1 && (
-                                <span style={{ color: "var(--text-tertiary, #94A3B8)", fontSize: "0.7rem", marginLeft: 4 }}>
-                                  ({item.batches.length})
-                                </span>
-                              )}
-                            </>
+                            // One line per batch (lowest shelf life first): "29.3% × 33".
+                            item.batches.map((b, i) => (
+                              <div key={i} style={{ lineHeight: 1.45 }}>
+                                <span style={{ color: b.pct != null ? shelfLifeColor(b.pct) : undefined, fontWeight: 700 }}>{b.pct != null ? `${b.pct}%` : "—"}</span>
+                                <span style={{ color: "var(--text-tertiary, #94A3B8)" }}> × </span>
+                                <span>{fmt(b.qty)}</span>
+                              </div>
+                            ))
                           )}
                         </td>
                         <td style={{ ...styles.td, textAlign: "right", fontFamily: "monospace" }}>
@@ -334,6 +382,82 @@ export default function InventoryPage() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/** Report R403 layout: one row per batch (per bin in a bin-managed warehouse). */
+function BatchTable({ items, warehouseName }: { items: StockRow[]; warehouseName: (code: string) => string | null }) {
+  const th = (right?: boolean): React.CSSProperties => ({ ...styles.th, whiteSpace: "nowrap", ...(right ? { textAlign: "right" } : {}) });
+  const td: React.CSSProperties = { ...styles.td, whiteSpace: "nowrap" };
+  const numTd: React.CSSProperties = { ...td, textAlign: "right", fontFamily: "monospace" };
+  let n = 0;
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <table style={styles.table}>
+        <thead>
+          <tr>
+            <th colSpan={17} style={{ ...styles.th, borderBottom: "none" }}></th>
+            <th colSpan={6} style={{ ...styles.th, textAlign: "center", borderBottom: "none" }}>Remaining Shelf Life (Months)</th>
+          </tr>
+          <tr>
+            <th style={th()}>#</th>
+            <th style={th()}>Warehouse</th>
+            <th style={th()}>Warehouse Name</th>
+            <th style={th()}>Bin Location</th>
+            <th style={th()}>Bin Location Name</th>
+            <th style={th()}>Item Group</th>
+            <th style={th()}>Item Category 1</th>
+            <th style={th()}>Item No.</th>
+            <th style={th()}>Item Description</th>
+            <th style={th()}>UoM</th>
+            <th style={th()}>Sys. Batch</th>
+            <th style={th()}>Lot No.</th>
+            <th style={th()}>Mfg. Date</th>
+            <th style={th()}>Exp. Date</th>
+            <th style={th(true)}>Rem. Shelf Life (%)</th>
+            <th style={th()}>Lot Status</th>
+            <th style={th(true)}>In-Stock</th>
+            {BUCKETS.map((b) => <th key={b.key} style={th(true)}>{b.label}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          {items.flatMap((item) => {
+            // An item without batches (not batch-managed) still gets one row, so no stock is hidden.
+            const rows: (Batch | null)[] = item.batches.length ? item.batches : [null];
+            return rows.map((b, i) => {
+              n += 1;
+              const qty = b ? b.qty : Number(item.on_hand);
+              return (
+                <tr key={`${item.item_code}|${item.whs_code}|${i}`} style={{ background: n % 2 === 1 ? "var(--bg-primary, #fff)" : "var(--bg-secondary, #F8FAFC)",
+                  borderTop: i === 0 ? "2px solid var(--color-gray-200, #E2E8F0)" : undefined }}>
+                  <td style={{ ...td, color: "var(--text-tertiary, #94A3B8)", fontSize: "0.75rem" }}>{n}</td>
+                  <td style={{ ...td, fontFamily: "monospace" }}>{item.whs_code}</td>
+                  <td style={td}>{item.whs_name || warehouseName(item.whs_code) || ""}</td>
+                  <td style={{ ...td, fontFamily: "monospace" }}>{b?.bin ?? ""}</td>
+                  <td style={td}>{b?.binName ?? ""}</td>
+                  <td style={td}>{item.item_group ?? ""}</td>
+                  <td style={td}>{item.item_cat1 ?? ""}</td>
+                  <td style={{ ...td, fontWeight: 600, fontFamily: "monospace" }}>{item.item_code}</td>
+                  <td style={{ ...styles.td, minWidth: 260 }}>{item.item_name || "—"}</td>
+                  <td style={{ ...td, color: "var(--text-secondary, #64748B)", fontSize: "0.75rem" }}>{item.uom || ""}</td>
+                  <td style={{ ...td, fontFamily: "monospace" }}>{b ? b.batch ?? "" : "—"}</td>
+                  <td style={{ ...td, fontFamily: "monospace" }}>{b?.lot ?? ""}</td>
+                  <td style={td}>{dmy(b?.mnfDate ?? null)}</td>
+                  <td style={td}>{dmy(b?.expDate ?? null)}</td>
+                  <td style={{ ...numTd, fontWeight: 700, color: b?.pct != null ? shelfLifeColor(b.pct) : undefined }}>{b?.pct != null ? `${b.pct.toFixed(2)}%` : ""}</td>
+                  <td style={{ ...td, fontWeight: 700, fontSize: "0.75rem", color: b ? statusColor(b.status) : undefined }}>{b?.status ?? ""}</td>
+                  <td style={{ ...numTd, fontWeight: 700 }}>{fmt(qty)}</td>
+                  {BUCKETS.map((k) => {
+                    const v = b?.bucket === k.key ? qty : 0;
+                    return <td key={k.key} style={{ ...numTd, color: v ? (k.key === "expired" ? "#DC2626" : undefined) : "var(--text-tertiary, #CBD5E1)", fontWeight: v ? 700 : undefined }}>{fmt(v)}</td>;
+                  })}
+                </tr>
+              );
+            });
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }

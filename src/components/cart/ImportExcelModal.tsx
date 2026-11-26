@@ -86,10 +86,14 @@ function buildLinesForProduct(product: ProductWithPricing, quantity: number, rem
     }));
   }
   if (giveawayOptions.length > 1) {
+    // The program whose free item is the bought item itself starts with the
+    // Excel quantity (first such one, in best-match order); none → the best match.
+    const sameIdx = giveawayOptions.findIndex((g) => g.giveItemCode === product.sapItemCode);
+    const defaultIdx = sameIdx >= 0 ? sameIdx : 0;
     return giveawayOptions.map((g, idx) => ({
       key: `${product.sapItemCode}::give::${g.code ?? g.giveItemCode ?? idx}`,
       product,
-      quantity: idx === 0 ? quantity : 0,
+      quantity: idx === defaultIdx ? quantity : 0,
       remark,
       giveawayOverride: g,
     }));
@@ -172,6 +176,13 @@ export default function ImportExcelModal({ isOpen, onClose }: { isOpen: boolean;
   const [notVisible, setNotVisible] = useState<string[]>([]);
   const [invalidRows, setInvalidRows] = useState<InvalidRow[]>([]);
   const [confirmingReplace, setConfirmingReplace] = useState(false);
+  // Program chooser (popup) for items with more than one promotion program:
+  // draft quantities per program line; OK copies them into `lines`.
+  // `initial` = opened right after the upload (Cancel goes back to upload).
+  const [choosing, setChoosing] = useState<{ draft: Record<string, number>; initial: boolean } | null>(null);
+  // Program lines kept in the preview after OK (those with qty > 0); null = show all lines.
+  const [shownKeys, setShownKeys] = useState<Set<string> | null>(null);
+  const [excelQty, setExcelQty] = useState<Record<string, number>>({});
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   if (!isOpen) return null;
@@ -184,6 +195,9 @@ export default function ImportExcelModal({ isOpen, onClose }: { isOpen: boolean;
     setNotVisible([]);
     setInvalidRows([]);
     setConfirmingReplace(false);
+    setChoosing(null);
+    setShownKeys(null);
+    setExcelQty({});
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
@@ -291,7 +305,10 @@ export default function ImportExcelModal({ isOpen, onClose }: { isOpen: boolean;
       setLines(allLines);
       setUnavailable(data.notFound ?? []);
       setNotVisible(data.notVisible ?? []);
+      setExcelQty(Object.fromEntries(data.items.map((p) => [p.sapItemCode, byCode.get(p.sapItemCode.toUpperCase())?.quantity ?? 1])));
+      setShownKeys(null);
       setStep("preview");
+      if (allLines.some(isProgramLine)) openChooser(allLines, true);
     } catch {
       setParseError(t("import.parseError"));
     } finally {
@@ -302,6 +319,62 @@ export default function ImportExcelModal({ isOpen, onClose }: { isOpen: boolean;
   const onFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) handleFile(file);
+  };
+
+  const openChooser = (ls: ImportLine[], initial: boolean) => {
+    setChoosing({ draft: Object.fromEntries(ls.filter(isProgramLine).map((l) => [l.key, l.quantity])), initial });
+  };
+
+  const applyChoice = () => {
+    if (!choosing) return;
+    const { draft } = choosing;
+    const next = lines.map((l) => (l.key in draft ? { ...l, quantity: draft[l.key] } : l));
+    setLines(next);
+    // The preview shows what was picked: program lines left at 0 are hidden.
+    setShownKeys(new Set(next.filter((l) => !(l.key in draft) || l.quantity > 0).map((l) => l.key)));
+    setConfirmingReplace(false);
+    setChoosing(null);
+  };
+
+  const cancelChoice = () => {
+    if (choosing?.initial) reset();
+    else setChoosing(null);
+  };
+
+  const setDraftQty = (key: string, value: number) => {
+    const qty = Math.max(0, Math.floor(value) || 0);
+    setChoosing((c) => (c ? { ...c, draft: { ...c.draft, [key]: qty } } : c));
+  };
+
+  const programLabelOf = (line: ImportLine): string | null =>
+    line.promoOverride
+      ? `${line.promoOverride.name || line.promoOverride.code || t("product.promotion")} (-${line.promoOverride.pct}%)`
+      : line.giveawayOverride
+      ? `🎁 ${line.giveawayOverride.name || line.giveawayOverride.code || t("product.promotion")}`
+      : null;
+
+  /** Free-item lines of `line` at its quantity (same item / other item). */
+  const freeInfo = (line: ImportLine) => {
+    const giveaway = effectiveGiveaway(line);
+    const extraFree = calculateExtraFreeQty({ quantity: line.quantity, extraGift: giveaway.extra });
+    const freeQty = freeQtyFor(line, giveaway);
+    return (
+      <>
+        {extraFree > 0 && (
+          <div style={{ fontSize: "0.7rem", color: "var(--color-success, #059669)" }}>
+            🎁 {t.rich("cart.freeGiftSame", { qty: extraFree, ...boldRed })}
+          </div>
+        )}
+        {freeQty > 0 && (
+          <div style={{ fontSize: "0.7rem", color: "var(--color-success, #059669)" }}>
+            🎁{" "}
+            {giveaway.giveItemCode === line.product.sapItemCode
+              ? t.rich("cart.freeGiftSame", { qty: freeQty, ...boldRed })
+              : t.rich("cart.freeGift", { qty: freeQty, item: giveaway.giveItemName || giveaway.giveItemCode || "", ...boldRed })}
+          </div>
+        )}
+      </>
+    );
   };
 
   const updateLineQuantity = (key: string, value: number) => {
@@ -364,7 +437,9 @@ export default function ImportExcelModal({ isOpen, onClose }: { isOpen: boolean;
     doImport();
   };
 
-  const matchedItemCount = new Set(lines.map((l) => l.product.sapItemCode)).size;
+  const visibleLines = shownKeys ? lines.filter((l) => shownKeys.has(l.key)) : lines;
+  const matchedItemCount = new Set(visibleLines.map((l) => l.product.sapItemCode)).size;
+  const hasProgramChoice = lines.some(isProgramLine);
 
   return (
     <div
@@ -419,13 +494,20 @@ export default function ImportExcelModal({ isOpen, onClose }: { isOpen: boolean;
           </div>
         )}
 
-        {step === "preview" && (
+        {step === "preview" && !choosing?.initial && (
           <div>
-            <p style={{ fontWeight: 600, marginBottom: "0.75rem" }}>
-              {t("import.matchedCount", { count: matchedItemCount })}
-            </p>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "0.75rem", marginBottom: "0.75rem" }}>
+              <p style={{ fontWeight: 600 }}>
+                {t("import.matchedCount", { count: matchedItemCount })}
+              </p>
+              {hasProgramChoice && (
+                <button type="button" className="btn btn-secondary btn-sm" onClick={() => openChooser(lines, false)}>
+                  🏷 {t("import.changePrograms")}
+                </button>
+              )}
+            </div>
 
-            {lines.length > 0 && (
+            {visibleLines.length > 0 && (
               <div style={{ overflowX: "auto", marginBottom: "1rem" }}>
                 <table style={{ width: "100%", fontSize: "0.8125rem", borderCollapse: "collapse" }}>
                   <thead>
@@ -438,23 +520,17 @@ export default function ImportExcelModal({ isOpen, onClose }: { isOpen: boolean;
                     </tr>
                   </thead>
                   <tbody>
-                    {lines.map((line, idx) => {
+                    {visibleLines.map((line, idx) => {
                       const { product } = line;
-                      const isFirstOfGroup = idx === 0 || lines[idx - 1].product.sapItemCode !== product.sapItemCode;
+                      const isFirstOfGroup = idx === 0 || visibleLines[idx - 1].product.sapItemCode !== product.sapItemCode;
                       const name = (locale === "vi" ? product.itemNameVi : product.itemNameEn) || product.itemNameVi || product.itemNameEn;
                       const promoPct = effectivePromoPct(line);
-                      const giveaway = effectiveGiveaway(line);
                       const { displayPrice, discountPercent } = priceForPromoPct(product, promoPct);
-                      const freeQty = freeQtyFor(line, giveaway);
                       // Only shown for a line generated by a promo/giveaway
                       // CHOICE (more than one program available) — labels
                       // which specific program this particular line is
                       // priced on, so the customer can tell the rows apart.
-                      const programLabel = line.promoOverride
-                        ? `${line.promoOverride.name || line.promoOverride.code || t("product.promotion")} (-${line.promoOverride.pct}%)`
-                        : line.giveawayOverride
-                        ? `🎁 ${line.giveawayOverride.name || line.giveawayOverride.code || t("product.promotion")}`
-                        : null;
+                      const programLabel = programLabelOf(line);
                       return (
                         <tr key={line.key} style={{ borderBottom: "1px solid var(--color-gray-100, #F1F5F9)" }}>
                           <td style={{ padding: "0.5rem", fontFamily: "monospace", fontSize: "0.75rem", color: isFirstOfGroup ? undefined : "var(--text-tertiary)" }}>
@@ -469,19 +545,7 @@ export default function ImportExcelModal({ isOpen, onClose }: { isOpen: boolean;
                               <div style={{ fontSize: "0.7rem", color: "var(--text-tertiary)" }}>📝 {line.remark}</div>
                             )}
                             {/* Promotion "case c": the bought item's own free qty first, then the other free item. */}
-                            {calculateExtraFreeQty({ quantity: line.quantity, extraGift: giveaway.extra }) > 0 && (
-                              <div style={{ fontSize: "0.7rem", color: "var(--color-success, #059669)" }}>
-                                🎁 {t.rich("cart.freeGiftSame", { qty: calculateExtraFreeQty({ quantity: line.quantity, extraGift: giveaway.extra }), ...boldRed })}
-                              </div>
-                            )}
-                            {freeQty > 0 && (
-                              <div style={{ fontSize: "0.7rem", color: "var(--color-success, #059669)" }}>
-                                🎁{" "}
-                                {giveaway.giveItemCode === product.sapItemCode
-                                  ? t.rich("cart.freeGiftSame", { qty: freeQty, ...boldRed })
-                                  : t.rich("cart.freeGift", { qty: freeQty, item: giveaway.giveItemName || giveaway.giveItemCode || "", ...boldRed })}
-                              </div>
-                            )}
+                            {freeInfo(line)}
                           </td>
                           <td style={{ padding: "0.5rem", textAlign: "right" }}>
                             <input
@@ -554,7 +618,7 @@ export default function ImportExcelModal({ isOpen, onClose }: { isOpen: boolean;
               <button className="btn btn-secondary" onClick={() => { setConfirmingReplace(false); reset(); }}>
                 {t("import.cancel")}
               </button>
-              {lines.length > 0 && (
+              {visibleLines.length > 0 && (
                 <button className="btn btn-primary" onClick={handleConfirmClick} disabled={!hasAnyQuantity}>
                   {confirmingReplace ? t("import.replaceCartConfirm") : t("import.confirmImport")}
                 </button>
@@ -562,6 +626,142 @@ export default function ImportExcelModal({ isOpen, onClose }: { isOpen: boolean;
             </div>
           </div>
         )}
+      </div>
+
+      {choosing && (
+        <ProgramChooser
+          lines={lines}
+          draft={choosing.draft}
+          excelQty={excelQty}
+          locale={locale}
+          onQty={setDraftQty}
+          programLabelOf={programLabelOf}
+          freeInfo={(l) => freeInfo(l)}
+          onCancel={cancelChoice}
+          onOk={applyChoice}
+        />
+      )}
+    </div>
+  );
+}
+
+function isProgramLine(l: ImportLine): boolean {
+  return !!(l.promoOverride || l.giveawayOverride);
+}
+
+/**
+ * Popup listing every promotion program of each imported item that has more
+ * than one. Each program has its own buy quantity: the same-item free-gift
+ * program (or the best match) starts at the Excel quantity, the others at 0;
+ * the customer moves quantity between them. OK → the preview shows exactly
+ * the programs given a quantity.
+ */
+function ProgramChooser({ lines, draft, excelQty, locale, onQty, programLabelOf, freeInfo, onCancel, onOk }: {
+  lines: ImportLine[];
+  draft: Record<string, number>;
+  excelQty: Record<string, number>;
+  locale: string;
+  onQty: (key: string, qty: number) => void;
+  programLabelOf: (l: ImportLine) => string | null;
+  freeInfo: (l: ImportLine) => React.ReactNode;
+  onCancel: () => void;
+  onOk: () => void;
+}) {
+  const t = useTranslations();
+  const groups: { code: string; lines: ImportLine[] }[] = [];
+  for (const l of lines) {
+    if (!(l.key in draft)) continue;
+    const g = groups.find((x) => x.code === l.product.sapItemCode);
+    if (g) g.lines.push(l);
+    else groups.push({ code: l.product.sapItemCode, lines: [l] });
+  }
+  const cell: React.CSSProperties = { padding: "0.4rem 0.5rem", verticalAlign: "top" };
+  return (
+    <div
+      style={{ position: "fixed", inset: 0, zIndex: 950, background: "rgba(15, 23, 42, 0.45)", display: "flex", alignItems: "center", justifyContent: "center", padding: "1rem" }}
+      onClick={(e) => { e.stopPropagation(); if (e.target === e.currentTarget) onCancel(); }}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={t("import.chooseTitle")}
+        style={{
+          width: "min(820px, 100%)", maxHeight: "88vh", display: "flex", flexDirection: "column",
+          background: "var(--bg-primary, #fff)", borderRadius: "var(--radius-xl, 12px)", boxShadow: "0 24px 64px rgba(15,23,42,0.35)", overflow: "hidden",
+        }}
+      >
+        <div style={{ padding: "1rem 1.25rem", borderBottom: "1px solid var(--color-gray-200, #E2E8F0)" }}>
+          <h3 style={{ fontSize: "1.0625rem", fontWeight: 800 }}>{t("import.chooseTitle")}</h3>
+          <p style={{ fontSize: "0.8125rem", color: "var(--text-secondary)", marginTop: 4 }}>{t("import.chooseHint", { count: groups.length })}</p>
+        </div>
+        <div style={{ flex: 1, overflowY: "auto", padding: "0.75rem 1.25rem" }}>
+          {groups.map((g) => {
+            const p = g.lines[0].product;
+            const name = (locale === "vi" ? p.itemNameVi : p.itemNameEn) || p.itemNameVi || p.itemNameEn;
+            const chosen = g.lines.reduce((s, l) => s + (draft[l.key] ?? 0), 0);
+            const fromExcel = excelQty[g.code] ?? 0;
+            return (
+              <div key={g.code} style={{ border: "1px solid var(--color-gray-200, #E2E8F0)", borderRadius: 8, padding: "0.625rem 0.75rem", marginBottom: "0.75rem" }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap", marginBottom: 6 }}>
+                  <span style={{ fontFamily: "monospace", fontWeight: 700 }}>{g.code}</span>
+                  <span style={{ flex: 1, minWidth: 0, fontWeight: 600 }}>{name}</span>
+                  <span style={{ fontSize: "0.8125rem", whiteSpace: "nowrap" }}>
+                    {t("import.excelQty")}: <b>{fromExcel}</b> · {t("import.chosenQty")}:{" "}
+                    <b style={{ color: chosen === fromExcel ? "var(--color-success, #059669)" : "var(--color-warning-dark, #B45309)" }}>{chosen}</b>
+                  </span>
+                </div>
+                <table style={{ width: "100%", fontSize: "0.8125rem", borderCollapse: "collapse" }}>
+                  <thead>
+                    <tr style={{ borderBottom: "1px solid var(--color-gray-200, #E2E8F0)", color: "var(--text-secondary)" }}>
+                      <th style={{ ...cell, textAlign: "left" }}>{t("import.program")}</th>
+                      <th style={{ ...cell, textAlign: "right" }}>Price</th>
+                      <th style={{ ...cell, textAlign: "right" }}>%</th>
+                      <th style={{ ...cell, textAlign: "right" }}>{t("import.columnQuantity")}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {g.lines.map((l) => {
+                      const qty = draft[l.key] ?? 0;
+                      const at = { ...l, quantity: qty };
+                      const { displayPrice, discountPercent } = priceForPromoPct(p, effectivePromoPct(l));
+                      const give = l.giveawayOverride;
+                      return (
+                        <tr key={l.key} style={{ borderBottom: "1px solid var(--color-gray-100, #F1F5F9)", background: qty > 0 ? "rgba(43,188,179,0.08)" : undefined }}>
+                          <td style={cell}>
+                            <div style={{ fontWeight: 600, color: "var(--color-primary, #2563EB)" }}>{programLabelOf(l)}</div>
+                            {give && (
+                              <div style={{ fontSize: "0.7rem", color: "var(--text-tertiary)" }}>
+                                {t("import.buyGet", { buy: Number(give.buyQty), get: Number(give.giveQty) })}{" "}
+                                {give.giveItemCode === p.sapItemCode ? t("import.sameItem") : `${give.giveItemCode ?? ""} ${give.giveItemName ?? ""}`}
+                              </div>
+                            )}
+                            {freeInfo(at)}
+                          </td>
+                          <td style={{ ...cell, textAlign: "right", whiteSpace: "nowrap" }}>{formatPrice(displayPrice)}</td>
+                          <td style={{ ...cell, textAlign: "right" }}>{discountPercent ? `-${discountPercent}%` : "—"}</td>
+                          <td style={{ ...cell, textAlign: "right" }}>
+                            <input
+                              type="number"
+                              min={0}
+                              className="input"
+                              style={{ width: "84px", padding: "0.25rem 0.375rem", fontSize: "0.8125rem", textAlign: "right" }}
+                              value={qty}
+                              onChange={(e) => onQty(l.key, parseInt(e.target.value, 10))}
+                            />
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            );
+          })}
+        </div>
+        <div style={{ padding: "0.75rem 1.25rem", borderTop: "1px solid var(--color-gray-200, #E2E8F0)", display: "flex", justifyContent: "flex-end", gap: "0.75rem", background: "var(--bg-secondary, #F8FAFC)" }}>
+          <button type="button" className="btn btn-secondary" onClick={onCancel}>{t("import.cancel")}</button>
+          <button type="button" className="btn btn-primary" onClick={onOk}>OK</button>
+        </div>
       </div>
     </div>
   );

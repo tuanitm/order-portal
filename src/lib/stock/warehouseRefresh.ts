@@ -1,5 +1,7 @@
 import { getPool } from "@/lib/db/connection";
-import { getCompanyId } from "@/lib/config";
+import { getCompanyId, loadConfig } from "@/lib/config";
+import { getSapClient } from "@/lib/sap-b1/client";
+import { replaceBatchStock } from "@/lib/stock/batchStock";
 import { queryHanaInventoryByWarehouse } from "@/lib/hana/inventoryQuery";
 import { withTableLocks } from "@/lib/db/tableLock";
 import { resetIdsAfterSync } from "@/lib/db/idReset";
@@ -25,7 +27,12 @@ export async function refreshWarehouseStock(warehouseCode: string): Promise<{ ro
   }
   const started = Date.now();
   const companyId = getCompanyId();
-  const rows = await queryHanaInventoryByWarehouse([wh], undefined, { includeOnOrderOnly: true });
+  const masterdata = loadConfig().masterdata;
+  const [rows, batches] = await Promise.all([
+    queryHanaInventoryByWarehouse([wh], undefined, { includeOnOrderOnly: true }),
+    // This warehouse's batches (own saved query) — usable qty vs the customer's required shelf life.
+    getSapClient().getBatchStock(masterdata.itemGroup, `'${wh.replace(/'/g, "''")}'`, "BatchStockWh"),
+  ]);
   const stamp = new Date(Math.floor(started / 1000) * 1000);
   const CHUNK = 500;
 
@@ -75,6 +82,8 @@ export async function refreshWarehouseStock(warehouseCode: string): Promise<{ ro
   } finally {
     conn.release();
   }
+
+  await replaceBatchStock(batches, wh).catch((e) => console.warn("[Stock] item_batch_shelf_stock for warehouse", wh, "failed:", e instanceof Error ? e.message : e));
 
   lastRun.set(wh, started);
   return { rows: rows.length, ms: Date.now() - started, refreshedAt: stamp.toISOString(), cached: false };

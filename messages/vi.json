@@ -155,7 +155,15 @@
     "columnItemCode": "Mã hàng",
     "columnItemName": "Tên hàng",
     "columnQuantity": "Số lượng",
-    "columnRemark": "Ghi chú"
+    "columnRemark": "Ghi chú",
+    "chooseTitle": "Chọn chương trình khuyến mãi",
+    "chooseHint": "{count} sản phẩm đang có nhiều hơn một chương trình khuyến mãi. Nhập số lượng mua cho từng chương trình bạn muốn — có thể chia số lượng cho nhiều chương trình.",
+    "excelQty": "SL trong Excel",
+    "chosenQty": "Đã chọn",
+    "program": "Chương trình",
+    "buyGet": "Mua {buy} tặng {get}",
+    "sameItem": "(cùng sản phẩm)",
+    "changePrograms": "Đổi chương trình"
   },
   "cart": {
     "title": "Giỏ hàng",

@@ -1,3 +1,4 @@
+import { replaceBatchStock } from "@/lib/stock/batchStock";
 import { getSapClient } from "@/lib/sap-b1/client";
 import { getPool, query, queryOne } from "@/lib/db/connection";
 import { getItemCategoryPairsFromDB, getInactiveItemGroupCodesByLevel } from "@/lib/itemCategories";
@@ -203,8 +204,14 @@ export async function syncCostCenters(): Promise<{ costCentersSynced: number }> 
 
 const MS_PER_DAY = 86400000;
 
+/** Today's Vietnam calendar date as a UTC-midnight timestamp (same basis as parseSapBatchDate). */
+export function todayUtcVN(): number {
+  const [y, m, d] = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Ho_Chi_Minh" }).split("-").map(Number);
+  return Date.UTC(y, m - 1, d);
+}
+
 /** SAP returns batch dates as "YYYYMMDD" (no separators) over SQLQueries — parse to a UTC timestamp, or null if missing/malformed. */
-function parseSapBatchDate(dateStr: string | null): number | null {
+export function parseSapBatchDate(dateStr: string | null): number | null {
   if (!dateStr || dateStr.length !== 8) return null;
   const ms = Date.UTC(Number(dateStr.slice(0, 4)), Number(dateStr.slice(4, 6)) - 1, Number(dateStr.slice(6, 8)));
   return Number.isFinite(ms) ? ms : null;
@@ -221,8 +228,10 @@ export function computeBatchShelfLifePct(mnfDate: string | null, expDate: string
   const mnf = parseSapBatchDate(mnfDate);
   const exp = parseSapBatchDate(expDate);
   if (mnf === null || exp === null || exp <= mnf) return null;
+  // Whole days, as SAP counts them (DAYS_BETWEEN(today, ExpDate) / DAYS_BETWEEN(MnfDate, ExpDate)
+  // — e.g. query Q688 / report R403): today = the Vietnam calendar date.
   const totalDays = (exp - mnf) / MS_PER_DAY;
-  const remainingDays = (exp - Date.now()) / MS_PER_DAY;
+  const remainingDays = (exp - todayUtcVN()) / MS_PER_DAY;
   return Math.max(0, Math.min(100, (remainingDays / totalDays) * 100));
 }
 
@@ -290,6 +299,8 @@ async function syncInventoryStockUnlocked(): Promise<{ rowsSynced: number }> {
     }
 
     await conn.commit();
+    // Every batch's qty × shelf life — the storefront counts only those meeting the customer's required shelf life.
+    await replaceBatchStock(batchRows).catch((e) => console.error("[Sync] item_batch_shelf_stock:", e));
     return { rowsSynced: rows.length };
   } catch (error) {
     await conn.rollback();

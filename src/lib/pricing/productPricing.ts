@@ -445,18 +445,16 @@ export function buildStockGateClause(
   stockTable: StockTable = "item_warehouse_stock"
 ): { clause: string | null; params: (string | number)[] } {
   if (stockWarehouseCodes.length === 0) return { clause: null, params: [] };
-  const shelfLifeOkSql = shelfLifeOkSqlFor("iws");
   return {
     clause: `EXISTS (
       SELECT 1 FROM ${stockTable} iws
       WHERE iws.company_id = ?
         AND iws.sap_item_code = i.sap_item_code
         AND iws.warehouse_code IN (${stockWarehouseCodes.map(() => "?").join(",")})
-        AND ${shelfLifeOkSql}
       GROUP BY iws.sap_item_code
-      HAVING SUM(iws.in_stock - iws.committed) > 0
+      HAVING SUM(${usableQtySqlFor("iws")}) > 0
     )`,
-    params: [companyId, ...stockWarehouseCodes, companyId, cusGrp01, cusGrp02, cusGrp03],
+    params: [companyId, ...stockWarehouseCodes, ...usableQtyParams(companyId, cusGrp01, cusGrp02, cusGrp03)],
   };
 }
 
@@ -500,6 +498,35 @@ export function buildPriceGateClause(
  * iws.shelf_life_pct with its own alias; 4 `?` placeholders (companyId, then
  * cusGrp01/02/03) are needed wherever this is spliced in.
  */
+/**
+ * Usable stock of one stock row (item × warehouse) for this customer:
+ * OnHand − Committed, capped at the qty of the batches (item_batch_shelf_stock)
+ * that meet the customer's required shelf life — e.g. batches 29% × 33,
+ * 87.5% × 170, 89.9% × 504 with a 50–100% rule → min(677, 674) = 674.
+ * No applicable rule, or no batch data for the row (not batch-managed) →
+ * simply OnHand − Committed. Same rule as lib/orderStock.ts (Admin order review).
+ * 8 `?` placeholders — see usableQtyParams.
+ */
+function usableQtySqlFor(iwsAlias: string): string {
+  const free = `(${iwsAlias}.in_stock - ${iwsAlias}.committed)`;
+  const sameRow = `ibs.company_id = ${iwsAlias}.company_id AND ibs.sap_item_code = ${iwsAlias}.sap_item_code AND ibs.warehouse_code = ${iwsAlias}.warehouse_code`;
+  return `(CASE
+    WHEN EXISTS (
+      SELECT 1 FROM customer_require_shelflife crs
+      WHERE crs.company_id = ?
+        AND crs.cust_group_code IN (?, ?, ?)
+        AND crs.item_group_code IN (i.item_cat01, i.item_cat02, i.item_cat03, i.item_cat04, i.item_cat05, i.item_cat06)
+        AND (crs.valid_from IS NULL OR crs.valid_from <= CURDATE())
+        AND (crs.valid_to IS NULL OR crs.valid_to >= CURDATE())
+    ) AND EXISTS (SELECT 1 FROM item_batch_shelf_stock ibs WHERE ${sameRow})
+    THEN LEAST(${free}, COALESCE((SELECT SUM(ibs.qty) FROM item_batch_shelf_stock ibs WHERE ${sameRow} AND ${shelfLifeOkSqlFor("ibs")}), 0))
+    ELSE ${free}
+  END)`;
+}
+function usableQtyParams(companyId: string, g1: string, g2: string, g3: string): string[] {
+  return [companyId, g1, g2, g3, companyId, g1, g2, g3];
+}
+
 function shelfLifeOkSqlFor(iwsAlias: string): string {
   return `(
     ${iwsAlias}.shelf_life_pct IS NULL
@@ -615,11 +642,10 @@ export async function queryPricedProducts(
   // not tracked" apart from "really zero" and just not show a number.
   const availableQtySql =
     stockWarehouseCodes.length > 0
-      ? `(SELECT SUM(iws.in_stock - iws.committed) FROM ${stockTable} iws
+      ? `(SELECT SUM(${usableQtySqlFor("iws")}) FROM ${stockTable} iws
           WHERE iws.company_id = ?
             AND iws.sap_item_code = i.sap_item_code
-            AND iws.warehouse_code IN (${stockWarehouseCodes.map(() => "?").join(",")})
-            AND ${shelfLifeOkSqlFor("iws")})`
+            AND iws.warehouse_code IN (${stockWarehouseCodes.map(() => "?").join(",")}))`
       : "NULL";
 
   // "" never matches a real SAP code — safe stand-ins for an
@@ -723,7 +749,7 @@ export async function queryPricedProducts(
      WHERE ${whereSql}
      ${orderLimitSql}`,
     [
-      ...(stockWarehouseCodes.length > 0 ? [companyId, ...stockWarehouseCodes, companyId, cusGrp01, cusGrp02, cusGrp03] : []), // available_qty subquery (SELECT list — comes first in the SQL text)
+      ...(stockWarehouseCodes.length > 0 ? [...usableQtyParams(companyId, cusGrp01, cusGrp02, cusGrp03), companyId, ...stockWarehouseCodes] : []), // available_qty subquery (SELECT list — comes first in the SQL text; usable-qty expression before its WHERE)
       companyId, priceListNum ?? basePriceListNum, // cp
       companyId, // cp_base
       companyId, // cc

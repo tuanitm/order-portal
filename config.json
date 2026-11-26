@@ -18,7 +18,7 @@
   },
   "sapb1": {
     "baseUrl": "https://sapsld.imv.com.vn:50000/b1s/v1",
-    "companyID": "IMV261104",
+    "companyID": "IMV",
     "userId": "admin02",
     "passWrd": "ENV:SAPB1_PASSWORD",
     "fillOwner": "Yes"
@@ -32,7 +32,7 @@
   },
   "hanadb": {
     "hostname": "saphana.imv.com.vn:30015",
-    "schema": "IMV261104",
+    "schema": "IMV",
     "userId": "IMV_REPORT_RO",
     "passWrd": "ENV:HANA_PASSWORD"
   },

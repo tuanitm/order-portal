@@ -195,22 +195,24 @@ export async function saveOrderEdit(order: EditableOrder, input: OrderEditInput,
   if (lock) throw new OrderEditError(`${lock} — it can no longer be edited here`, 409);
   const companyId = getCompanyId();
 
-  // ── Lines: one per SKU (same SKU twice = quantities added) ──
+  // ── Lines: one per SKU + program (same SKU with the same programs = quantities added;
+  //    different programs stay separate lines, e.g. an Import Excel split) ──
   const merged = new Map<string, SelfCreateLineRequest>();
   for (const l of Array.isArray(input.lines) ? input.lines : []) {
     const code = String(l?.sapItemCode ?? "").trim();
     if (!code) continue;
     const qty = Math.floor(Number(l.quantity));
-    const prev = merged.get(code.toUpperCase());
+    const key = `${code.toUpperCase()}|${l.promotionCode ?? ""}|${l.giveawayKey ?? ""}`;
+    const prev = merged.get(key);
     if (prev) prev.quantity += qty;
-    else merged.set(code.toUpperCase(), { sapItemCode: code, quantity: qty, promotionCode: l.promotionCode ?? null, giveawayKey: l.giveawayKey ?? null });
+    else merged.set(key, { sapItemCode: code, quantity: qty, promotionCode: l.promotionCode ?? null, giveawayKey: l.giveawayKey ?? null });
   }
   const requested = [...merged.values()].filter((l) => l.quantity !== 0);
   if (requested.length === 0) throw new OrderEditError("Keep at least one item on the order — use Cancel Order to cancel it");
   if (requested.length > MAX_LINES) throw new OrderEditError(`At most ${MAX_LINES} items per order`);
 
   const brand = await orderBrandOf(order.id);
-  const products = await opts.pricer({ codes: requested.map((l) => l.sapItemCode) });
+  const products = await opts.pricer({ codes: [...new Set(requested.map((l) => l.sapItemCode))] });
   const byCode = new Map(products.map((p) => [p.sapItemCode.toUpperCase(), p]));
   const problems: string[] = [];
   // Not priced because it's another brand (the pricer only returns the order's brand) → say so.

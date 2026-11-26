@@ -3,6 +3,7 @@ import { getCompanyId, loadConfig } from "@/lib/config";
 import { queryHanaInventoryByWarehouse, configWarehouseCodes } from "@/lib/hana/inventoryQuery";
 import { getSapClient } from "@/lib/sap-b1/client";
 import { computeBatchShelfLifePct } from "@/lib/sap-b1/sync";
+import { replaceBatchStock } from "@/lib/stock/batchStock";
 
 /**
  * Where the storefront reads stock from (Admin → SAP Sync Config →
@@ -232,6 +233,7 @@ export async function refreshLiveShelfLife(): Promise<void> {
     if (existing === undefined || pct < existing) map.set(key, pct);
   }
   s.shelfLife = map;
+  await replaceBatchStock(batches).catch((e) => console.error("[LiveStock] item_batch_shelf_stock:", e));
 
   const companyId = getCompanyId();
   const conn = await getPool().getConnection();

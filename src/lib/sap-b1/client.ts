@@ -114,6 +114,19 @@ export interface SapInventoryStockRow {
 }
 
 /** One batch's on-hand qty + dates (OBTQ join OBTN) via SQLQueries — see getBatchStock. Dates come back as "YYYYMMDD" strings. */
+export interface SapBatchDetailRow {
+  item_code: string;
+  warehouse_code: string;
+  /** Batch qty — in a bin-managed warehouse, the qty in this row's bin. */
+  qty: number;
+  mnf_date: string | null;
+  exp_date: string | null;
+  batch_no: string | null;
+  lot_no: string | null;
+  bin_code: string | null;
+  bin_name: string | null;
+}
+
 export interface SapBatchStockRow {
   item_code: string;
   warehouse_code: string;
@@ -949,6 +962,19 @@ export class SapB1Client {
    * compute the shelf-life-qualifying portion of that stock for the admin
    * Order Review page.
    */
+  /**
+   * Batch detail for Admin → Inventory "By batch" (report R403 columns):
+   * each batch with qty > 0, its Lot No. and — in a bin-managed warehouse —
+   * one row per bin (qty in that bin). Read through SQLQueries like
+   * getLiveBatchStock (no HANA grant on OBTQ/OBTN/OBBQ).
+   */
+  async getLiveBatchDetail(warehouseCodes: string[], itemCodes: string[], sqlCodeSuffix: string | number): Promise<SapBatchDetailRow[]> {
+    if (itemCodes.length === 0 || warehouseCodes.length === 0) return [];
+    const sqlText = `SELECT Q."ItemCode" AS "item_code", Q."WhsCode" AS "warehouse_code", Q."Quantity" AS "batch_qty", BB."OnHandQty" AS "bin_qty", B."MnfDate" AS "mnf_date", B."ExpDate" AS "exp_date", B."DistNumber" AS "batch_no", B."LotNumber" AS "lot_no", BI."BinCode" AS "bin_code", BI."Descr" AS "bin_name" FROM "OBTQ" Q INNER JOIN "OBTN" B ON B."ItemCode" = Q."ItemCode" AND B."SysNumber" = Q."SysNumber" LEFT JOIN "OBBQ" BB ON BB."SnBMDAbs" = B."AbsEntry" AND BB."WhsCode" = Q."WhsCode" AND BB."OnHandQty" > 0 LEFT JOIN "OBIN" BI ON BI."AbsEntry" = BB."BinAbs" WHERE Q."Quantity" > 0 AND Q."WhsCode" IN (${toSqlList(warehouseCodes)}) AND Q."ItemCode" IN (${toSqlList(itemCodes)}) ORDER BY Q."ItemCode", B."ExpDate"`;
+    const rows = await this.runSqlQuery<SapBatchDetailRow & { batch_qty: number; bin_qty: number | null }>(`OBD${sqlCodeSuffix}`, 'Inventory Batch Detail', sqlText);
+    return rows.map((r) => ({ ...r, qty: Number(r.bin_qty ?? r.batch_qty) }));
+  }
+
   async getLiveBatchStock(warehouseCode: string, itemCodes: string[], sqlCodeSuffix: string | number): Promise<SapBatchStockRow[]> {
     if (itemCodes.length === 0) return [];
     const sqlText = `SELECT Q."ItemCode" AS "item_code", Q."WhsCode" AS "warehouse_code", Q."Quantity" AS "qty", B."MnfDate" AS "mnf_date", B."ExpDate" AS "exp_date", B."DistNumber" AS "batch_no" FROM "OBTQ" Q INNER JOIN "OBTN" B ON B."ItemCode" = Q."ItemCode" AND B."SysNumber" = Q."SysNumber" WHERE Q."Quantity" > 0 AND Q."WhsCode" = ${toSqlLiteral(warehouseCode)} AND Q."ItemCode" IN (${toSqlList(itemCodes)}) ORDER BY Q."ItemCode", B."ExpDate"`;
