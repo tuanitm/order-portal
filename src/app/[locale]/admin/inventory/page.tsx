@@ -386,7 +386,7 @@ export default function InventoryPage() {
   );
 }
 
-/** Report R403 layout: one row per batch (per bin in a bin-managed warehouse). */
+/** Report R403 layout: one row per batch (no Bin columns — bins are not enabled in SAP). */
 function BatchTable({ items, warehouseName }: { items: StockRow[]; warehouseName: (code: string) => string | null }) {
   const th = (right?: boolean): React.CSSProperties => ({ ...styles.th, whiteSpace: "nowrap", ...(right ? { textAlign: "right" } : {}) });
   const td: React.CSSProperties = { ...styles.td, whiteSpace: "nowrap" };
@@ -397,15 +397,13 @@ function BatchTable({ items, warehouseName }: { items: StockRow[]; warehouseName
       <table style={styles.table}>
         <thead>
           <tr>
-            <th colSpan={17} style={{ ...styles.th, borderBottom: "none" }}></th>
+            <th colSpan={15} style={{ ...styles.th, borderBottom: "none" }}></th>
             <th colSpan={6} style={{ ...styles.th, textAlign: "center", borderBottom: "none" }}>Remaining Shelf Life (Months)</th>
           </tr>
           <tr>
             <th style={th()}>#</th>
             <th style={th()}>Warehouse</th>
             <th style={th()}>Warehouse Name</th>
-            <th style={th()}>Bin Location</th>
-            <th style={th()}>Bin Location Name</th>
             <th style={th()}>Item Group</th>
             <th style={th()}>Item Category 1</th>
             <th style={th()}>Item No.</th>
@@ -434,8 +432,6 @@ function BatchTable({ items, warehouseName }: { items: StockRow[]; warehouseName
                   <td style={{ ...td, color: "var(--text-tertiary, #94A3B8)", fontSize: "0.75rem" }}>{n}</td>
                   <td style={{ ...td, fontFamily: "monospace" }}>{item.whs_code}</td>
                   <td style={td}>{item.whs_name || warehouseName(item.whs_code) || ""}</td>
-                  <td style={{ ...td, fontFamily: "monospace" }}>{b?.bin ?? ""}</td>
-                  <td style={td}>{b?.binName ?? ""}</td>
                   <td style={td}>{item.item_group ?? ""}</td>
                   <td style={td}>{item.item_cat1 ?? ""}</td>
                   <td style={{ ...td, fontWeight: 600, fontFamily: "monospace" }}>{item.item_code}</td>

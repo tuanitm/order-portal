@@ -4,6 +4,7 @@ import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { queryHanaInventoryByWarehouse } from "@/lib/hana/inventoryQuery";
 import { queryHana, getHanaSchema } from "@/lib/hana/client";
 import { getAdminWarehouses } from "@/lib/adminWarehouses";
+import { getAllowedBrandCodes, getAllowedItemGroupCodes } from "@/lib/adminScope";
 import { computeBatchShelfLifePct, parseSapBatchDate, todayUtcVN } from "@/lib/sap-b1/sync";
 import { getSapClient } from "@/lib/sap-b1/client";
 
@@ -113,8 +114,17 @@ export async function GET(request: NextRequest) {
 
   // ── Run the SAP QRM_Inventory by Warehouse query against HANA ───────
   try {
+    // Role Data Permission: System Admin sees every brand / item group; any other
+    // role only its own Brands and Product Groups (none set = none, default-deny).
+    // Warehouses are already limited above (getAdminWarehouses).
+    const scope = guard.session.isSuperAdmin
+      ? {}
+      : {
+          brandCodes: [...(getAllowedBrandCodes(guard.session) ?? [])],
+          itemGroupCodes: [...((await getAllowedItemGroupCodes(guard.session)) ?? [])],
+        };
     // Shared with the storefront's live stock mode — see queryHanaInventoryByWarehouse.
-    const allRows = await queryHanaInventoryByWarehouse(selected, search);
+    const allRows = await queryHanaInventoryByWarehouse(selected, search, scope);
     const total = allRows.length;
 
     // Apply pagination in JS (HANA hdb driver doesn't support LIMIT/OFFSET in all cases).
@@ -238,7 +248,7 @@ function inventoryExcel(items: ExcelItem[], warehouses: { code: string; name: st
 /** Report R403 "Inventory by Remaining Shelf Life" layout: one row per batch (per bin). */
 function r403Excel(items: ExcelItem[], warehouses: { code: string; name: string | null }[], selected: string[], search: string): NextResponse {
   const whsName = new Map(warehouses.map((w) => [w.code, w.name]));
-  const head = ["#", "Warehouse", "Warehouse Name", "Bin Location", "Bin Location Name", "Item Group", "Item Category 1", "Item No.", "Item Description", "UoM",
+  const head = ["#", "Warehouse", "Warehouse Name", "Item Group", "Item Category 1", "Item No.", "Item Description", "UoM",
     "Sys. Batch", "Lot No.", "Mfg. Date", "Exp. Date", "Rem. Shelf Life (%)", "Lot Status", "In-Stock", "Expired", "0 - 3", "3 - 6", "6 - 9", "9 - 12", "12+"];
   const dt = (s: string | null) => (s ? new Date(`${s}T00:00:00Z`) : "");
   const body: unknown[][] = [];
@@ -247,7 +257,7 @@ function r403Excel(items: ExcelItem[], warehouses: { code: string; name: string 
     for (const b of rows) {
       const qty = b ? b.qty : Number(r.on_hand);
       body.push([
-        body.length + 1, r.whs_code, r.whs_name ?? whsName.get(r.whs_code) ?? "", b?.bin ?? "", b?.binName ?? "", r.item_group ?? "", r.item_cat1 ?? "",
+        body.length + 1, r.whs_code, r.whs_name ?? whsName.get(r.whs_code) ?? "", r.item_group ?? "", r.item_cat1 ?? "",
         r.item_code, r.item_name ?? "", r.uom ?? "", b?.batch ?? "", b?.lot ?? "", dt(b?.mnfDate ?? null), dt(b?.expDate ?? null),
         b?.pct == null ? "" : b.pct / 100, b?.status ?? "", qty,
         ...BUCKETS.map((k) => (b?.bucket === k ? qty : 0)),
@@ -257,17 +267,17 @@ function r403Excel(items: ExcelItem[], warehouses: { code: string; name: string 
   const today = new Date().toLocaleDateString("en-GB", { timeZone: "Asia/Ho_Chi_Minh" });
   const ws = XLSX.utils.aoa_to_sheet([
     ["INVENTORY BY REMAINING SHELF LIFE REPORT"],
-    [`To Date: ${today}`, "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "Remaining Shelf Life (Months)"],
+    [`To Date: ${today}`, "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "Remaining Shelf Life (Months)"],
     [filtersLine(warehouses, selected, search)],
     head, ...body,
   ], { cellDates: true });
   // Dates dd/mm/yyyy, shelf life as %.
   for (let i = 0; i < body.length; i++) {
     const row = 5 + i; // 1-based Excel row (4 header rows above)
-    for (const col of ["M", "N"]) { const c = ws[`${col}${row}`]; if (c && c.t === "d") c.z = "dd/mm/yyyy"; }
-    const p = ws[`O${row}`]; if (p && p.t === "n") p.z = "0.00%";
+    for (const col of ["K", "L"]) { const c = ws[`${col}${row}`]; if (c && c.t === "d") c.z = "dd/mm/yyyy"; }
+    const p = ws[`M${row}`]; if (p && p.t === "n") p.z = "0.00%";
   }
-  ws["!cols"] = [{ wch: 5 }, { wch: 9 }, { wch: 16 }, { wch: 12 }, { wch: 16 }, { wch: 20 }, { wch: 14 }, { wch: 13 }, { wch: 44 }, { wch: 6 },
+  ws["!cols"] = [{ wch: 5 }, { wch: 9 }, { wch: 16 }, { wch: 20 }, { wch: 14 }, { wch: 13 }, { wch: 44 }, { wch: 6 },
     { wch: 22 }, { wch: 12 }, { wch: 11 }, { wch: 11 }, { wch: 10 }, { wch: 11 }, { wch: 10 }, { wch: 9 }, { wch: 8 }, { wch: 8 }, { wch: 8 }, { wch: 8 }, { wch: 9 }];
   return xlsxResponse(ws, "R403", "R403_Inventory_by_Remaining_Shelf_Life");
 }

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useParams } from "next/navigation";
+import { createPortal } from "react-dom";
 import { styles, btn, BackLink } from "../../adminUi";
 import { useStaffBase } from "../../layout";
 import { ArStatusBadge, AR_STATUS, money, dmy } from "../arUi";
@@ -37,6 +38,14 @@ interface Preview { name: string; applies: boolean | null; approvers: string[]; 
 const today = () => { const d = new Date(Date.now() + 7 * 3600 * 1000); return d.toISOString().slice(0, 10); };
 const rateOf = (code: string) => { const m = /^S(\d{2})$/i.exec(code.trim()); return m ? Number(m[1]) : 0; };
 const n = (v: string) => (v.trim() === "" || v.trim() === "-" ? 0 : Number(v.replace(/,/g, "")));
+/** Unit price as typed → "1,500,000" (thousand separators; keeps a leading "-" and a decimal part). */
+const groupDigits = (v: string) => {
+  const s = v.replace(/[^\d.-]/g, "");
+  const neg = s.startsWith("-");
+  const [int, ...rest] = s.replace(/-/g, "").split(".");
+  const intFmt = int.replace(/^0+(?=\d)/, "").replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return `${neg ? "-" : ""}${intFmt}${rest.length ? `.${rest.join("")}` : ""}`;
+};
 const lineTotal = (l: Line) => Math.round(n(l.quantity) * n(l.unitPrice) * (1 - n(l.discountPct) / 100));
 let keySeq = 1;
 const emptyLine = (): Line => ({ key: keySeq++, itemCode: "", itemName: "", uom: null, brandCode: null, quantity: "-1", unitPrice: "", discountPct: "0", vatGroup: "", description: "", rbtRef: null, rbtCode: null, rbtName: null, rbtAmount: null });
@@ -61,12 +70,39 @@ function Picker<T>({ value, placeholder, disabled, search, render, onPick, width
     const t = setTimeout(() => { search(q, ctl.signal).then(setList).catch(() => {}); }, 250);
     return () => { clearTimeout(t); ctl.abort(); };
   }, [q, open, search]);
+
+  // The list is rendered on document.body (fixed position) so a scrolling / overflow-clipped
+  // parent — e.g. the lines table — can't cut it off or draw over it.
+  const anchorRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<CSSProperties | null>(null);
+  const showList = open && list.length > 0;
+  useEffect(() => {
+    if (!showList) { setPos(null); return; }
+    const place = () => {
+      const r = anchorRef.current?.getBoundingClientRect();
+      if (!r) return;
+      const MAX = 300, GAP = 4;
+      const below = window.innerHeight - r.bottom - GAP;
+      const flip = below < 180 && r.top > below; // not enough room below → open upwards
+      const w = Math.max(r.width, 320);
+      setPos({
+        position: "fixed", left: Math.max(8, Math.min(r.left, window.innerWidth - w - 8)), width: w,
+        maxHeight: Math.min(MAX, Math.max(120, (flip ? r.top : below) - 8)),
+        ...(flip ? { bottom: window.innerHeight - r.top + GAP } : { top: r.bottom + GAP }),
+      });
+    };
+    place();
+    window.addEventListener("scroll", place, true);
+    window.addEventListener("resize", place);
+    return () => { window.removeEventListener("scroll", place, true); window.removeEventListener("resize", place); };
+  }, [showList]);
+
   return (
-    <div style={{ position: "relative", width: width ?? "100%" }}>
+    <div ref={anchorRef} style={{ position: "relative", width: width ?? "100%" }}>
       <input style={{ ...styles.input, width: "100%" }} value={q} placeholder={placeholder} disabled={disabled}
         onFocus={() => setOpen(true)} onBlur={() => setTimeout(() => setOpen(false), 200)} onChange={(e) => { setQ(e.target.value); setOpen(true); }} />
-      {open && list.length > 0 && (
-        <div style={{ position: "absolute", zIndex: 30, top: "100%", left: 0, right: 0, minWidth: 320, maxHeight: 300, overflowY: "auto", background: "var(--bg-primary, #fff)",
+      {showList && pos && createPortal(
+        <div style={{ ...pos, zIndex: 1000, overflowY: "auto", background: "var(--bg-primary, #fff)",
           border: "1px solid var(--color-gray-200, #E2E8F0)", borderRadius: 8, boxShadow: "0 8px 24px rgba(15,23,42,0.12)" }}>
           {list.map((x, i) => (
             <div key={i} onMouseDown={(e) => { e.preventDefault(); onPick(x); setOpen(false); }}
@@ -75,7 +111,8 @@ function Picker<T>({ value, placeholder, disabled, search, render, onPick, width
               {render(x)}
             </div>
           ))}
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );
@@ -145,7 +182,7 @@ export default function ArInvoicePage() {
       });
       setLines(j.lines.map((l: Detail["lines"][number]) => ({
         key: keySeq++, itemCode: l.item_code, itemName: l.item_name ?? "", uom: l.uom, brandCode: l.brand_code,
-        quantity: String(Number(l.quantity)), unitPrice: String(Number(l.unit_price)), discountPct: String(Number(l.discount_pct)), vatGroup: l.vat_group ?? "", description: l.description ?? "",
+        quantity: String(Number(l.quantity)), unitPrice: groupDigits(String(Number(l.unit_price))), discountPct: String(Number(l.discount_pct)), vatGroup: l.vat_group ?? "", description: l.description ?? "",
         rbtRef: l.rbt_ref, rbtCode: l.rbt_code, rbtName: l.rbt_name, rbtAmount: null,
       })));
       if (j.can.edit) loadCustomer(d.sap_card_code, true).catch(() => {});
@@ -198,7 +235,7 @@ export default function ArInvoicePage() {
       const it = r.suggestedItem ? found.get(r.suggestedItem) : undefined;
       return {
         ...emptyLine(), itemCode: it?.itemCode ?? "", itemName: it?.itemName ?? "", uom: it?.uom ?? null, brandCode: it?.brandCode ?? null,
-        quantity: "-1", unitPrice: String(r.amount), vatGroup: it?.vatGroup ?? "S08", description: r.suggestedText ?? "",
+        quantity: "-1", unitPrice: groupDigits(String(r.amount)), vatGroup: it?.vatGroup ?? "S08", description: r.suggestedText ?? "",
         rbtRef: r.docEntry, rbtCode: r.code, rbtName: r.name, rbtAmount: r.amount,
       };
     });
@@ -286,9 +323,9 @@ export default function ArInvoicePage() {
         <div style={styles.header}>
           <div>
             <h1 style={{ ...styles.title, display: "flex", gap: 10, alignItems: "center" }}>
-              {isNew ? "New AR Invoice" : `AR Invoice ${d?.doc_number ?? id}`} {d && <ArStatusBadge status={d.status} />}
+              {isNew ? "New AR Invoice" : `AR Invoice ${d?.sap_doc_no ?? d?.doc_number ?? id}`} {d && <ArStatusBadge status={d.status} />}
             </h1>
-            {d && <div style={styles.subtitle}>{d.source === "sap" ? `Entered in SAP by ${d.posted_sap_user ?? "—"} — read-only here (change it in SAP) · ` : ""}{AR_STATUS[d.status]?.hint}{d.sap_doc_num ? ` · SAP A/R Invoice ${d.sap_doc_num}` : ""}{d.posted_sap_user && d.source !== "sap" ? ` · as SAP user ${d.posted_sap_user}` : ""}</div>}
+            {d && <div style={styles.subtitle}>{d.source === "sap" ? `Entered in SAP by ${d.posted_sap_user ?? "—"} — read-only here (change it in SAP) · ` : ""}{AR_STATUS[d.status]?.hint}{d.sap_doc_no && d.doc_number ? ` · Portal ref ${d.doc_number}` : ""}{d.sap_doc_num ? ` · SAP A/R Invoice ${d.sap_doc_num}` : ""}{d.posted_sap_user && d.source !== "sap" ? ` · as SAP user ${d.posted_sap_user}` : ""}</div>}
           </div>
           <BackLink href={`${base}/ar-invoices`} label="← AR Invoices" />
         </div>
@@ -476,7 +513,7 @@ export default function ArInvoicePage() {
                         onChange={(e) => setLine(l.key, { description: e.target.value })} />
                     </td>
                     <td style={{ ...td, width: 80 }}><input style={{ ...input, textAlign: "right" }} disabled={!editable} value={l.quantity} title="Negative for a decrease (e.g. −1 for a commercial discount)" onChange={(e) => setLine(l.key, { quantity: e.target.value })} /></td>
-                    <td style={{ ...td, width: 140 }}><input style={{ ...input, textAlign: "right" }} disabled={!editable} value={l.unitPrice} placeholder="0" onChange={(e) => setLine(l.key, { unitPrice: e.target.value })} /></td>
+                    <td style={{ ...td, width: 140 }}><input style={{ ...input, textAlign: "right" }} disabled={!editable} value={l.unitPrice} placeholder="0" inputMode="decimal" onChange={(e) => setLine(l.key, { unitPrice: groupDigits(e.target.value) })} /></td>
                     <td style={{ ...td, width: 70 }}><input style={{ ...input, textAlign: "right" }} disabled={!editable} value={l.discountPct} onChange={(e) => setLine(l.key, { discountPct: e.target.value })} /></td>
                     <td style={{ ...td, width: 90 }}>
                       <select style={input} disabled={!editable} value={l.vatGroup} onChange={(e) => setLine(l.key, { vatGroup: e.target.value })}>

@@ -50,9 +50,14 @@ export async function queryHanaInventoryByWarehouse(
     includeOnOrderOnly?: boolean;
     /** Just these items, whatever their item group (SO Approval of a Sales Order made in SAP). */
     itemCodes?: string[];
+    /** Role Data Permission (Admin → Inventory): only items of these brands (OITM.U_ProdBrand). Omitted = no limit. */
+    brandCodes?: string[];
+    /** Role Data Permission: only items with one of these codes at any category level (U_ItemCat01..06). Omitted = no limit. */
+    itemGroupCodes?: string[];
   } = {}
 ): Promise<HanaInventoryRow[]> {
   if (warehouseCodes.length === 0) return [];
+  if (options.brandCodes?.length === 0 || options.itemGroupCodes?.length === 0) return [];
   const schema = getHanaSchema();
   const itemGroupFilter = loadConfig().masterdata.itemGroup; // e.g. 'D1','L1'
   const whsSql = warehouseCodes.map(sqlString).join(",");
@@ -110,6 +115,8 @@ export async function queryHanaInventoryByWarehouse(
           ? `T1."ItemCode" IN (${options.itemCodes.map(sqlString).join(",")})`
           : `(T1."U_ItemCat01" IN (${itemGroupFilter}) OR T1."U_ItemCat02" IN (${itemGroupFilter}))`}
         AND T0."WhsCode" IN (${whsSql})
+        ${options.brandCodes ? `AND T1."U_ProdBrand" IN (${options.brandCodes.map(sqlString).join(",")})` : ""}
+        ${options.itemGroupCodes ? `AND (${["01", "02", "03", "04", "05", "06"].map((n) => `T1."U_ItemCat${n}" IN (${options.itemGroupCodes!.map(sqlString).join(",")})`).join(" OR ")})` : ""}
     ) X
     WHERE (X."on_hand" <> 0 OR X."committed" <> 0${options.includeOnOrderOnly ? ` OR X."ordered" <> 0` : ""})
       ${search ? `AND (X."item_code" LIKE ${sqlString(`%${search}%`)} OR X."item_name" LIKE ${sqlString(`%${search}%`)})` : ""}
