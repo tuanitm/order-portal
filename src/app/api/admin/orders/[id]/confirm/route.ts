@@ -1,4 +1,5 @@
 import { sortOrderLines } from "@/lib/orderLineSort";
+import { byPriority } from "@/lib/pricing/productPricing";
 import { queryHana } from "@/lib/hana/client";
 import { getSapCredentialStatus, ensureUserSapSession, sapRequestAsUser, SapPasswordInvalidError } from "@/lib/sap-b1/userCredentials";
 import { getSoApprovalRequests, progressFromRequest } from "@/lib/soApproval/sapApprovalRequests";
@@ -90,6 +91,7 @@ interface PromotionDiscountRow {
   disc_pct: string;
   selling_qty: string | null;
   promotion_name: string | null;
+  priority: number | null;
 }
 
 interface GiveawayPromotionRow {
@@ -100,6 +102,7 @@ interface GiveawayPromotionRow {
   giving_item_code: string | null;
   promotion_code: string | null;
   promotion_name: string | null;
+  priority: number | null;
 }
 
 /** "Period Management" add-on UDF, same pattern style as a real posted
@@ -421,7 +424,7 @@ async function POSTHandler(
     [companyId, custCode, grp01, grp02, grp03, ...itemCodeList]
   );
   const promotionDiscountCandidates = itemCodeList.length === 0 ? [] : await query<PromotionDiscountRow[]>(
-    `SELECT bp_type, bp_code, it_type, selling_item_code, promotion_code, disc_pct, selling_qty, promotion_name
+    `SELECT bp_type, bp_code, it_type, selling_item_code, promotion_code, disc_pct, selling_qty, promotion_name, priority
      FROM promotion_discount
      WHERE company_id = ?
        AND disc_pct IS NOT NULL
@@ -443,7 +446,7 @@ async function POSTHandler(
   // already comes from order_lines.promo_buy_qty/promo_give_qty/
   // source_line_id, set at checkout; this is purely for that one display field).
   const giveawayPromotionCandidates = itemCodeList.length === 0 ? [] : await query<GiveawayPromotionRow[]>(
-    `SELECT bp_type, bp_code, it_type, selling_item_code, giving_item_code, promotion_code, promotion_name
+    `SELECT bp_type, bp_code, it_type, selling_item_code, giving_item_code, promotion_code, promotion_name, priority
      FROM promotion_discount
      WHERE company_id = ?
        AND giving_item_code IS NOT NULL
@@ -483,7 +486,7 @@ async function POSTHandler(
    * price, which skips any selling_qty > 1 since it doesn't know the final
    * quantity before checkout. We do, at this point. */
   function bestPromotionDiscount(line: OrderLineRow, confirmQty: number): { pct: number; name: string | null; code: string | null } | null {
-    let best: { score: number; sellingQty: number; pct: number; name: string | null; code: string | null } | null = null;
+    let best: { priority: number | null; score: number; sellingQty: number; pct: number; name: string | null; code: string | null } | null = null;
     for (const row of promotionDiscountCandidates) {
       if (!promoMatchesBp(row, custCode, grp01, grp02, grp03)) continue;
       if (!promoMatchesItem(row, line)) continue;
@@ -491,13 +494,17 @@ async function POSTHandler(
       if (sellingQty > confirmQty) continue;
       const score = promoBpScore(row.bp_type) + promoItemScore(row.it_type);
       const pct = Number(row.disc_pct);
+      // Program priority (Admin → Promotion Program) first, as on the storefront.
+      const prio = byPriority({ priority: row.priority }, { priority: best?.priority ?? null });
+      if (best && prio > 0) continue;
       if (
         !best ||
+        prio < 0 ||
         score > best.score ||
         (score === best.score && sellingQty > best.sellingQty) ||
         (score === best.score && sellingQty === best.sellingQty && pct > best.pct)
       ) {
-        best = { score, sellingQty, pct, name: row.promotion_name, code: row.promotion_code };
+        best = { priority: row.priority, score, sellingQty, pct, name: row.promotion_name, code: row.promotion_code };
       }
     }
     return best ? { pct: best.pct, name: best.name, code: best.code } : null;
@@ -507,13 +514,14 @@ async function POSTHandler(
    * see giveawayPromotionCandidates' own comment for why this is the only
    * thing looked up here (the gift linkage itself is already known). */
   function bestGiveawayPromotion(buyLine: OrderLineRow, giftItemCode: string): { code: string | null; name: string | null } | null {
-    let best: { score: number; code: string | null; name: string | null } | null = null;
+    let best: { priority: number | null; score: number; code: string | null; name: string | null } | null = null;
     for (const row of giveawayPromotionCandidates) {
       if (row.giving_item_code !== giftItemCode) continue;
       if (!promoMatchesBp(row, custCode, grp01, grp02, grp03)) continue;
       if (!promoMatchesItem(row, buyLine)) continue;
       const score = promoBpScore(row.bp_type) + promoItemScore(row.it_type);
-      if (!best || score > best.score) best = { score, code: row.promotion_code, name: row.promotion_name };
+      const prio = best ? byPriority({ priority: row.priority }, { priority: best.priority }) : -1;
+      if (prio < 0 || (prio === 0 && score > best!.score)) best = { priority: row.priority, score, code: row.promotion_code, name: row.promotion_name };
     }
     return best ? { code: best.code, name: best.name } : null;
   }

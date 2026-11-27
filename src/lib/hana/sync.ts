@@ -174,6 +174,7 @@ export async function syncPromotionDiscountsFromHana(): Promise<{ rowsSynced: nu
       r.giving_item_code,
       r.giving_item_name,
       r.giving_qty,
+      null, // priority — filled in under the table lock below
       now,
     ]);
   }
@@ -187,9 +188,22 @@ export async function syncPromotionDiscountsFromHana(): Promise<{ rowsSynced: nu
            after_cus_disc, after_price_disc,
            bp_grp_code, bp_grp_name, bp_type, bp_code, bp_name,
            selling_grp_code, selling_grp_name, it_type, selling_item_code, selling_item_name,
-           disc_pct, selling_qty, giving_item_code, giving_item_name, giving_qty, last_synced`;
+           disc_pct, selling_qty, giving_item_code, giving_item_name, giving_qty, priority, last_synced`;
+  const PRIORITY_COL = 25; // position of `priority` in `columns` / each values row
   await withTableLocks(["promotion_discount"], () =>
     swapInFreshTable("promotion_discount", async (conn, fresh) => {
+      // Portal-set program priority (Admin → Promotion Program) isn't in SAP:
+      // carry each program's value over to its fresh rows. Read under the
+      // lock, which the priority edit takes too, so no edit is lost.
+      const [pr] = await conn.query(
+        `SELECT promotion_code, MIN(priority) AS priority FROM promotion_discount
+          WHERE company_id = ? AND priority IS NOT NULL AND promotion_code IS NOT NULL GROUP BY promotion_code`,
+        [getCompanyId()]
+      );
+      const priorityByProgram = new Map((pr as { promotion_code: string; priority: number }[]).map((r) => [r.promotion_code, Number(r.priority)]));
+      if (priorityByProgram.size) {
+        for (const v of values) v[PRIORITY_COL] = priorityByProgram.get(String(v[2])) ?? null; // v[2] = promotion_code
+      }
       await conn.query(
         `INSERT INTO \`${fresh}\` (${columns}) SELECT ${columns} FROM promotion_discount WHERE company_id <> ? ORDER BY id`,
         [getCompanyId()]

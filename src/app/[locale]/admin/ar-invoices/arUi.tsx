@@ -5,10 +5,10 @@ import { Badge } from "../adminUi";
 /** Shared bits of the AR Invoice screens. */
 export const AR_STATUS: Record<string, { label: string; tone: "success" | "warning" | "error" | "neutral"; hint: string }> = {
   draft: { label: "Draft", tone: "neutral", hint: "Saved on the portal only — not in SAP yet" },
-  pending_approval: { label: "Waiting approval", tone: "warning", hint: "SAP saved it as a Draft; its approval request is waiting" },
-  approved: { label: "Approved", tone: "warning", hint: "Approved in SAP — the draft still has to be added as the invoice" },
+  pending_approval: { label: "Adm Confirmed", tone: "warning", hint: "Posted by the admin and saved in SAP as a Draft (AR. No assigned) — waiting for the accountant's approval" },
+  approved: { label: "Approved", tone: "warning", hint: "Approved — the SAP draft still has to be added as the invoice" },
   posted: { label: "Posted", tone: "success", hint: "A/R Invoice added in SAP" },
-  rejected: { label: "Rejected", tone: "error", hint: "Not approved in SAP — edit and post again, or delete" },
+  rejected: { label: "Rejected", tone: "error", hint: "Not approved — edit and post again, or delete" },
   failed: { label: "Failed", tone: "error", hint: "SAP refused it — see the error, fix and post again" },
   cancelled: { label: "Cancelled", tone: "neutral", hint: "The SAP approval request was cancelled" },
 };

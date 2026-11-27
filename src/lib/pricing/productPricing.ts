@@ -146,6 +146,8 @@ interface PromoOptionRow {
   name: string | null;
   pct: number;
   validTo?: string | null;
+  /** promotion_discount.priority — portal-set, 1 = first; null = none. */
+  priority?: number | null;
   score: number;
 }
 
@@ -158,6 +160,7 @@ interface GiveawayOptionRow {
   giveName: string | null;
   giveQty: number;
   validTo?: string | null;
+  priority?: number | null;
   score: number;
 }
 
@@ -290,6 +293,21 @@ export function withStackedSameItemGifts(sellingItemCode: string, options: GiftR
   return result;
 }
 
+const priorityOf = (o: { priority?: number | null }): number | null =>
+  o.priority === null || o.priority === undefined || !Number.isFinite(Number(o.priority)) ? null : Number(o.priority);
+/**
+ * Program priority set on Admin → Promotion Program (promotion_discount.priority):
+ * the smaller number comes first; a program without one comes after every
+ * numbered one (0 = tie, then the best-match order decides).
+ */
+export function byPriority(a: { priority?: number | null }, b: { priority?: number | null }): number {
+  const pa = priorityOf(a), pb = priorityOf(b);
+  if (pa === pb) return 0;
+  if (pa === null) return 1;
+  if (pb === null) return -1;
+  return pa - pb;
+}
+
 export function mapRowToProductWithPricing(row: ProductRow): ProductWithPricing {
   const sapBasePrice = Number(row.base_price); // items.base_price (S01) — only used as the fallback when there's no channel price row at all
   const channelPrice = row.channel_price !== null ? Number(row.channel_price) : null;
@@ -301,7 +319,8 @@ export function mapRowToProductWithPricing(row: ProductRow): ProductWithPricing 
   const contractDiscPct = row.contract_disc_pct !== null ? Number(row.contract_disc_pct) : 0;
 
   // Every currently-valid percent-discount/buy-give program for this
-  // (customer, item) pair — sorted here (specificity score desc, then
+  // (customer, item) pair — sorted here (program priority first — see
+  // byPriority — then specificity score desc, then
   // discount/give-qty desc) rather than trusting JSON_ARRAYAGG's row order,
   // since MySQL's JSON_ARRAYAGG has no ORDER BY clause of its own. Index 0
   // is "today's winner" — the auto-picked default every existing caller
@@ -309,7 +328,7 @@ export function mapRowToProductWithPricing(row: ProductRow): ProductWithPricing 
   // the full list lets the customer choose a different one on the card.
   const promoOptionsSorted = dedupeByIdentity(
     parseJsonArray<PromoOptionRow>(row.promo_options_json)
-      .sort((a, b) => b.score - a.score || Number(b.pct) - Number(a.pct)),
+      .sort((a, b) => byPriority(a, b) || b.score - a.score || Number(b.pct) - Number(a.pct)),
     (o) => o.code ?? o.name ?? ""
   );
   // Identity includes giveCode — see dedupeByIdentity's own comment on why
@@ -317,13 +336,13 @@ export function mapRowToProductWithPricing(row: ProductRow): ProductWithPricing 
   // happen to share one promotion program.
   const giveawayOptionsSorted = dedupeByIdentity(
     parseJsonArray<GiveawayOptionRow>(row.giveaway_options_json)
-      .sort((a, b) => b.score - a.score || Number(b.giveQty) - Number(a.giveQty)),
+      .sort((a, b) => byPriority(a, b) || b.score - a.score || Number(b.giveQty) - Number(a.giveQty)),
     (o) => `${o.code ?? o.name ?? ""}::${o.giveCode}`
   );
 
   const giveawayOptions = withStackedSameItemGifts(row.sap_item_code, giveawayOptionsSorted.map((o) => ({
     code: o.code, name: o.name, buyQty: Number(o.buyQty),
-    giveItemCode: o.giveCode, giveItemName: o.giveName, giveQty: Number(o.giveQty), validTo: o.validTo ?? null,
+    giveItemCode: o.giveCode, giveItemName: o.giveName, giveQty: Number(o.giveQty), validTo: o.validTo ?? null, priority: priorityOf(o),
   })));
 
   const promoDiscPct = promoOptionsSorted[0] ? Number(promoOptionsSorted[0].pct) : 0;
@@ -382,7 +401,7 @@ export function mapRowToProductWithPricing(row: ProductRow): ProductWithPricing 
     // only shows a picker when this has more than one entry; `undefined`ed
     // `code`/`name` (a legacy Excel-import-sourced row with no bp_type/
     // it_type-derived program identity) still shows up so the pct is visible.
-    promotionOptions: promoOptionsSorted.map((o) => ({ code: o.code, name: o.name, pct: Number(o.pct), validTo: o.validTo ?? null })),
+    promotionOptions: promoOptionsSorted.map((o) => ({ code: o.code, name: o.name, pct: Number(o.pct), validTo: o.validTo ?? null, priority: priorityOf(o) })),
     hasBuyGivePromo: giveawayOptions.length > 0,
     promoBuyQty: giveawayOptions[0]?.buyQty,
     promoGiveItemCode: giveawayOptions[0]?.giveItemCode || undefined,
@@ -720,7 +739,7 @@ export async function queryPricedProducts(
        -- today's auto-best default.
        SELECT JSON_ARRAYAGG(JSON_OBJECT(
          'code', pd.promotion_code, 'name', pd.promotion_name, 'pct', pd.disc_pct,
-         'validTo', DATE_FORMAT(pd.end_date, '%Y-%m-%d'),
+         'validTo', DATE_FORMAT(pd.end_date, '%Y-%m-%d'), 'priority', pd.priority,
          'score', (${promoMatch.scoreSql})
        )) AS options
        FROM ${promoMatch.fromSql}
@@ -736,7 +755,7 @@ export async function queryPricedProducts(
        SELECT JSON_ARRAYAGG(JSON_OBJECT(
          'code', pd2.promotion_code, 'name', pd2.promotion_name, 'buyQty', pd2.selling_qty,
          'giveCode', pd2.giving_item_code, 'giveName', pd2.giving_item_name, 'giveQty', pd2.giving_qty,
-         'validTo', DATE_FORMAT(pd2.end_date, '%Y-%m-%d'),
+         'validTo', DATE_FORMAT(pd2.end_date, '%Y-%m-%d'), 'priority', pd2.priority,
          'score', (${giveMatch.scoreSql})
        )) AS options
        FROM ${giveMatch.fromSql}

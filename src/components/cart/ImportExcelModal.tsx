@@ -65,12 +65,14 @@ interface ImportLine {
 }
 
 /**
- * Splits one matched product into one or more editable lines. The system's
- * own best-match default (index 0 of whichever list is being split on, per
- * promotionOptions/giveawayOptions' own ordering) starts with the full
- * imported quantity; every other program starts at 0 — the customer
- * redistributes manually from there. An item with 0 or 1 program on both
- * axes is never split: one plain line, same as always.
+ * Splits one matched product into one line per promotion program when it has
+ * more than one; the customer then picks ONE of them in the Promotion
+ * Programs popup (the chosen line carries the whole Excel quantity, the
+ * others 0 — the quantity itself can't be changed). Default = the program
+ * with the best priority (Admin → Promotion Program; the options already come
+ * sorted priority first); with no priority set on any of them, the program
+ * whose free item is the bought item itself, else the best match. An item
+ * with 0 or 1 program on both axes is never split: one plain line.
  */
 function buildLinesForProduct(product: ProductWithPricing, quantity: number, remark: string): ImportLine[] {
   const promoOptions = product.promotionOptions ?? [];
@@ -86,10 +88,8 @@ function buildLinesForProduct(product: ProductWithPricing, quantity: number, rem
     }));
   }
   if (giveawayOptions.length > 1) {
-    // The program whose free item is the bought item itself starts with the
-    // Excel quantity (first such one, in best-match order); none → the best match.
     const sameIdx = giveawayOptions.findIndex((g) => g.giveItemCode === product.sapItemCode);
-    const defaultIdx = sameIdx >= 0 ? sameIdx : 0;
+    const defaultIdx = hasPriority(giveawayOptions[0]) ? 0 : sameIdx >= 0 ? sameIdx : 0;
     return giveawayOptions.map((g, idx) => ({
       key: `${product.sapItemCode}::give::${g.code ?? g.giveItemCode ?? idx}`,
       product,
@@ -99,6 +99,10 @@ function buildLinesForProduct(product: ProductWithPricing, quantity: number, rem
     }));
   }
   return [{ key: product.sapItemCode, product, quantity, remark }];
+}
+
+function hasPriority(o: { priority?: number | null } | undefined): boolean {
+  return o?.priority !== null && o?.priority !== undefined;
 }
 
 /** This line's own percent-discount %, after any promoOverride. */
@@ -177,9 +181,10 @@ export default function ImportExcelModal({ isOpen, onClose }: { isOpen: boolean;
   const [invalidRows, setInvalidRows] = useState<InvalidRow[]>([]);
   const [confirmingReplace, setConfirmingReplace] = useState(false);
   // Program chooser (popup) for items with more than one promotion program:
-  // draft quantities per program line; OK copies them into `lines`.
+  // draft = the chosen program line per item code; OK gives that line the
+  // Excel quantity and the item's other program lines 0.
   // `initial` = opened right after the upload (Cancel goes back to upload).
-  const [choosing, setChoosing] = useState<{ draft: Record<string, number>; initial: boolean } | null>(null);
+  const [choosing, setChoosing] = useState<{ draft: Record<string, string>; initial: boolean } | null>(null);
   // Program lines kept in the preview after OK (those with qty > 0); null = show all lines.
   const [shownKeys, setShownKeys] = useState<Set<string> | null>(null);
   const [excelQty, setExcelQty] = useState<Record<string, number>>({});
@@ -322,16 +327,27 @@ export default function ImportExcelModal({ isOpen, onClose }: { isOpen: boolean;
   };
 
   const openChooser = (ls: ImportLine[], initial: boolean) => {
-    setChoosing({ draft: Object.fromEntries(ls.filter(isProgramLine).map((l) => [l.key, l.quantity])), initial });
+    // Each item's current choice: its program line holding the quantity (else its first line).
+    const draft: Record<string, string> = {};
+    for (const l of ls.filter(isProgramLine)) {
+      const code = l.product.sapItemCode;
+      if (!(code in draft)) draft[code] = l.key;
+      if (l.quantity > 0 && !(ls.find((x) => x.key === draft[code])?.quantity)) draft[code] = l.key;
+    }
+    setChoosing({ draft, initial });
   };
 
   const applyChoice = () => {
     if (!choosing) return;
     const { draft } = choosing;
-    const next = lines.map((l) => (l.key in draft ? { ...l, quantity: draft[l.key] } : l));
+    const next = lines.map((l) => {
+      const code = l.product.sapItemCode;
+      if (!isProgramLine(l) || !(code in draft)) return l;
+      return { ...l, quantity: l.key === draft[code] ? excelQty[code] ?? l.quantity : 0 };
+    });
     setLines(next);
-    // The preview shows what was picked: program lines left at 0 are hidden.
-    setShownKeys(new Set(next.filter((l) => !(l.key in draft) || l.quantity > 0).map((l) => l.key)));
+    // The preview shows what was picked: the program lines not chosen are hidden.
+    setShownKeys(new Set(next.filter((l) => !isProgramLine(l) || l.quantity > 0).map((l) => l.key)));
     setConfirmingReplace(false);
     setChoosing(null);
   };
@@ -341,16 +357,15 @@ export default function ImportExcelModal({ isOpen, onClose }: { isOpen: boolean;
     else setChoosing(null);
   };
 
-  const setDraftQty = (key: string, value: number) => {
-    const qty = Math.max(0, Math.floor(value) || 0);
-    setChoosing((c) => (c ? { ...c, draft: { ...c.draft, [key]: qty } } : c));
+  const pickProgram = (itemCode: string, key: string) => {
+    setChoosing((c) => (c ? { ...c, draft: { ...c.draft, [itemCode]: key } } : c));
   };
 
   const programLabelOf = (line: ImportLine): string | null =>
     line.promoOverride
-      ? `${line.promoOverride.name || line.promoOverride.code || t("product.promotion")} (-${line.promoOverride.pct}%)`
+      ? `${line.promoOverride.code ? `${line.promoOverride.code} · ` : ""}${line.promoOverride.name || t("product.promotion")} (-${line.promoOverride.pct}%)`
       : line.giveawayOverride
-      ? `🎁 ${line.giveawayOverride.name || line.giveawayOverride.code || t("product.promotion")}`
+      ? `🎁 ${line.giveawayOverride.code ? `${line.giveawayOverride.code} · ` : ""}${line.giveawayOverride.name || t("product.promotion")}`
       : null;
 
   /** Free-item lines of `line` at its quantity (same item / other item). */
@@ -548,14 +563,19 @@ export default function ImportExcelModal({ isOpen, onClose }: { isOpen: boolean;
                             {freeInfo(line)}
                           </td>
                           <td style={{ padding: "0.5rem", textAlign: "right" }}>
-                            <input
-                              type="number"
-                              min={0}
-                              className="input"
-                              style={{ width: "76px", padding: "0.25rem 0.375rem", fontSize: "0.8125rem", textAlign: "right" }}
-                              value={line.quantity}
-                              onChange={(e) => updateLineQuantity(line.key, parseInt(e.target.value, 10))}
-                            />
+                            {isProgramLine(line) ? (
+                              // Program chosen in the popup: the buy quantity is the Excel quantity (fixed).
+                              <span title={t("import.buyQtyFixed")} style={{ fontWeight: 700 }}>{line.quantity}</span>
+                            ) : (
+                              <input
+                                type="number"
+                                min={0}
+                                className="input"
+                                style={{ width: "76px", padding: "0.25rem 0.375rem", fontSize: "0.8125rem", textAlign: "right" }}
+                                value={line.quantity}
+                                onChange={(e) => updateLineQuantity(line.key, parseInt(e.target.value, 10))}
+                              />
+                            )}
                           </td>
                           <td style={{ padding: "0.5rem", textAlign: "right" }}>{formatPrice(displayPrice)}</td>
                           <td style={{ padding: "0.5rem", textAlign: "right" }}>
@@ -634,7 +654,7 @@ export default function ImportExcelModal({ isOpen, onClose }: { isOpen: boolean;
           draft={choosing.draft}
           excelQty={excelQty}
           locale={locale}
-          onQty={setDraftQty}
+          onPick={pickProgram}
           programLabelOf={programLabelOf}
           freeInfo={(l) => freeInfo(l)}
           onCancel={cancelChoice}
@@ -651,17 +671,17 @@ function isProgramLine(l: ImportLine): boolean {
 
 /**
  * Popup listing every promotion program of each imported item that has more
- * than one. Each program has its own buy quantity: the same-item free-gift
- * program (or the best match) starts at the Excel quantity, the others at 0;
- * the customer moves quantity between them. OK → the preview shows exactly
- * the programs given a quantity.
+ * than one. The customer picks ONE program per item (radio); the buy quantity
+ * is the Excel quantity and can't be changed here. The default is the
+ * program with the best priority (see buildLinesForProduct). OK → the preview
+ * shows the chosen program of each item.
  */
-function ProgramChooser({ lines, draft, excelQty, locale, onQty, programLabelOf, freeInfo, onCancel, onOk }: {
+function ProgramChooser({ lines, draft, excelQty, locale, onPick, programLabelOf, freeInfo, onCancel, onOk }: {
   lines: ImportLine[];
-  draft: Record<string, number>;
+  draft: Record<string, string>;
   excelQty: Record<string, number>;
   locale: string;
-  onQty: (key: string, qty: number) => void;
+  onPick: (itemCode: string, key: string) => void;
   programLabelOf: (l: ImportLine) => string | null;
   freeInfo: (l: ImportLine) => React.ReactNode;
   onCancel: () => void;
@@ -670,7 +690,7 @@ function ProgramChooser({ lines, draft, excelQty, locale, onQty, programLabelOf,
   const t = useTranslations();
   const groups: { code: string; lines: ImportLine[] }[] = [];
   for (const l of lines) {
-    if (!(l.key in draft)) continue;
+    if (!isProgramLine(l) || !(l.product.sapItemCode in draft)) continue;
     const g = groups.find((x) => x.code === l.product.sapItemCode);
     if (g) g.lines.push(l);
     else groups.push({ code: l.product.sapItemCode, lines: [l] });
@@ -698,37 +718,47 @@ function ProgramChooser({ lines, draft, excelQty, locale, onQty, programLabelOf,
           {groups.map((g) => {
             const p = g.lines[0].product;
             const name = (locale === "vi" ? p.itemNameVi : p.itemNameEn) || p.itemNameVi || p.itemNameEn;
-            const chosen = g.lines.reduce((s, l) => s + (draft[l.key] ?? 0), 0);
-            const fromExcel = excelQty[g.code] ?? 0;
+            const qty = excelQty[g.code] ?? 0;
             return (
-              <div key={g.code} style={{ border: "1px solid var(--color-gray-200, #E2E8F0)", borderRadius: 8, padding: "0.625rem 0.75rem", marginBottom: "0.75rem" }}>
+              <div key={g.code} role="radiogroup" aria-label={g.code} style={{ border: "1px solid var(--color-gray-200, #E2E8F0)", borderRadius: 8, padding: "0.625rem 0.75rem", marginBottom: "0.75rem" }}>
                 <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap", marginBottom: 6 }}>
                   <span style={{ fontFamily: "monospace", fontWeight: 700 }}>{g.code}</span>
                   <span style={{ flex: 1, minWidth: 0, fontWeight: 600 }}>{name}</span>
                   <span style={{ fontSize: "0.8125rem", whiteSpace: "nowrap" }}>
-                    {t("import.excelQty")}: <b>{fromExcel}</b> · {t("import.chosenQty")}:{" "}
-                    <b style={{ color: chosen === fromExcel ? "var(--color-success, #059669)" : "var(--color-warning-dark, #B45309)" }}>{chosen}</b>
+                    {t("import.buyQtyFixed")}: <b>{qty}</b>
                   </span>
                 </div>
                 <table style={{ width: "100%", fontSize: "0.8125rem", borderCollapse: "collapse" }}>
                   <thead>
                     <tr style={{ borderBottom: "1px solid var(--color-gray-200, #E2E8F0)", color: "var(--text-secondary)" }}>
+                      <th style={{ ...cell, width: 28 }}></th>
                       <th style={{ ...cell, textAlign: "left" }}>{t("import.program")}</th>
                       <th style={{ ...cell, textAlign: "right" }}>Price</th>
                       <th style={{ ...cell, textAlign: "right" }}>%</th>
-                      <th style={{ ...cell, textAlign: "right" }}>{t("import.columnQuantity")}</th>
                     </tr>
                   </thead>
                   <tbody>
                     {g.lines.map((l) => {
-                      const qty = draft[l.key] ?? 0;
+                      const chosen = draft[g.code] === l.key;
                       const at = { ...l, quantity: qty };
                       const { displayPrice, discountPercent } = priceForPromoPct(p, effectivePromoPct(l));
                       const give = l.giveawayOverride;
+                      const prio = (l.promoOverride ?? l.giveawayOverride)?.priority;
                       return (
-                        <tr key={l.key} style={{ borderBottom: "1px solid var(--color-gray-100, #F1F5F9)", background: qty > 0 ? "rgba(43,188,179,0.08)" : undefined }}>
+                        <tr key={l.key} onClick={() => onPick(g.code, l.key)}
+                          style={{ cursor: "pointer", borderBottom: "1px solid var(--color-gray-100, #F1F5F9)", background: chosen ? "rgba(43,188,179,0.10)" : undefined }}>
                           <td style={cell}>
-                            <div style={{ fontWeight: 600, color: "var(--color-primary, #2563EB)" }}>{programLabelOf(l)}</div>
+                            <input type="radio" name={`program-${g.code}`} checked={chosen} onChange={() => onPick(g.code, l.key)} aria-label={programLabelOf(l) ?? l.key} />
+                          </td>
+                          <td style={cell}>
+                            <div style={{ fontWeight: 600, color: "var(--color-primary, #2563EB)" }}>
+                              {programLabelOf(l)}
+                              {prio !== null && prio !== undefined && (
+                                <span style={{ marginLeft: 6, fontSize: "0.65rem", fontWeight: 800, color: "#92400E", background: "#FEF3C7", borderRadius: 4, padding: "1px 5px" }}>
+                                  {t("import.priority", { n: prio })}
+                                </span>
+                              )}
+                            </div>
                             {give && (
                               <div style={{ fontSize: "0.7rem", color: "var(--text-tertiary)" }}>
                                 {t("import.buyGet", { buy: Number(give.buyQty), get: Number(give.giveQty) })}{" "}
@@ -739,16 +769,6 @@ function ProgramChooser({ lines, draft, excelQty, locale, onQty, programLabelOf,
                           </td>
                           <td style={{ ...cell, textAlign: "right", whiteSpace: "nowrap" }}>{formatPrice(displayPrice)}</td>
                           <td style={{ ...cell, textAlign: "right" }}>{discountPercent ? `-${discountPercent}%` : "—"}</td>
-                          <td style={{ ...cell, textAlign: "right" }}>
-                            <input
-                              type="number"
-                              min={0}
-                              className="input"
-                              style={{ width: "84px", padding: "0.25rem 0.375rem", fontSize: "0.8125rem", textAlign: "right" }}
-                              value={qty}
-                              onChange={(e) => onQty(l.key, parseInt(e.target.value, 10))}
-                            />
-                          </td>
                         </tr>
                       );
                     })}

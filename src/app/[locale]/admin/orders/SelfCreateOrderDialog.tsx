@@ -89,9 +89,10 @@ const HEADER_ALIASES = {
 };
 interface ImportResult { added: number; merged: number; notFound: string[]; invalid: string[] }
 /**
- * Items from the file with more than one promotion / gift program: a buy
- * quantity per program (split along one axis — the gift programs when there
- * are several, else the promotion discounts; the other axis is one pick).
+ * Items from the file with more than one promotion / gift program: ONE program
+ * per item is chosen (along one axis — the gift programs when there are
+ * several, else the promotion discounts; the other axis is one pick too). The
+ * chosen program carries the whole Excel quantity — it can't be changed here.
  */
 interface ImportSplit {
   axis: "gift" | "promo";
@@ -108,12 +109,14 @@ interface ImportChoice {
   result: Omit<ImportResult, "added" | "merged">;
 }
 
-/** Default split: the gift program whose free item is the bought item itself gets the Excel qty
- *  (none → the best match); every other program starts at 0. */
+/** Default choice: the program with the best priority (Admin → Promotion Program — the options come
+ *  sorted priority first); with no priority set, the gift program whose free item is the bought item
+ *  itself, else the best match. It gets the Excel qty, every other program 0. */
 function defaultSplit(p: ProductWithPricing, q: number): ImportSplit {
   if (p.giveawayOptions.length > 1) {
     const same = p.giveawayOptions.findIndex((o) => o.giveItemCode === p.sapItemCode);
-    const def = same >= 0 ? same : 0;
+    const prioritized = p.giveawayOptions[0]?.priority !== null && p.giveawayOptions[0]?.priority !== undefined;
+    const def = prioritized ? 0 : same >= 0 ? same : 0;
     return {
       axis: "gift", promotionCode: p.promotionOptions[0]?.code ?? null, giveawayKey: null,
       qty: Object.fromEntries(p.giveawayOptions.map((o, i) => [giveawayKeyOf(o), i === def ? q : 0])),
@@ -1242,11 +1245,10 @@ export default function SelfCreateOrderDialog({ locale, onClose, onCreated, init
 }
 
 /**
- * Import Excel: items with more than one promotion program. Each program has
- * its own buy quantity — the gift program whose free item is the bought item
- * itself starts with the Excel quantity (none → the best match), the others
- * at 0; the admin moves quantity between them. OK puts one order line per
- * program given a quantity.
+ * Import Excel: items with more than one promotion program. The admin picks
+ * ONE program per item (radio); the buy quantity is the Excel quantity and
+ * can't be changed. The default is the program with the best priority (see
+ * defaultSplit). OK puts one order line per item, on the chosen program.
  */
 function ImportProgramPrompt({ choice, onChange, onCancel, onApply }: {
   choice: ImportChoice;
@@ -1257,11 +1259,17 @@ function ImportProgramPrompt({ choice, onChange, onCancel, onApply }: {
   const multi = choice.found.filter((p) => choice.splits.has(p.sapItemCode));
   const cell: CSSProperties = { padding: "0.375rem 0.5rem", fontSize: "0.8125rem", verticalAlign: "top", borderBottom: "1px solid var(--color-gray-100, #F1F5F9)" };
   const head: CSSProperties = { ...cell, fontSize: "0.6875rem", fontWeight: 700, color: "var(--text-secondary, #64748B)", textTransform: "uppercase", borderBottom: "1px solid var(--color-gray-200, #E2E8F0)" };
-  const qtyInput = (value: number, set: (n: number) => void) => (
-    <input type="number" min={0} step={1} value={value}
-      onChange={(e) => set(Math.max(0, Math.floor(Number(e.target.value) || 0)))}
-      style={{ ...styles.input, width: 90, boxSizing: "border-box", textAlign: "right", padding: "0.3rem 0.5rem" }} />
+  // Choosing a program = the whole Excel quantity on it, 0 on the item's other programs.
+  const pick = (p: ProductWithPricing, split: ImportSplit, key: string) => {
+    const excel = choice.qty.get(p.sapItemCode.toUpperCase()) ?? 0;
+    onChange(p.sapItemCode, { qty: Object.fromEntries(Object.keys(split.qty).map((k) => [k, k === key ? excel : 0])) });
+  };
+  const radio = (p: ProductWithPricing, split: ImportSplit, key: string, chosen: boolean) => (
+    <input type="radio" name={`import-program-${p.sapItemCode}`} checked={chosen} onChange={() => pick(p, split, key)} aria-label={key || "program"} />
   );
+  const prioBadge = (prio: number | null | undefined) => (prio === null || prio === undefined ? null : (
+    <span style={{ marginLeft: 6, fontSize: "0.65rem", fontWeight: 800, color: "#92400E", background: "#FEF3C7", borderRadius: 4, padding: "1px 5px" }}>Priority {prio}</span>
+  ));
   const totalLines = multi.reduce((n, p) => n + Object.values(choice.splits.get(p.sapItemCode)!.qty).filter((q) => q > 0).length, 0)
     + choice.found.filter((p) => !choice.splits.has(p.sapItemCode) && (choice.qty.get(p.sapItemCode.toUpperCase()) ?? 0) > 0).length;
   return (
@@ -1274,15 +1282,14 @@ function ImportProgramPrompt({ choice, onChange, onCancel, onApply }: {
         <div style={{ padding: "0.875rem 1.25rem", borderBottom: "1px solid var(--color-gray-200, #E2E8F0)" }}>
           <h3 style={{ fontSize: "1rem", fontWeight: 800 }}>Promotion Programs</h3>
           <p style={{ ...hint, marginTop: 2 }}>
-            {multi.length} imported item{multi.length > 1 ? "s have" : " has"} more than one program running now. Enter the buy quantity for each program —
-            the program giving the same item free starts with the Excel quantity; you can split it between programs.
+            {multi.length} imported item{multi.length > 1 ? "s have" : " has"} more than one program running now. Choose ONE program for each item —
+            the buy quantity is the Excel quantity. The program with the best priority is chosen by default.
           </p>
         </div>
         <div style={{ flex: 1, overflowY: "auto", padding: "0.75rem 1.25rem" }}>
           {multi.map((p) => {
             const excel = choice.qty.get(p.sapItemCode.toUpperCase()) ?? 0;
             const split = choice.splits.get(p.sapItemCode)!;
-            const chosen = Object.values(split.qty).reduce((s, q) => s + q, 0);
             const unitFor = (promoCode: string | null) => {
               const o = p.promotionOptions.find((x) => x.code === promoCode) ?? p.promotionOptions[0];
               return Math.max(0, p.basePrice * (1 - (p.contractDiscPct + (o ? Number(o.pct) : 0)) / 100));
@@ -1293,7 +1300,7 @@ function ImportProgramPrompt({ choice, onChange, onCancel, onApply }: {
                   <span style={{ fontFamily: "monospace", fontWeight: 700 }}>{p.sapItemCode}</span>
                   <span style={{ flex: 1, minWidth: 0, fontWeight: 600 }}>{itemName(p)}</span>
                   <span style={{ whiteSpace: "nowrap", fontSize: "0.8125rem", fontVariantNumeric: "tabular-nums" }}>
-                    Excel qty <b>{num(excel)}</b> · Chosen <b style={{ color: chosen === excel ? "#059669" : "#B45309" }}>{num(chosen)}</b> {p.uom}
+                    Buy qty (from Excel) <b>{num(excel)}</b> {p.uom}
                   </span>
                 </div>
                 {/* The other axis (one pick for all rows of this item) */}
@@ -1309,11 +1316,11 @@ function ImportProgramPrompt({ choice, onChange, onCancel, onApply }: {
                 <table style={{ width: "100%", borderCollapse: "collapse" }}>
                   <thead>
                     <tr>
+                      <th style={{ ...head, width: 28 }}></th>
                       <th style={{ ...head, textAlign: "left" }}>{split.axis === "gift" ? "🎁 Free-item program" : "🏷 Promotion discount"}</th>
                       <th style={{ ...head, textAlign: "left" }}>Free items</th>
                       <th style={{ ...head, textAlign: "right" }}>Unit price</th>
                       <th style={{ ...head, textAlign: "right" }}>Line total</th>
-                      <th style={{ ...head, textAlign: "right" }}>Buy qty</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1326,9 +1333,10 @@ function ImportProgramPrompt({ choice, onChange, onCancel, onApply }: {
                           const same = o.giveItemCode === p.sapItemCode;
                           const unit = unitFor(split.promotionCode);
                           return (
-                            <tr key={key} style={{ background: q > 0 ? "rgba(43,188,179,0.08)" : undefined }}>
+                            <tr key={key} onClick={() => pick(p, split, key)} style={{ cursor: "pointer", background: q > 0 ? "rgba(43,188,179,0.10)" : undefined }}>
+                              <td style={cell}>{radio(p, split, key, q > 0)}</td>
                               <td style={cell}>
-                                <b>Buy {o.buyQty} get {o.giveQty} · {same ? "same item" : o.giveItemCode}</b>
+                                <b>Buy {o.buyQty} get {o.giveQty} · {same ? "same item" : o.giveItemCode}</b>{prioBadge(o.priority)}
                                 <div style={{ ...hint, marginTop: 0 }}>{same ? "" : `${o.giveItemName ?? ""} — `}{o.name || o.code}</div>
                               </td>
                               <td style={{ ...cell, color: free + extraFree > 0 ? "#059669" : "var(--text-tertiary, #94A3B8)", fontWeight: 700, whiteSpace: "nowrap" }}>
@@ -1338,7 +1346,6 @@ function ImportProgramPrompt({ choice, onChange, onCancel, onApply }: {
                               </td>
                               <td style={{ ...cell, textAlign: "right", whiteSpace: "nowrap" }}>{money(unit)}</td>
                               <td style={{ ...cell, textAlign: "right", whiteSpace: "nowrap" }}>{money(unit * q)}</td>
-                              <td style={{ ...cell, textAlign: "right" }}>{qtyInput(q, (n) => onChange(p.sapItemCode, { qty: { [key]: n } }))}</td>
                             </tr>
                           );
                         })
@@ -1349,9 +1356,10 @@ function ImportProgramPrompt({ choice, onChange, onCancel, onApply }: {
                           const g = p.giveawayOptions.find((x) => giveawayKeyOf(x) === split.giveawayKey);
                           const free = g && g.buyQty && g.giveQty ? Math.floor(q / g.buyQty) * g.giveQty : 0;
                           return (
-                            <tr key={key} style={{ background: q > 0 ? "rgba(43,188,179,0.08)" : undefined }}>
+                            <tr key={key} onClick={() => pick(p, split, key)} style={{ cursor: "pointer", background: q > 0 ? "rgba(43,188,179,0.10)" : undefined }}>
+                              <td style={cell}>{radio(p, split, key, q > 0)}</td>
                               <td style={cell}>
-                                <b>{o.code ?? "—"} · {Number(o.pct)}%</b>
+                                <b>{o.code ?? "—"} · {Number(o.pct)}%</b>{prioBadge(o.priority)}
                                 <div style={{ ...hint, marginTop: 0 }}>{o.name}</div>
                               </td>
                               <td style={{ ...cell, color: free > 0 ? "#059669" : "var(--text-tertiary, #94A3B8)", fontWeight: 700, whiteSpace: "nowrap" }}>
@@ -1359,7 +1367,6 @@ function ImportProgramPrompt({ choice, onChange, onCancel, onApply }: {
                               </td>
                               <td style={{ ...cell, textAlign: "right", whiteSpace: "nowrap" }}>{money(unit)}</td>
                               <td style={{ ...cell, textAlign: "right", whiteSpace: "nowrap" }}>{money(unit * q)}</td>
-                              <td style={{ ...cell, textAlign: "right" }}>{qtyInput(q, (n) => onChange(p.sapItemCode, { qty: { [key]: n } }))}</td>
                             </tr>
                           );
                         })}

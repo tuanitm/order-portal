@@ -14,7 +14,7 @@ export interface Product {
 }
 
 /** One free gift of a buy-X-get-Y program. */
-export interface GiftRule { code: string | null; name: string | null; buyQty: number; giveItemCode: string; giveItemName: string | null; giveQty: number; /** Program end date YYYY-MM-DD (null = open-ended). */ validTo?: string | null }
+export interface GiftRule { code: string | null; name: string | null; buyQty: number; giveItemCode: string; giveItemName: string | null; giveQty: number; /** Program end date YYYY-MM-DD (null = open-ended). */ validTo?: string | null; /** Portal-set program priority (1 = first); null = none. */ priority?: number | null }
 
 /**
  * A buy-X-get-Y choice. `extra` is set when the SAME program also gives the
@@ -41,7 +41,7 @@ export interface ProductWithPricing extends Product {
   promotionCode?: string;
   /** Every currently-valid percent-discount program for this item, best-match first (index 0 matches promoDiscPct/promotionTitle/promotionCode above).
    *  Length > 1 means the customer qualifies for more than one program at once — the product card shows a picker only in that case. */
-  promotionOptions: { code: string | null; name: string | null; pct: number; validTo?: string | null }[];
+  promotionOptions: { code: string | null; name: string | null; pct: number; validTo?: string | null; priority?: number | null }[];
   /** Buy-X-get-Y ("bonus item") promotion, independent of the percent discount above. */
   hasBuyGivePromo: boolean;
   promoBuyQty?: number;

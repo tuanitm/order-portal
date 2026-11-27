@@ -22,7 +22,7 @@ interface Rebate { docEntry: number; code: string; name: string; amount: number;
 interface Customer { sap_card_code: string; card_name: string | null; mst_code: string | null; cus_grp01: string | null; bill_to_default: string | null; ship_to_default: string | null }
 interface Address { name: string; address: string | null }
 interface Approval {
-  wddCode: number; templateName: string | null; status: string; currStep: number;
+  wddCode: number; templateName: string | null; status: string; currStep: number; draftEntry?: number | null;
   stages: { wstCode: number; name: string; maxReqr: number; lines: { userCode: string; userName: string | null; status: string; remarks: string | null; updatedAt: string | null }[] }[];
 }
 interface Detail {
@@ -279,7 +279,7 @@ export default function ArInvoicePage() {
   };
 
   const save = async (andPost: boolean) => {
-    if (andPost && !confirm(`Post this AR Invoice to SAP as ${lookups?.sapUser ?? "your SAP user"}?\n\nTotal ${money(totals.total)} ₫ for ${customer?.sap_card_code}. ${preview?.some((p) => p.applies) ? "SAP will hold it for approval first." : "SAP adds it straight away (no approval template applies)."}`)) return;
+    if (andPost && !confirm(`Post this AR Invoice to SAP as ${lookups?.sapUser ?? "your SAP user"}?\n\nTotal ${money(totals.total)} ₫ for ${customer?.sap_card_code}. ${preview?.some((p) => p.applies !== false) ? "It is saved in SAP as a Draft (Adm Confirmed) and waits for the approvers first." : "SAP adds it straight away (no approval template applies)."}`)) return;
     const saved = await call("save", () => fetch(isNew ? "/api/admin/ar-invoices" : `/api/admin/ar-invoices/${id}`, {
       method: isNew ? "POST" : "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body()),
     }));
@@ -338,7 +338,12 @@ export default function ArInvoicePage() {
         {detail?.approval && (
           <div style={styles.cardPadded}>
             <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
-              <div style={{ fontWeight: 800 }}>SAP approval · {detail.approval.templateName ?? "template"} <span style={{ fontWeight: 400, color: "var(--text-tertiary)" }}>(request #{detail.approval.wddCode})</span></div>
+              <div style={{ fontWeight: 800 }}>
+                Approval · {detail.approval.templateName ?? "template"}{" "}
+                <span style={{ fontWeight: 400, color: "var(--text-tertiary)" }}>
+                  {detail.approval.wddCode ? `(SAP request #${detail.approval.wddCode})` : `(on the portal · SAP draft ${detail.approval.draftEntry ?? "—"})`}
+                </span>
+              </div>
               <button type="button" style={btn("secondary", !!busy)} disabled={!!busy} onClick={() => load()}>↻ Refresh from SAP</button>
             </div>
             {detail.approval.stages.map((st) => (
@@ -546,8 +551,8 @@ export default function ArInvoicePage() {
           <div style={{ ...styles.cardPadded, display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
             <div style={{ fontSize: "0.8125rem" }}>
               {!preview ? <span style={{ color: "var(--text-tertiary)" }}>Pick a customer and items to see whether SAP will ask for approval.</span>
-                : applies.length ? <>🔒 SAP will hold it for approval: {applies.map((p) => <b key={p.name}>{p.name} → {p.approvers.join(", ")}</b>).reduce<ReactNode[]>((a, x, i) => (i ? [...a, "; ", x] : [x]), [])}</>
-                : unknown.length ? <>⚠ Couldn’t check {unknown.map((p) => p.name).join(", ")} ({unknown[0].note}) — SAP decides on posting.</>
+                : applies.length ? <>🔒 Needs approval — Post to SAP saves it as a Draft (Adm Confirmed) for: {applies.map((p) => <b key={p.name}>{p.name} → {p.approvers.join(", ")}</b>).reduce<ReactNode[]>((a, x, i) => (i ? [...a, "; ", x] : [x]), [])}</>
+                : unknown.length ? <>⚠ Couldn’t check {unknown.map((p) => p.name).join(", ")} ({unknown[0].note}) — it will go for approval to be safe.</>
                 : <>✓ No approval template applies for {lookups?.sapUser ?? "you"} — SAP adds the invoice straight away.</>}
               <div style={{ fontSize: "0.72rem", color: "var(--text-tertiary)", marginTop: 3 }}>Posted as your SAP user {lookups?.sapUser ?? "(set it in My Profile)"} · totals are an estimate, SAP calculates the final VAT.</div>
             </div>

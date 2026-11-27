@@ -31,6 +31,16 @@ import { notifyArApprovalNeeded, markNotificationsRead } from "@/lib/staffNotifi
  * Data permissions: customers within the user's customer groups / channels,
  * items within their brands. Only the creator (or Super Admin) edits / posts.
  *
+ * Portal-run approval (approval_mode 'portal'): SAP's Service Layer can't
+ * evaluate AR01–AR05's condition queries (they read the SAP client's form —
+ * $[$4.0.0] / $[$38.1.0]), so SAP adds the invoice without approval. Like SO
+ * Approval, the portal follows the templates itself: when one applies (the
+ * same originator + condition check as the preview), "Post to SAP" saves the
+ * invoice in SAP as a Draft (U_DocNo is assigned) → "Adm Confirmed"
+ * (pending_approval); the template's stage authorizers (e.g. acc03 for AR01 GT)
+ * approve / reject on the portal; the final approval adds the draft as the
+ * A/R Invoice as the approver's own SAP user.
+ *
  * source = 'sap': an AR Invoice approval request raised in the SAP client,
  * pulled in by sapImport.ts (Settings -> "Sync SO AR from") — read-only here;
  * its authorizers approve / reject it like a portal one.
@@ -99,6 +109,9 @@ export interface ArDocRow {
   wdd_code: number | null;
   wtm_code: number | null;
   template_name: string | null;
+  /** 'sap' = SAP's own approval request (wdd_code); 'portal' = portal-run template approval (portal_approval). */
+  approval_mode: "sap" | "portal" | null;
+  portal_approval: PortalApproval | string | null;
   sap_draft_entry: number | null;
   sap_doc_entry: number | null;
   sap_doc_num: number | null;
@@ -142,7 +155,7 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const DOC_COLS = `d.id, d.doc_kind, d.source, d.doc_number, d.status, d.sap_card_code, d.card_name, d.bill_to_code, d.ship_to_code, d.inv_name, d.inv_tax_no, d.inv_address,
   DATE_FORMAT(d.doc_date, '%Y-%m-%d') AS doc_date, DATE_FORMAT(d.due_date, '%Y-%m-%d') AS due_date, DATE_FORMAT(d.tax_date, '%Y-%m-%d') AS tax_date,
   d.num_at_card, d.comments, d.warehouse_code, d.department_code, d.total_before_vat, d.vat_sum, d.doc_total, d.created_by, d.created_by_label,
-  d.posted_sap_user, d.posted_at, d.wdd_code, d.wtm_code, d.template_name, d.sap_draft_entry, d.sap_doc_entry, d.sap_doc_num, d.sap_doc_no, d.brand_code, d.last_error, d.created_at, d.updated_at`;
+  d.posted_sap_user, d.posted_at, d.wdd_code, d.wtm_code, d.template_name, d.approval_mode, d.portal_approval, d.sap_draft_entry, d.sap_doc_entry, d.sap_doc_num, d.sap_doc_no, d.brand_code, d.last_error, d.created_at, d.updated_at`;
 
 /** "S08" → 8, "S10" → 10, "S00" → 0 (IMV's output VAT codes carry their rate); null when unknown. */
 export function vatRateOf(code: string | null | undefined): number | null {
@@ -273,6 +286,94 @@ export async function getArApprovalRequest(wddCode: number): Promise<ArApprovalR
 export function isMyTurn(req: ArApprovalRequest | null, sapUser: string | null): boolean {
   if (!req || req.status !== "W" || !sapUser) return false;
   return req.stages.some((st) => st.wstCode === req.currStep && st.lines.some((l) => lc(l.userCode) === lc(sapUser) && l.status === "W"));
+}
+
+// ── Portal-run approval (approval_mode 'portal') ───────────────────────
+
+interface PortalStage { wstCode: number; name: string; sortId: number; maxReqr: number; maxRejReqr: number; authorizers: { userCode: string; userName: string | null }[] }
+export interface PortalApproval {
+  templates: { wtmCode: number; name: string; stages: PortalStage[] }[];
+  decisions: { wstCode: number; userCode: string; decision: "Y" | "N"; remarks: string | null; at: string }[];
+}
+
+function parsePortalApproval(v: unknown): PortalApproval | null {
+  if (!v) return null;
+  try {
+    const o = (typeof v === "string" ? JSON.parse(v) : v) as PortalApproval;
+    return Array.isArray(o?.templates) ? { templates: o.templates, decisions: Array.isArray(o.decisions) ? o.decisions : [] } : null;
+  } catch { return null; }
+}
+
+/** The templates' stages and authorizers as SAP defines them now (OWTM / WTM2 / OWST / WST1). */
+async function arTemplateStages(wtmCodes: number[]): Promise<PortalApproval["templates"]> {
+  const codes = [...new Set(wtmCodes.filter((c) => Number.isInteger(c) && c > 0))];
+  if (!codes.length) return [];
+  const s = S();
+  const [tpls, stages, auths] = await Promise.all([
+    queryHana<Record<string, unknown>>(`SELECT "WtmCode", "Name" FROM ${s}."OWTM" WHERE "WtmCode" IN (${codes.join(",")})`),
+    queryHana<Record<string, unknown>>(
+      `SELECT W."WtmCode", W."WstCode", W."SortId", S."Name", S."MaxReqr", S."MaxRejReqr" FROM ${s}."WTM2" W JOIN ${s}."OWST" S ON S."WstCode" = W."WstCode"
+        WHERE W."WtmCode" IN (${codes.join(",")}) ORDER BY W."WtmCode", W."SortId"`
+    ),
+    queryHana<Record<string, unknown>>(
+      `SELECT A."WstCode", U."USER_CODE", U."U_NAME" FROM ${s}."WST1" A JOIN ${s}."OUSR" U ON U."USERID" = A."UserID"
+        WHERE A."WstCode" IN (SELECT "WstCode" FROM ${s}."WTM2" WHERE "WtmCode" IN (${codes.join(",")})) ORDER BY U."USER_CODE"`
+    ),
+  ]);
+  return codes.map((code) => ({
+    wtmCode: code,
+    name: String(tpls.find((t) => num(t.WtmCode) === code)?.Name ?? `Template ${code}`),
+    stages: stages.filter((st) => num(st.WtmCode) === code).map((st) => ({
+      wstCode: num(st.WstCode), name: String(st.Name), sortId: num(st.SortId),
+      maxReqr: Math.max(1, num(st.MaxReqr)), maxRejReqr: Math.max(1, num(st.MaxRejReqr)),
+      authorizers: auths.filter((a) => num(a.WstCode) === num(st.WstCode)).map((a) => ({ userCode: String(a.USER_CODE), userName: str(a.U_NAME) })),
+    })),
+  }));
+}
+
+/**
+ * A portal-run approval in the shape of SAP's approval request, so the screens,
+ * isMyTurn, notifications and "AR Approve" treat both alike. Stages run in
+ * template order; a stage passes with MaxReqr approvals and rejects the
+ * invoice with MaxRejReqr rejections. wddCode 0 = not an SAP request.
+ */
+export function portalRequest(doc: Pick<ArDocRow, "portal_approval" | "sap_draft_entry" | "sap_doc_entry" | "status">): ArApprovalRequest | null {
+  const pa = parsePortalApproval(doc.portal_approval);
+  if (!pa || !pa.templates.length) return null;
+  let status: ArApprovalRequest["status"] = "W";
+  let currStep = 0;
+  let open = false;
+  const stages: ArApprovalRequest["stages"] = [];
+  for (const t of pa.templates) {
+    for (const st of t.stages) {
+      const decs = pa.decisions.filter((d) => d.wstCode === st.wstCode);
+      const yes = decs.filter((d) => d.decision === "Y").length;
+      const no = decs.filter((d) => d.decision === "N").length;
+      stages.push({
+        wstCode: st.wstCode, name: st.name, sortId: stages.length + 1, maxReqr: st.maxReqr, maxRejReqr: st.maxRejReqr,
+        lines: st.authorizers.map((a) => {
+          const d = decs.find((x) => lc(x.userCode) === lc(a.userCode));
+          return { userCode: a.userCode, userName: a.userName, status: d ? d.decision : "W", remarks: d?.remarks ?? null, updatedAt: d ? d.at.slice(0, 16).replace("T", " ") : null };
+        }),
+      });
+      if (status === "W" && !open) {
+        if (no >= st.maxRejReqr) { status = "N"; currStep = st.wstCode; }
+        else if (yes < st.maxReqr) { open = true; currStep = st.wstCode; }
+      }
+    }
+  }
+  if (status === "W" && !open) status = "Y";
+  if (doc.status === "cancelled") status = "C";
+  return {
+    wddCode: 0, wtmCode: pa.templates[0].wtmCode, templateName: pa.templates.map((t) => t.name).join(" + "),
+    status, currStep, draftEntry: doc.sap_draft_entry ?? null, docEntry: doc.sap_doc_entry ?? null, stages,
+  };
+}
+
+/** The approval this AR document follows: SAP's request (wdd_code) or the portal-run one. */
+async function approvalOf(doc: ArDocRow): Promise<ArApprovalRequest | null> {
+  if (doc.approval_mode === "portal") return portalRequest(doc);
+  return doc.wdd_code ? getArApprovalRequest(doc.wdd_code).catch(() => null) : null;
 }
 
 /** Which AR approval requests (by WddCode) wait for this SAP user now. */
@@ -493,7 +594,11 @@ export async function listArInvoices(session: AdminSession, f: ArListFilters) {
   await refreshSapFields(rows).catch((e) => console.warn("[AR Invoice] AR. No / brand refresh failed:", e));
   const me = await mySapUserCode(session);
   const waiting = await waitingForUser(rows.filter((r) => r.status === "pending_approval").map((r) => r.wdd_code ?? 0), me).catch(() => new Set<number>());
-  const list = rows.map((r) => ({ ...r, waitingForMe: r.status === "pending_approval" && waiting.has(r.wdd_code ?? 0) }));
+  const list = rows.map((r) => ({
+    ...r,
+    portal_approval: null, // internal — the list doesn't need it
+    waitingForMe: r.status === "pending_approval" && (r.approval_mode === "portal" ? isMyTurn(portalRequest(r), me) : waiting.has(r.wdd_code ?? 0)),
+  }));
   return {
     sapUser: me,
     brands: await arBrandOptions(session),
@@ -560,7 +665,7 @@ export async function getArInvoice(session: AdminSession, id: number) {
     ),
     mySapUserCode(session),
   ]);
-  const approval = doc.wdd_code ? await getArApprovalRequest(doc.wdd_code).catch(() => null) : null;
+  const approval = await approvalOf(doc);
   if (session.adminId) await markNotificationsRead(session.adminId, { arDocId: id }).catch(() => undefined);
   const fromPortal = doc.source !== "sap";
   // A request raised in the SAP client belongs to its SAP originator (posted_sap_user).
@@ -591,9 +696,8 @@ async function nextDocNumber(): Promise<string> {
   return `${prefix}${String(num(r?.n) + 1).padStart(3, "0")}`;
 }
 
-/** Create (id = null) or update a portal AR Invoice — validated against the user's permissions and SAP's item master. */
-export async function saveArInvoice(session: AdminSession, id: number | null, input: ArInvoiceInput): Promise<number> {
-  const companyId = getCompanyId();
+/** Checks an AR Invoice against the user's permissions and SAP's item master — what saveArInvoice would write. */
+export async function prepareArInvoice(session: AdminSession, id: number | null, input: ArInvoiceInput) {
   let existing: ArDocRow | null = null;
   if (id !== null) {
     existing = await loadDoc(session, id);
@@ -645,6 +749,13 @@ export async function saveArInvoice(session: AdminSession, id: number | null, in
   });
   const totalBefore = clean.reduce((t, l) => t + l.line_total, 0);
   const vatSum = clean.reduce((t, l) => t + Math.round((l.line_total * (vatRateOf(l.vat_group) ?? 0)) / 100), 0);
+  return { existing, customer, taxDate, wh, headerBrand, clean, totalBefore, vatSum };
+}
+
+/** Create (id = null) or update a portal AR Invoice — validated against the user's permissions and SAP's item master. */
+export async function saveArInvoice(session: AdminSession, id: number | null, input: ArInvoiceInput): Promise<number> {
+  const companyId = getCompanyId();
+  const { existing, customer, taxDate, wh, headerBrand, clean, totalBefore, vatSum } = await prepareArInvoice(session, id, input);
   const trim = (v: string | null | undefined, n: number) => (v ?? "").trim().slice(0, n) || null;
   const header = [
     customer.sap_card_code, customer.card_name, trim(input.billToCode, 100), trim(input.shipToCode, 100),
@@ -851,6 +962,13 @@ export async function postArInvoice(session: AdminSession, id: number): Promise<
   const sapUser = sapSession.sapUser;
 
   const payload = await buildPayload(session, doc, lines);
+
+  // An AR approval template applies to this user + invoice (originator + condition, as SAP decides)
+  // → portal-run approval: save it in SAP as a Draft and wait for the template's authorizers.
+  const preview = await previewArTemplates(doc.sap_card_code, lines.map((l) => l.item_code), sapUser);
+  const needed = preview.filter((p) => p.applies !== false); // null = couldn't be evaluated → ask for approval, to be safe
+  if (needed.length) return postForPortalApproval(session, doc, payload, needed.map((p) => p.wtmCode), sapUser);
+
   const before = await maxArWdd();
   let result: { DocEntry?: number; DocNum?: number } | null = null;
   let sapError: string | null = null;
@@ -894,6 +1012,90 @@ export async function postArInvoice(session: AdminSession, id: number): Promise<
   throw new ArError(`SAP refused the AR Invoice: ${msg}`, 502, "sap_error");
 }
 
+/**
+ * "Post to SAP" when an approval template applies: the invoice goes to SAP as a
+ * Draft (SAP assigns its U_DocNo) and waits on the portal as "Adm Confirmed"
+ * for the template's stage authorizers. A previous draft of this document
+ * (posted, then rejected and edited) is removed first.
+ */
+async function postForPortalApproval(session: AdminSession, doc: ArDocRow, payload: Record<string, unknown>, wtmCodes: number[], sapUser: string): Promise<PostResult> {
+  const companyId = getCompanyId();
+  const id = doc.id;
+  const templates = (await arTemplateStages(wtmCodes)).filter((t) => t.stages.length > 0);
+  if (!templates.length) throw new ArError("The SAP approval template has no stages — check it in SAP", 409);
+  if (doc.approval_mode === "portal" && doc.sap_draft_entry && !doc.sap_doc_entry) {
+    await sapRequestAsUser(session.adminId!, "DELETE", `/Drafts(${Number(doc.sap_draft_entry)})`).catch((e) =>
+      console.warn(`[AR Invoice] removing old draft ${doc.sap_draft_entry} failed:`, e instanceof Error ? e.message : e));
+  }
+  let draft: { DocEntry?: number; DocNum?: number; U_DocNo?: string | null } | null = null;
+  try {
+    draft = await sapRequestAsUser<{ DocEntry: number; DocNum: number; U_DocNo?: string | null }>(session.adminId!, "POST", "/Drafts", { ...payload, DocObjectCode: "oInvoices" });
+  } catch (e) {
+    if (e instanceof SapPasswordInvalidError || e instanceof SapSessionExpiredError) credentialError(e);
+    const msg = e instanceof Error ? e.message : String(e);
+    await query(`UPDATE ar_documents SET status = 'failed', last_error = ?, posted_sap_user = ? WHERE company_id = ? AND id = ?`, [msg.slice(0, 2000), sapUser, companyId, id]);
+    await event(id, "failed", session, sapUser, msg);
+    throw new ArError(`SAP refused the AR Invoice draft: ${msg}`, 502, "sap_error");
+  }
+  const draftEntry = Number(draft?.DocEntry) || null;
+  if (!draftEntry) throw new ArError("SAP returned no draft", 502, "sap_error");
+  // The AR. No SAP assigned to the draft (read back — the add response may not carry UDFs).
+  let docNo = str(draft?.U_DocNo);
+  if (!docNo) {
+    docNo = await sapRequestAsUser<Record<string, unknown>>(session.adminId!, "GET", `/Drafts(${draftEntry})?$select=DocEntry,U_DocNo`)
+      .then((d) => str(d.U_DocNo)).catch(() => null);
+  }
+  const approval: PortalApproval = { templates, decisions: [] };
+  await query(
+    `UPDATE ar_documents SET status = 'pending_approval', sap_db = ?, approval_mode = 'portal', portal_approval = ?, wdd_code = NULL, wtm_code = ?, template_name = ?,
+            sap_draft_entry = ?, sap_doc_no = ?, posted_by = ?, posted_sap_user = ?, sap_doc_entry = NULL, sap_doc_num = NULL, last_error = NULL
+      WHERE company_id = ? AND id = ?`,
+    [getHanaSchema(), JSON.stringify(approval), templates[0].wtmCode, templates.map((t) => t.name).join(" + ").slice(0, 100),
+      draftEntry, docNo, session.adminId, sapUser, companyId, id]
+  );
+  const req = portalRequest({ portal_approval: approval, sap_draft_entry: draftEntry, sap_doc_entry: null, status: "pending_approval" })!;
+  const waitingFor = req.stages.find((st) => st.wstCode === req.currStep)?.lines.map((l) => l.userCode) ?? [];
+  await event(id, "sent_for_approval", session, sapUser,
+    `Adm Confirmed — SAP draft ${draftEntry}${docNo ? ` (${docNo})` : ""} · ${req.templateName} · waiting for ${waitingFor.join(", ") || "—"}`);
+  await notifyStage(id, req, { actor: session.userid || session.email, excludeAdminId: session.adminId }).catch((e) => console.warn("[AR Invoice] notify failed:", e));
+  return {
+    status: "pending_approval", sapDocNum: null, wddCode: null, templateName: req.templateName, waitingFor,
+    message: `Adm Confirmed — saved in SAP as a draft${docNo ? ` (AR. No ${docNo})` : ""}; waiting for ${waitingFor.join(", ") || "the approvers"} to approve (${req.templateName}).`,
+  };
+}
+
+/** Approve / Reject a portal-run approval as the signed-in authorizer; the final approval adds the SAP draft as the invoice. */
+async function decidePortalApproval(session: AdminSession, doc: ArDocRow, decision: "approved" | "rejected", remarks: string) {
+  const companyId = getCompanyId();
+  const req = portalRequest(doc);
+  const me = await mySapUserCode(session);
+  if (doc.status !== "pending_approval" || !isMyTurn(req, me)) throw new ArError("This AR Invoice isn't waiting for your approval", 403, "not_your_stage");
+  let sapSession: { sapUser: string } | null;
+  try { sapSession = await ensureUserSapSession(session.adminId!); } catch (e) { credentialError(e); }
+  if (!sapSession) throw new ArError("Save your SAP user and password in My Profile first", 428, "sap_login_required");
+  if (lc(sapSession.sapUser) !== lc(me)) throw new ArError(`Signed in to SAP as ${sapSession.sapUser}, but your SAP user is ${me}. Update it in My Profile.`, 409);
+
+  const pa = parsePortalApproval(doc.portal_approval)!;
+  pa.decisions.push({ wstCode: req!.currStep, userCode: me!, decision: decision === "approved" ? "Y" : "N", remarks: remarks.slice(0, 254) || null, at: new Date().toISOString() });
+  const after = portalRequest({ ...doc, portal_approval: pa })!;
+  const nextStatus: ArStatus = after.status === "N" ? "rejected" : after.status === "Y" ? "approved" : "pending_approval";
+  await query(`UPDATE ar_documents SET portal_approval = ?, status = ? WHERE company_id = ? AND id = ?`, [JSON.stringify(pa), nextStatus, companyId, doc.id]);
+  const stageName = req!.stages.find((st) => st.wstCode === req!.currStep)?.name;
+  await event(doc.id, decision === "approved" ? "approved" : "rejected", session, sapSession.sapUser, `${stageName ? `${stageName}: ` : ""}${remarks || ""}`.trim() || null);
+
+  if (after.status === "N") return { message: "Rejected. The creator can edit the invoice and post it again." };
+  if (after.status === "Y") {
+    const gen = await generateFromDraft(session, { ...doc, status: "approved" }, after, sapSession.sapUser);
+    return { message: gen.ok ? `Final approval — ${gen.message}` : `Final approval done, but adding the invoice failed: ${gen.message}. Press "Add to SAP" to try again.` };
+  }
+  const waiting = after.stages.find((st) => st.wstCode === after.currStep)?.lines.filter((l) => l.status === "W").map((l) => l.userCode) ?? [];
+  if (after.currStep !== req!.currStep) {
+    await notifyStage(doc.id, after, { actor: sapSession.sapUser, excludeAdminId: session.adminId, reason: stageName ? `${stageName} approved` : null })
+      .catch((e) => console.warn("[AR Invoice] notify failed:", e));
+  }
+  return { message: `Approved. Now waiting for ${waiting.join(", ") || "the next stage"}.` };
+}
+
 /** Add the approved Draft as the A/R Invoice (as the user's own SAP user). */
 async function generateFromDraft(session: AdminSession, doc: ArDocRow, req: ArApprovalRequest, sapUser: string): Promise<{ ok: boolean; message: string }> {
   const draft = req.draftEntry ?? doc.sap_draft_entry;
@@ -932,6 +1134,11 @@ async function generateFromDraft(session: AdminSession, doc: ArDocRow, req: ArAp
 export async function decideArInvoice(session: AdminSession, id: number, decision: "approved" | "rejected", remarksRaw: string) {
   const doc = await loadDoc(session, id);
   if (!doc) throw new ArError("AR Invoice not found", 404);
+  if (doc.approval_mode === "portal") {
+    const r = remarksRaw.trim();
+    if (decision === "rejected" && !r) throw new ArError("Write the reason for rejecting");
+    return decidePortalApproval(session, doc, decision, r);
+  }
   if (!doc.wdd_code) throw new ArError("This AR Invoice has no SAP approval request", 409);
   const req = await getArApprovalRequest(doc.wdd_code);
   const me = await mySapUserCode(session);

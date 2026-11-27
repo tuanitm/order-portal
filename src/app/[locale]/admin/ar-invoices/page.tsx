@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { styles, btn, LoadingOrEmpty } from "../adminUi";
 import { useStaffBase, useAdminSession } from "../layout";
 import { ArStatusBadge, AR_STATUS, money, dmy } from "./arUi";
+import { ArImportDialog } from "./ArImportDialog";
 
 /**
  * AR Invoice — invoices entered on the portal and added to SAP as A/R
@@ -29,6 +30,7 @@ export default function ArInvoicesPage() {
   const [waitingCount, setWaitingCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [importing, setImporting] = useState(false);
 
   const load = useCallback(async (q: typeof blank) => {
     setLoading(true);
@@ -111,8 +113,10 @@ export default function ArInvoicesPage() {
               </button>
             )}
             <a href={`${base}/ar-invoices/new`} style={{ ...btn(canApprove ? "secondary" : "primary"), textDecoration: "none" }}>+ New AR Invoice</a>
+            <button type="button" style={btn("secondary")} onClick={() => setImporting(true)} title="Create many draft AR Invoices from an Excel file — one per customer">📥 Import Excel</button>
           </div>
         </div>
+        {importing && <ArImportDialog base={base} onClose={() => setImporting(false)} onCreated={() => load(applied)} />}
 
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "1rem", marginBottom: "1rem" }}>
           <button type="button" onClick={() => run({ ...f, waiting: !f.waiting })}
