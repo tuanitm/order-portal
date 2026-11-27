@@ -49,6 +49,15 @@ import { notifyArApprovalNeeded, markNotificationsRead } from "@/lib/staffNotifi
 export type ArStatus = "draft" | "pending_approval" | "approved" | "posted" | "rejected" | "failed" | "cancelled";
 const EDITABLE: ArStatus[] = ["draft", "failed", "rejected", "cancelled"];
 
+/**
+ * "Adm Confirmed" (portal-run approval) and not yet finally approved by the
+ * accountant: the creator may still change it — Save updates the SAP draft in
+ * place (same DocEntry / AR. No) and the approval starts over.
+ */
+function isPendingEditable(doc: Pick<ArDocRow, "status" | "approval_mode" | "sap_draft_entry" | "sap_doc_entry">): boolean {
+  return doc.status === "pending_approval" && doc.approval_mode === "portal" && !!doc.sap_draft_entry && !doc.sap_doc_entry;
+}
+
 export interface ArLineInput {
   itemCode: string;
   quantity: number;
@@ -674,7 +683,9 @@ export async function getArInvoice(session: AdminSession, id: number) {
   return {
     doc, lines, events, approval, sapUser: me,
     can: {
-      edit: fromPortal && isOwner && EDITABLE.includes(doc.status),
+      edit: fromPortal && isOwner && (EDITABLE.includes(doc.status) || isPendingEditable(doc)),
+      // Adm Confirmed, not approved yet: Save also updates the SAP draft and restarts the approval.
+      updateSap: fromPortal && isOwner && isPendingEditable(doc),
       post: fromPortal && isOwner && EDITABLE.includes(doc.status),
       delete: fromPortal && isOwner && ["draft", "failed"].includes(doc.status),
       decide: isMyTurn(approval, me),
@@ -704,7 +715,9 @@ export async function prepareArInvoice(session: AdminSession, id: number | null,
     if (!existing) throw new ArError("AR Invoice not found", 404);
     if (existing.source === "sap") throw new ArError("This AR Invoice was entered in SAP — change it in SAP", 409);
     if (!(session.isSuperAdmin || existing.created_by === session.adminId)) throw new ArError("Only the person who created this AR Invoice can change it", 403);
-    if (!EDITABLE.includes(existing.status)) throw new ArError(`An AR Invoice that is ${existing.status.replace("_", " ")} can't be changed`, 409);
+    if (!EDITABLE.includes(existing.status) && !isPendingEditable(existing)) {
+      throw new ArError(`An AR Invoice that is ${existing.status === "pending_approval" ? "waiting for SAP approval" : existing.status.replace("_", " ")} can't be changed`, 409);
+    }
   }
   const cardCode = String(input.cardCode ?? "").trim();
   const customer = cardCode ? await getCustomerForAdmin(session, cardCode) : null;
@@ -777,10 +790,10 @@ export async function saveArInvoice(session: AdminSession, id: number | null, in
     await query(
       `UPDATE ar_documents SET sap_card_code = ?, card_name = ?, bill_to_code = ?, ship_to_code = ?, inv_name = ?, inv_tax_no = ?, inv_address = ?,
          doc_date = ?, due_date = ?, tax_date = ?, num_at_card = ?, comments = ?, warehouse_code = ?, department_code = ?, total_before_vat = ?, vat_sum = ?, doc_total = ?,
-         status = 'draft', last_error = NULL WHERE company_id = ? AND id = ?`,
-      [...header, companyId, docId]
+         status = ?, last_error = NULL WHERE company_id = ? AND id = ?`,
+      [...header, existing && isPendingEditable(existing) ? "pending_approval" : "draft", companyId, docId]
     );
-    await event(docId, "updated", session, null, existing?.status !== "draft" ? `was ${existing?.status}` : null);
+    await event(docId, "updated", session, null, existing?.status !== "draft" ? `was ${existing?.status === "pending_approval" ? "Adm Confirmed" : existing?.status}` : null);
   }
   const lineBrands = [...new Set(clean.map((l) => l.brand_code).filter(Boolean))];
   await query(`UPDATE ar_documents SET brand_code = ? WHERE company_id = ? AND id = ?`, [headerBrand ?? (lineBrands.length === 1 ? lineBrands[0] : null), companyId, docId]);
@@ -793,6 +806,73 @@ export async function saveArInvoice(session: AdminSession, id: number | null, in
     );
   }
   return docId;
+}
+
+/**
+ * Save an existing AR Invoice; when it is Adm Confirmed (portal approval, not yet
+ * approved) the SAP draft is updated too and the approval restarts.
+ */
+export async function updateArInvoice(session: AdminSession, id: number, input: ArInvoiceInput): Promise<{ id: number; message: string | null }> {
+  const before = await loadDoc(session, id);
+  const docId = await saveArInvoice(session, id, input);
+  if (!before || !isPendingEditable(before)) return { id: docId, message: null };
+  return { id: docId, message: await updatePortalDraft(session, docId) };
+}
+
+/**
+ * Push the saved content to the invoice's SAP draft (lines replaced —
+ * B1S-ReplaceCollectionsOnPatch; DocEntry and U_DocNo stay), as the creator's
+ * SAP user. The templates are evaluated again and every decision so far is
+ * cleared: the approvers approve the changed invoice. If SAP refuses, the
+ * invoice becomes "failed" — Post to SAP then replaces the draft.
+ */
+async function updatePortalDraft(session: AdminSession, id: number): Promise<string> {
+  const companyId = getCompanyId();
+  const doc = await loadDoc(session, id);
+  if (!doc || !doc.sap_draft_entry) throw new ArError("AR Invoice not found", 404);
+  const lines = await query<ArLineRow[]>(
+    `SELECT line_no, item_code, item_name, uom, quantity, unit_price, discount_pct, vat_group, brand_code, item_tax_class, description, line_total, rbt_ref, rbt_code, rbt_name
+       FROM ar_document_lines WHERE company_id = ? AND ar_document_id = ? ORDER BY line_no`, [companyId, id]
+  );
+  let sapSession: { sapUser: string } | null;
+  try { sapSession = await ensureUserSapSession(session.adminId!); } catch (e) { credentialError(e); }
+  if (!sapSession) throw new ArError("Save your SAP user and password in My Profile first", 428, "sap_login_required");
+  const sapUser = sapSession.sapUser;
+  const draftEntry = Number(doc.sap_draft_entry);
+
+  const payload = await buildPayload(session, doc, lines);
+  try {
+    await sapRequestAsUser(session.adminId!, "PATCH", `/Drafts(${draftEntry})`, payload, { "B1S-ReplaceCollectionsOnPatch": "true" });
+  } catch (e) {
+    if (e instanceof SapPasswordInvalidError || e instanceof SapSessionExpiredError) credentialError(e);
+    const msg = e instanceof Error ? e.message : String(e);
+    await query(`UPDATE ar_documents SET status = 'failed', last_error = ? WHERE company_id = ? AND id = ?`, [`Updating SAP draft ${draftEntry}: ${msg}`.slice(0, 2000), companyId, id]);
+    await event(id, "failed", session, sapUser, `Update SAP draft ${draftEntry}: ${msg}`);
+    throw new ArError(`Saved on the portal, but SAP refused the draft update: ${msg}. Press "Save & Post to SAP" to send it again.`, 502, "sap_error");
+  }
+
+  // Approval starts over — on the templates that apply to the changed invoice (the old ones if none would now).
+  const preview = await previewArTemplates(doc.sap_card_code, lines.map((l) => l.item_code), sapUser);
+  const needed = preview.filter((p) => p.applies !== false).map((p) => p.wtmCode);
+  const old = parsePortalApproval(doc.portal_approval);
+  const fresh = needed.length ? (await arTemplateStages(needed)).filter((t) => t.stages.length > 0) : [];
+  const templates = fresh.length ? fresh : old?.templates ?? [];
+  const approval: PortalApproval = { templates, decisions: [] };
+  const docNo = await sapRequestAsUser<Record<string, unknown>>(session.adminId!, "GET", `/Drafts(${draftEntry})?$select=DocEntry,U_DocNo`)
+    .then((d) => str(d.U_DocNo)).catch(() => null);
+  await query(
+    `UPDATE ar_documents SET status = 'pending_approval', portal_approval = ?, wtm_code = ?, template_name = ?, sap_doc_no = COALESCE(?, sap_doc_no),
+            posted_sap_user = ?, last_error = NULL WHERE company_id = ? AND id = ?`,
+    [JSON.stringify(approval), templates[0]?.wtmCode ?? null, templates.map((t) => t.name).join(" + ").slice(0, 100) || null, docNo, sapUser, companyId, id]
+  );
+  const req = portalRequest({ portal_approval: approval, sap_draft_entry: draftEntry, sap_doc_entry: null, status: "pending_approval" });
+  const waitingFor = req?.stages.find((st) => st.wstCode === req.currStep)?.lines.map((l) => l.userCode) ?? [];
+  await event(id, "updated_in_sap", session, sapUser, `SAP draft ${draftEntry}${docNo ? ` (${docNo})` : ""} updated · approval restarted · waiting for ${waitingFor.join(", ") || "—"}`);
+  if (req) {
+    await notifyStage(id, req, { actor: session.userid || session.email, excludeAdminId: session.adminId, reason: "updated by the creator" })
+      .catch((e) => console.warn("[AR Invoice] notify failed:", e));
+  }
+  return `Saved — SAP draft ${draftEntry}${docNo ? ` (AR. No ${docNo})` : ""} updated. The approval starts over: waiting for ${waitingFor.join(", ") || "the approvers"}.`;
 }
 
 export async function deleteArInvoice(session: AdminSession, id: number) {
@@ -1016,20 +1096,29 @@ export async function postArInvoice(session: AdminSession, id: number): Promise<
  * "Post to SAP" when an approval template applies: the invoice goes to SAP as a
  * Draft (SAP assigns its U_DocNo) and waits on the portal as "Adm Confirmed"
  * for the template's stage authorizers. A previous draft of this document
- * (posted, then rejected and edited) is removed first.
+ * (posted, then rejected and edited) is updated in place instead.
  */
 async function postForPortalApproval(session: AdminSession, doc: ArDocRow, payload: Record<string, unknown>, wtmCodes: number[], sapUser: string): Promise<PostResult> {
   const companyId = getCompanyId();
   const id = doc.id;
   const templates = (await arTemplateStages(wtmCodes)).filter((t) => t.stages.length > 0);
   if (!templates.length) throw new ArError("The SAP approval template has no stages — check it in SAP", 409);
-  if (doc.approval_mode === "portal" && doc.sap_draft_entry && !doc.sap_doc_entry) {
-    await sapRequestAsUser(session.adminId!, "DELETE", `/Drafts(${Number(doc.sap_draft_entry)})`).catch((e) =>
-      console.warn(`[AR Invoice] removing old draft ${doc.sap_draft_entry} failed:`, e instanceof Error ? e.message : e));
-  }
   let draft: { DocEntry?: number; DocNum?: number; U_DocNo?: string | null } | null = null;
+  // Posted before (then rejected / failed and edited): update that same SAP draft, so it keeps its
+  // DocEntry and AR. No; only when it's gone (deleted in SAP) is a new draft created.
+  if (doc.approval_mode === "portal" && doc.sap_draft_entry && !doc.sap_doc_entry) {
+    const old = Number(doc.sap_draft_entry);
+    try {
+      await sapRequestAsUser(session.adminId!, "PATCH", `/Drafts(${old})`, payload, { "B1S-ReplaceCollectionsOnPatch": "true" });
+      draft = { DocEntry: old };
+    } catch (e) {
+      if (e instanceof SapPasswordInvalidError || e instanceof SapSessionExpiredError) credentialError(e);
+      console.warn(`[AR Invoice] updating old draft ${old} failed — creating a new one:`, e instanceof Error ? e.message : e);
+      await sapRequestAsUser(session.adminId!, "DELETE", `/Drafts(${old})`).catch(() => undefined);
+    }
+  }
   try {
-    draft = await sapRequestAsUser<{ DocEntry: number; DocNum: number; U_DocNo?: string | null }>(session.adminId!, "POST", "/Drafts", { ...payload, DocObjectCode: "oInvoices" });
+    if (!draft) draft = await sapRequestAsUser<{ DocEntry: number; DocNum: number; U_DocNo?: string | null }>(session.adminId!, "POST", "/Drafts", { ...payload, DocObjectCode: "oInvoices" });
   } catch (e) {
     if (e instanceof SapPasswordInvalidError || e instanceof SapSessionExpiredError) credentialError(e);
     const msg = e instanceof Error ? e.message : String(e);

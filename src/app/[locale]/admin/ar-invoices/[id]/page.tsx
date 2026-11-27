@@ -31,7 +31,7 @@ interface Detail {
   events: { action: string; admin_label: string | null; sap_user_code: string | null; notes: string | null; created_at: string }[];
   approval: Approval | null;
   sapUser: string | null;
-  can: { edit: boolean; post: boolean; delete: boolean; decide: boolean; generate: boolean };
+  can: { edit: boolean; post: boolean; delete: boolean; decide: boolean; generate: boolean; updateSap?: boolean };
 }
 interface Preview { name: string; applies: boolean | null; approvers: string[]; note?: string }
 
@@ -289,7 +289,7 @@ export default function ArInvoicePage() {
       if (posted) sessionStorageSet(`arNotice:${saved.id}`, posted.message);
     }
     if (isNew) window.location.href = `${base}/ar-invoices/${saved.id}`;
-    else { await load(); if (!andPost) setNotice("Saved."); else setNotice(sessionStorageTake(`arNotice:${saved.id}`) ?? ""); }
+    else { await load(); if (!andPost) setNotice(saved.message || "Saved."); else setNotice(sessionStorageTake(`arNotice:${saved.id}`) ?? ""); }
   };
 
   useEffect(() => { if (!isNew) { const m = sessionStorageTake(`arNotice:${id}`); if (m) setNotice(m); } }, [id, isNew]);
@@ -558,8 +558,18 @@ export default function ArInvoicePage() {
             </div>
             <div style={{ display: "flex", gap: 8 }}>
               {!isNew && detail?.can.delete && <button type="button" style={btn("danger", !!busy)} disabled={!!busy} onClick={remove}>Delete</button>}
-              <button type="button" style={btn("secondary", !!busy || !customer)} disabled={!!busy || !customer} onClick={() => save(false)}>{busy === "save" ? "Saving…" : "Save draft"}</button>
-              <button type="button" style={btn("primary", !!busy || !customer || !itemCodes)} disabled={!!busy || !customer || !itemCodes} onClick={() => save(true)}>{busy === "post" ? "Posting…" : "Save & Post to SAP"}</button>
+              {detail?.can.updateSap ? (
+                // Adm Confirmed, not approved yet: update the SAP draft; the approval starts over.
+                <button type="button" style={btn("primary", !!busy || !customer || !itemCodes)} disabled={!!busy || !customer || !itemCodes}
+                  onClick={() => { if (confirm("Save the changes and update the SAP draft?\n\nThe AR. No stays the same; the approval starts over and the approvers are notified again.")) save(false); }}>
+                  {busy === "save" ? "Updating…" : "Save & Update SAP draft"}
+                </button>
+              ) : (
+                <>
+                  <button type="button" style={btn("secondary", !!busy || !customer)} disabled={!!busy || !customer} onClick={() => save(false)}>{busy === "save" ? "Saving…" : "Save draft"}</button>
+                  <button type="button" style={btn("primary", !!busy || !customer || !itemCodes)} disabled={!!busy || !customer || !itemCodes} onClick={() => save(true)}>{busy === "post" ? "Posting…" : "Save & Post to SAP"}</button>
+                </>
+              )}
             </div>
           </div>
         )}
