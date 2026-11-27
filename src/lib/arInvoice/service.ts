@@ -556,7 +556,10 @@ async function refreshSapFields(rows: ArDocRow[]) {
     try {
       const d = await getSapClient().getDocument<Record<string, unknown>>("Drafts", Number(r.sap_draft_entry));
       r.sap_doc_no = str(d.U_DocNo);
-      if (r.sap_doc_no) await query(`UPDATE ar_documents SET sap_doc_no = ? WHERE company_id = ? AND id = ?`, [r.sap_doc_no, getCompanyId(), r.id]);
+      if (r.sap_doc_no) {
+        await query(`UPDATE ar_documents SET sap_doc_no = ? WHERE company_id = ? AND id = ?`, [r.sap_doc_no, getCompanyId(), r.id]);
+        await adoptArNo(r.id, r.sap_doc_no);
+      }
     } catch { /* draft gone / SAP down — try next time */ }
   }
   const todo = rows.filter((r) => r.sap_doc_entry && r.status === "posted" && (!r.sap_doc_no || !r.brand_code || !r.sap_doc_num));
@@ -573,6 +576,7 @@ async function refreshSapFields(rows: ArDocRow[]) {
     r.brand_code = str(x.U_ProdBrand) ?? r.brand_code;
     await query(`UPDATE ar_documents SET sap_doc_num = ?, sap_doc_no = ?, brand_code = ? WHERE company_id = ? AND id = ?`,
       [r.sap_doc_num, r.sap_doc_no, r.brand_code, getCompanyId(), r.id]);
+    await adoptArNo(r.id, r.sap_doc_no);
   }
 }
 
@@ -636,6 +640,15 @@ async function syncFromSap(doc: ArDocRow): Promise<Partial<ArDocRow>> {
   if (!req) return {};
   let next: ArStatus = doc.status;
   const patch: Partial<ArDocRow> = {};
+  // Approved and already added as the invoice, but OWDD doesn't carry its DocEntry (seen in IMV):
+  // the invoice made from this request's draft is the answer.
+  if ((req.status === "Y" || req.status === "P" || req.status === "A") && !req.docEntry) {
+    const draft = req.draftEntry ?? doc.sap_draft_entry;
+    if (draft) {
+      const [inv] = await queryHana<Record<string, unknown>>(`SELECT "DocEntry" FROM ${S()}."OINV" WHERE "draftKey" = ${Number(draft)}`).catch(() => []);
+      if (inv) req.docEntry = num(inv.DocEntry);
+    }
+  }
   if (req.status === "W") next = "pending_approval";
   // Y = approved; once the draft is added SAP keeps Y (or P/A) and fills DocEntry with the invoice.
   else if (req.status === "Y" && !req.docEntry) next = "approved";
@@ -647,7 +660,7 @@ async function syncFromSap(doc: ArDocRow): Promise<Partial<ArDocRow>> {
     const [inv] = await queryHana<Record<string, unknown>>(`SELECT "DocNum" FROM ${S()}."OINV" WHERE "DocEntry" = ${req.docEntry}`);
     patch.sap_doc_num = inv ? num(inv.DocNum) : null;
   }
-  if (next === doc.status && !patch.sap_doc_entry) return {};
+  if (next === doc.status && (!patch.sap_doc_entry || patch.sap_doc_entry === doc.sap_doc_entry)) return {};
   patch.status = next;
   await query(
     `UPDATE ar_documents SET status = ?, sap_doc_entry = COALESCE(?, sap_doc_entry), sap_doc_num = COALESCE(?, sap_doc_num),
@@ -696,6 +709,23 @@ export async function getArInvoice(session: AdminSession, id: number) {
 }
 
 // ── Write ──────────────────────────────────────────────────────────────
+
+/**
+ * Portal no. = SAP's AR. No (U_DocNo, e.g. ARR261127045) once SAP has assigned
+ * one — the portal's own ARI… number is only a placeholder until the invoice
+ * reaches SAP (as a draft or the invoice). Follows SAP when its AR. No changes
+ * (the invoice can get a new one when its draft is added). Kept as is when
+ * another row already carries that number (doc_number is unique — e.g. a
+ * duplicate import of the same SAP request).
+ */
+export async function adoptArNo(id: number, docNo: string | null | undefined): Promise<void> {
+  const no = (docNo ?? "").trim().slice(0, 30);
+  if (!no) return;
+  const companyId = getCompanyId();
+  const clash = await queryOne<{ id: number }>(`SELECT id FROM ar_documents WHERE company_id = ? AND doc_number = ? AND id <> ?`, [companyId, no, id]);
+  if (clash) return;
+  await query(`UPDATE ar_documents SET doc_number = ? WHERE company_id = ? AND id = ? AND (doc_number IS NULL OR doc_number <> ?)`, [no, companyId, id, no]);
+}
 
 async function nextDocNumber(): Promise<string> {
   const d = new Date(Date.now() + 7 * 3600 * 1000); // Vietnam date
@@ -865,6 +895,7 @@ async function updatePortalDraft(session: AdminSession, id: number): Promise<str
             posted_sap_user = ?, last_error = NULL WHERE company_id = ? AND id = ?`,
     [JSON.stringify(approval), templates[0]?.wtmCode ?? null, templates.map((t) => t.name).join(" + ").slice(0, 100) || null, docNo, sapUser, companyId, id]
   );
+  await adoptArNo(id, docNo);
   const req = portalRequest({ portal_approval: approval, sap_draft_entry: draftEntry, sap_doc_entry: null, status: "pending_approval" });
   const waitingFor = req?.stages.find((st) => st.wstCode === req.currStep)?.lines.map((l) => l.userCode) ?? [];
   await event(id, "updated_in_sap", session, sapUser, `SAP draft ${draftEntry}${docNo ? ` (${docNo})` : ""} updated · approval restarted · waiting for ${waitingFor.join(", ") || "—"}`);
@@ -923,7 +954,10 @@ async function buildPayload(session: AdminSession, doc: ArDocRow, lines: ArLineR
     JournalMemo: (doc.comments || "").slice(0, 50) || undefined,
     // E-invoice fields — the same on all 423 typed-in service invoices in SAP (last 6 months):
     // form 1/005, series C<yy>TMV (posting year), tax category 1001, issue = Y, customer invoice format 10.
-    U_InvDate: doc.doc_date,
+    // E-invoice date: left EMPTY — it is set when the e-invoice is issued. IMV's SAP rule refuses
+    // to approve an AR Invoice that already has one (131001332 "Invoice Date already exists").
+    // null (not omitted) so updating a draft clears a date an older portal version had filled.
+    U_InvDate: null,
     U_MauHD: "1/005",
     U_InvSeri: `C${doc.doc_date.slice(2, 4)}TMV`,
     U_InvTaxCat: "1001",
@@ -1116,6 +1150,14 @@ async function postForPortalApproval(session: AdminSession, doc: ArDocRow, paylo
       console.warn(`[AR Invoice] updating old draft ${old} failed — creating a new one:`, e instanceof Error ? e.message : e);
       await sapRequestAsUser(session.adminId!, "DELETE", `/Drafts(${old})`).catch(() => undefined);
     }
+  } else if (doc.approval_mode === "sap" && doc.source === "portal" && doc.sap_draft_entry && !doc.sap_doc_entry) {
+    // The portal's draft went through SAP's own approval (added in the SAP client) and that request
+    // was rejected / cancelled: it can't be reused — remove it, the invoice gets a fresh draft.
+    const old = Number(doc.sap_draft_entry);
+    await sapRequestAsUser(session.adminId!, "DELETE", `/Drafts(${old})`).then(
+      () => event(id, "updated_in_sap", session, sapUser, `Removed SAP draft ${old} (its SAP approval request #${doc.wdd_code ?? "—"} was ${doc.status}) — posting a new draft`),
+      (e) => console.warn(`[AR Invoice] removing old draft ${old} failed:`, e instanceof Error ? e.message : e)
+    );
   }
   try {
     if (!draft) draft = await sapRequestAsUser<{ DocEntry: number; DocNum: number; U_DocNo?: string | null }>(session.adminId!, "POST", "/Drafts", { ...payload, DocObjectCode: "oInvoices" });
@@ -1142,6 +1184,7 @@ async function postForPortalApproval(session: AdminSession, doc: ArDocRow, paylo
     [getHanaSchema(), JSON.stringify(approval), templates[0].wtmCode, templates.map((t) => t.name).join(" + ").slice(0, 100),
       draftEntry, docNo, session.adminId, sapUser, companyId, id]
   );
+  await adoptArNo(id, docNo);
   const req = portalRequest({ portal_approval: approval, sap_draft_entry: draftEntry, sap_doc_entry: null, status: "pending_approval" })!;
   const waitingFor = req.stages.find((st) => st.wstCode === req.currStep)?.lines.map((l) => l.userCode) ?? [];
   await event(id, "sent_for_approval", session, sapUser,
@@ -1185,10 +1228,60 @@ async function decidePortalApproval(session: AdminSession, doc: ArDocRow, decisi
   return { message: `Approved. Now waiting for ${waiting.join(", ") || "the next stage"}.` };
 }
 
+/**
+ * Drafts created by an earlier portal version carry U_InvDate (= posting date),
+ * which IMV's SAP rule refuses on approval ("Invoice Date already exists").
+ * Clear it — only on a draft the portal itself created (one of its portal
+ * documents points at it); drafts typed in the SAP client are left alone.
+ * Tried as the portal's Service Layer user, then as the creator's own SAP user
+ * (the draft's originator — a draft waiting on SAP's approval may only be
+ * changed by them). If SAP still refuses, the approval is stopped with SAP's
+ * message instead of failing later with "Invoice Date already exists".
+ */
+export async function clearPortalDraftInvDate(draftEntry: number | null | undefined): Promise<void> {
+  const draft = Number(draftEntry);
+  if (!Number.isInteger(draft) || draft <= 0) return;
+  const mine = await queryOne<{ id: number; created_by: number | null; posted_by: number | null }>(
+    `SELECT id, created_by, posted_by FROM ar_documents WHERE company_id = ? AND source = 'portal' AND sap_draft_entry = ? AND (sap_db IS NULL OR sap_db = ?) ORDER BY id LIMIT 1`,
+    [getCompanyId(), draft, getHanaSchema()]
+  );
+  if (!mine) return;
+  const invDate = async () => {
+    const [r] = await queryHana<Record<string, unknown>>(`SELECT "U_InvDate" FROM ${S()}."ODRF" WHERE "DocEntry" = ${draft}`);
+    return r ? str(r.U_InvDate) : null;
+  };
+  const before = await invDate().catch(() => "unknown");
+  if (before === null) return; // already empty
+  const errors: string[] = [];
+  const attempts: [string, () => Promise<unknown>][] = [
+    ["portal SAP user", () => getSapClient().updateDocument("Drafts", draft, { U_InvDate: null }, false)],
+  ];
+  const creator = mine.posted_by ?? mine.created_by;
+  if (creator) attempts.push(["creator's SAP user", () => sapRequestAsUser(creator, "PATCH", `/Drafts(${draft})`, { U_InvDate: null })]);
+  for (const [who, run] of attempts) {
+    try {
+      await run();
+      const after = await invDate().catch(() => "unknown");
+      if (after === null) {
+        await event(mine.id, "updated_in_sap", null, null, `Cleared U_InvDate ${before === "unknown" ? "" : `${String(before).slice(0, 10)} `}on SAP draft ${draft} as the ${who} (must be empty to approve)`);
+        return;
+      }
+      errors.push(`${who}: SAP accepted the update but U_InvDate is still ${String(after).slice(0, 10)}`);
+    } catch (e) {
+      errors.push(`${who}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  const msg = `SAP draft ${draft} still has an Invoice Date (U_InvDate ${String(before).slice(0, 10)}), which SAP refuses on approval, and the portal couldn't clear it — ${errors.join(" · ")}`;
+  console.warn(`[AR Invoice] ${msg}`);
+  await event(mine.id, "failed", null, null, msg);
+  throw new ArError(`${msg}. Ask the creator to clear "Invoice Date" on the draft in SAP (or reject the request so it can be posted again from the portal).`, 409, "inv_date_not_cleared");
+}
+
 /** Add the approved Draft as the A/R Invoice (as the user's own SAP user). */
 async function generateFromDraft(session: AdminSession, doc: ArDocRow, req: ArApprovalRequest, sapUser: string): Promise<{ ok: boolean; message: string }> {
   const draft = req.draftEntry ?? doc.sap_draft_entry;
   if (!draft) return { ok: false, message: "SAP has no draft for this request" };
+  try { await clearPortalDraftInvDate(draft); } catch (e) { return { ok: false, message: e instanceof Error ? e.message : String(e) }; }
   try {
     await sapRequestAsUser(session.adminId!, "POST", "/DraftsService_SaveDraftToDocument", { Document: { DocEntry: draft } });
   } catch (e) {
@@ -1239,6 +1332,7 @@ export async function decideArInvoice(session: AdminSession, id: number, decisio
   if (!sapSession) throw new ArError("Save your SAP user and password in My Profile first", 428, "sap_login_required");
   if (lc(sapSession.sapUser) !== lc(me)) throw new ArError(`Signed in to SAP as ${sapSession.sapUser}, but your SAP user is ${me}. Update it in My Profile.`, 409);
 
+  if (decision === "approved") await clearPortalDraftInvDate(req?.draftEntry ?? doc.sap_draft_entry);
   try {
     await sapRequestAsUser(session.adminId!, "PATCH", `/ApprovalRequests(${doc.wdd_code})`, {
       ApprovalRequestDecisions: [{ Status: decision === "approved" ? "ardApproved" : "ardNotApproved", Remarks: remarks.slice(0, 254) || undefined }],

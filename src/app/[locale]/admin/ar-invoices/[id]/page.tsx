@@ -325,7 +325,7 @@ export default function ArInvoicePage() {
             <h1 style={{ ...styles.title, display: "flex", gap: 10, alignItems: "center" }}>
               {isNew ? "New AR Invoice" : `AR Invoice ${d?.sap_doc_no ?? d?.doc_number ?? id}`} {d && <ArStatusBadge status={d.status} />}
             </h1>
-            {d && <div style={styles.subtitle}>{d.source === "sap" ? `Entered in SAP by ${d.posted_sap_user ?? "—"} — read-only here (change it in SAP) · ` : ""}{AR_STATUS[d.status]?.hint}{d.sap_doc_no && d.doc_number ? ` · Portal ref ${d.doc_number}` : ""}{d.sap_doc_num ? ` · SAP A/R Invoice ${d.sap_doc_num}` : ""}{d.posted_sap_user && d.source !== "sap" ? ` · as SAP user ${d.posted_sap_user}` : ""}</div>}
+            {d && <div style={styles.subtitle}>{d.source === "sap" ? `Entered in SAP by ${d.posted_sap_user ?? "—"} — read-only here (change it in SAP) · ` : ""}{AR_STATUS[d.status]?.hint}{d.sap_doc_no && d.doc_number && d.sap_doc_no !== d.doc_number ? ` · Portal ref ${d.doc_number}` : ""}{d.sap_doc_num ? ` · SAP A/R Invoice ${d.sap_doc_num}` : ""}{d.posted_sap_user && d.source !== "sap" ? ` · as SAP user ${d.posted_sap_user}` : ""}</div>}
           </div>
           <BackLink href={`${base}/ar-invoices`} label="← AR Invoices" />
         </div>

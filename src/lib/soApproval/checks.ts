@@ -207,6 +207,33 @@ async function currentPricing(order: OrderForChecks, codes: string[]): Promise<M
   return new Map(items.map((p) => [p.sapItemCode, p]));
 }
 
+/**
+ * Items the portal doesn't carry (item group outside the portal's Item Groups,
+ * or unpriced there): the customer's price list price straight from SAP
+ * (ITM1; the base list when the customer's has none), plus whether the item is
+ * a service / discount line (non-inventory — not a price item).
+ */
+async function sapListPrices(order: OrderForChecks, codes: string[]): Promise<Map<string, { price: number | null; service: boolean }>> {
+  const out = new Map<string, { price: number | null; service: boolean }>();
+  if (!codes.length) return out;
+  const s = `"${getHanaSchema()}"`;
+  const lit = (v: string) => `'${v.replace(/'/g, "''")}'`;
+  const base = await getBasePriceListNum();
+  const list = order.customer.price_list_num ?? base;
+  const rows = await queryHana<Record<string, unknown>>(
+    `SELECT T."ItemCode", T."InvntItem", P."Price" AS "ListPrice", B."Price" AS "BasePrice"
+       FROM ${s}."OITM" T
+       LEFT JOIN ${s}."ITM1" P ON P."ItemCode" = T."ItemCode" AND P."PriceList" = ${Number(list)}
+       LEFT JOIN ${s}."ITM1" B ON B."ItemCode" = T."ItemCode" AND B."PriceList" = ${Number(base)}
+      WHERE T."ItemCode" IN (${codes.map(lit).join(",")})`
+  );
+  for (const r of rows) {
+    const lp = n(r.ListPrice), bp = n(r.BasePrice);
+    out.set(String(r.ItemCode), { price: lp > 0 ? lp : bp > 0 ? bp : null, service: String(r.InvntItem) === "N" });
+  }
+  return out;
+}
+
 /** Step-1 price = the Channel Price before Period Discount (base_unit_price is after it). */
 const channelPrice = (afterPeriod: number, periodPct: number) => (periodPct >= 100 ? afterPeriod : afterPeriod / (1 - periodPct / 100));
 
@@ -230,18 +257,35 @@ export async function runApprovalChecks(order: OrderForChecks, ar: ArSummary | n
       out.push(result(key, "error", `Pricing lookup failed: ${pricing.message}`, [], []));
     }
   } else {
-    out.push(priceCheck(sold, pricing), pctCheck("period", sold, pricing), pctCheck("contract", sold, pricing), promotionCheck(sold, gifts, pricing));
+    const missing = [...new Set(sold.map((l) => l.sap_item_code).filter((c) => !pricing.has(c)))];
+    const sapPrices = await sapListPrices(order, missing).catch((e) => {
+      console.warn("[SO Approval] SAP price list lookup failed:", e instanceof Error ? e.message : e);
+      return new Map<string, { price: number | null; service: boolean }>();
+    });
+    out.push(priceCheck(sold, pricing, sapPrices), pctCheck("period", sold, pricing), pctCheck("contract", sold, pricing), promotionCheck(sold, gifts, pricing));
   }
   out.push(arCheck(ar));
   return out;
 }
 
-function priceCheck(sold: OrderLineRow[], pricing: Map<string, ProductWithPricing>): CheckResult {
+function priceCheck(sold: OrderLineRow[], pricing: Map<string, ProductWithPricing>, sapPrices: Map<string, { price: number | null; service: boolean }> = new Map()): CheckResult {
   const rows: CheckResult["rows"] = sold.map((l) => {
     const p = pricing.get(l.sap_item_code);
     const orderPrice = r2(channelPrice(n(l.base_unit_price), n(l.period_disc_pct)));
-    // Not in the portal's catalog (item group outside config masterdata.itemGroup) — can't be checked here.
-    if (!p) return { item: l.sap_item_code, name: l.item_name, qty: l.quantity, order: orderPrice, standard: "not in portal catalog", diff: null, _status: "error" as CheckStatus };
+    if (!p) {
+      // Not in the portal's catalog (item group outside the portal's Item Groups, or unpriced there):
+      // compare with the customer's price list in SAP instead.
+      const sp = sapPrices.get(l.sap_item_code);
+      if (sp?.service) {
+        return { item: l.sap_item_code, name: l.item_name, qty: l.quantity, order: orderPrice, standard: "service / discount line — not price-checked", diff: null, _status: "pass" as CheckStatus };
+      }
+      if (!sp || sp.price === null) {
+        return { item: l.sap_item_code, name: l.item_name, qty: l.quantity, order: orderPrice, standard: sp ? "no price in the SAP price list" : "not in portal catalog", diff: null, _status: (sp ? "fail" : "error") as CheckStatus };
+      }
+      const std = r2(sp.price);
+      const st: CheckStatus = sameMoney(orderPrice, std) ? "pass" : orderPrice < std ? "fail" : "warn";
+      return { item: l.sap_item_code, name: l.item_name, qty: l.quantity, order: orderPrice, standard: std, diff: r2(orderPrice - std), source: "SAP price list", _status: st };
+    }
     const std = r2(channelPrice(p.basePrice, p.periodDiscPct));
     const st: CheckStatus = sameMoney(orderPrice, std) ? "pass" : orderPrice < std ? "fail" : "warn";
     return { item: l.sap_item_code, name: l.item_name, qty: l.quantity, order: orderPrice, standard: std, diff: r2(orderPrice - std), _status: st };
@@ -251,10 +295,11 @@ function priceCheck(sold: OrderLineRow[], pricing: Map<string, ProductWithPricin
   return result("price", status,
     status === "pass" ? `All ${rows.length} line(s) at the customer's standard price list price.`
       : status === "error" && rows.every((r) => r._status === "error" || r._status === "pass")
-        ? `${rows.filter((r) => r._status === "error").length} item(s) aren't in the portal catalog — verify their price in SAP.`
+        ? `${rows.filter((r) => r._status === "error").length} item(s) aren't in the portal catalog or SAP — verify their price in SAP.`
         : `${bad} of ${rows.length} line(s) differ from today's standard price${rows.some((r) => r._status === "error") ? " (some items aren't in the portal catalog)" : ""}.`,
     [{ key: "item", label: "Item" }, { key: "name", label: "Name" }, { key: "qty", label: "Qty", align: "right" },
-     { key: "order", label: "Order price", align: "right" }, { key: "standard", label: "Standard", align: "right" }, { key: "diff", label: "Diff", align: "right" }],
+     { key: "order", label: "Order price", align: "right" }, { key: "standard", label: "Standard", align: "right" }, { key: "diff", label: "Diff", align: "right" },
+     ...(rows.some((r) => r.source) ? [{ key: "source", label: "Standard from" }] : [])],
     rows);
 }
 

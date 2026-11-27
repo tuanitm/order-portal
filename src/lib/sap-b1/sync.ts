@@ -368,12 +368,16 @@ async function syncItemsUnlocked(): Promise<{ itemsSynced: number }> {
     return codesByLevel.some((code, i) => code && inactiveByLevel.get(i + 1)?.has(code));
   };
 
-  // Deactivate everything first — the loop below reactivates (is_active =
-  // TRUE) only items SAP actually returns for the current item_groups
-  // pairs, so anything no longer covered (including legacy rows with no
-  // item_cat01/02 at all) ends up inactive. Items an admin manually hid
-  // are unaffected either way (is_manually_hidden is a separate column).
-  await query(`UPDATE items SET is_active = FALSE WHERE company_id = ?`, [companyId]);
+  // Items SAP no longer returns for the current item_groups pairs (or now under
+  // an inactive level 3-6 group, or legacy rows with no item_cat01/02) are
+  // deactivated AFTER the loop — every item this run upserts gets last_synced
+  // >= syncStart, the rest are switched off. Deactivating everything up front
+  // (as before) left the whole catalog inactive while the sync ran — the
+  // storefront, order pricing and SO Approval checks ("not in portal
+  // catalog") all saw no items for that minute — and for good if SAP failed
+  // part-way. A SAP error now aborts the sync with nothing deactivated.
+  // Items an admin manually hid are unaffected (is_manually_hidden is separate).
+  const [{ t: syncStart }] = await query<{ t: Date }[]>(`SELECT NOW() AS t`);
 
   let skip = 0;
   let itemsSynced = 0;
@@ -383,6 +387,7 @@ async function syncItemsUnlocked(): Promise<{ itemsSynced: number }> {
       top: PAGE_SIZE,
       skip,
       itemCatPairs: catPairs,
+      throwOnError: true,
     });
     if (items.length === 0) break;
 
@@ -456,6 +461,15 @@ async function syncItemsUnlocked(): Promise<{ itemsSynced: number }> {
     // regardless of the requested $top, so advance by what came back, not
     // by our requested page size, and stop only on an empty page.
     skip += items.length;
+  }
+
+  if (itemsSynced > 0) {
+    await query(
+      `UPDATE items SET is_active = FALSE WHERE company_id = ? AND is_active = TRUE AND (last_synced IS NULL OR last_synced < ?)`,
+      [companyId, syncStart]
+    );
+  } else {
+    console.warn("[Sync] Items: SAP returned no items for the item groups — nothing deactivated");
   }
 
   return { itemsSynced };

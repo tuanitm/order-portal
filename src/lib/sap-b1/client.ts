@@ -991,6 +991,8 @@ export class SapB1Client {
     search?: string;
     /** Restrict to items whose (U_ItemCat01, U_ItemCat02) matches one of these exact pairs. */
     itemCatPairs?: { cat1: string; cat2: string }[];
+    /** Throw SAP errors instead of returning [] — a paging sync must not read an error as "no more items". */
+    throwOnError?: boolean;
   }): Promise<SapItem[]> {
     await this.ensureSession();
     try {
@@ -1007,6 +1009,7 @@ export class SapB1Client {
       }
     } catch (error) {
       console.error('[SAP] Failed to get items:', error);
+      if (params?.throwOnError) throw error;
       return [];
     }
   }

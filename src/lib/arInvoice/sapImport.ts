@@ -2,7 +2,7 @@ import { query, queryOne } from "@/lib/db/connection";
 import { getCompanyId } from "@/lib/config";
 import { getSapClient } from "@/lib/sap-b1/client";
 import { queryHana, getHanaSchema } from "@/lib/hana/client";
-import { getArApprovalRequest, notifyStage, type ArStatus, type ArApprovalRequest } from "@/lib/arInvoice/service";
+import { getArApprovalRequest, notifyStage, dropImportedCopies, type ArStatus, type ArApprovalRequest } from "@/lib/arInvoice/service";
 
 /**
  * AR Invoice approval requests raised in the SAP CLIENT (a salesperson adds a
@@ -66,6 +66,7 @@ async function run({ limit = 30, notify = true }: { limit?: number; notify?: boo
   const [mx] = await queryHana<Record<string, unknown>>(`SELECT IFNULL(MAX("WddCode"), 0) AS "M" FROM ${s}."OWDD" WHERE "ObjType" = '13'`);
   const maxWdd = num(mx?.M);
   let imported = 0, notified = 0;
+  await linkRequestsOnPortalDrafts().catch((e) => console.warn("[AR Invoice] linking SAP requests to portal drafts failed:", e instanceof Error ? e.message : e));
   if (cands.length) {
     const codes = cands.map((c) => num(c.WddCode));
     const have = new Set((await query<{ w: number }[]>(
@@ -91,9 +92,51 @@ async function run({ limit = 30, notify = true }: { limit?: number; notify?: boo
   return { imported, notified };
 }
 
+/**
+ * Someone opened a draft the PORTAL created (Adm Confirmed) in the SAP client and
+ * added it there: SAP raised its own approval request on that draft. The request
+ * then belongs to the portal document — it switches to SAP's approval
+ * (approval_mode 'sap', wdd_code) — instead of a second "SAP-…" copy. Copies
+ * imported before this existed are removed.
+ */
+async function linkRequestsOnPortalDrafts(): Promise<void> {
+  const companyId = getCompanyId();
+  const sapDb = getHanaSchema();
+  const docs = await query<{ id: number; sap_draft_entry: number; wdd_code: number | null }[]>(
+    `SELECT id, sap_draft_entry, wdd_code FROM ar_documents
+      WHERE company_id = ? AND source = 'portal' AND sap_db = ? AND sap_draft_entry IS NOT NULL AND sap_doc_entry IS NULL
+        AND status IN ('pending_approval', 'approved', 'rejected', 'failed')`, [companyId, sapDb]
+  );
+  if (!docs.length) return;
+  const reqs = await queryHana<Record<string, unknown>>(
+    `SELECT "WddCode", "DraftEntry" FROM "${sapDb}"."OWDD" WHERE "ObjType" = '13' AND "DraftEntry" IN (${[...new Set(docs.map((d) => Number(d.sap_draft_entry)))].join(",")})
+      ORDER BY "WddCode" DESC`
+  );
+  for (const d of docs) {
+    const r = reqs.find((x) => num(x.DraftEntry) === Number(d.sap_draft_entry));
+    if (!r || num(r.WddCode) === Number(d.wdd_code)) continue;
+    const req = await getArApprovalRequest(num(r.WddCode));
+    if (!req) continue;
+    await query(
+      `UPDATE ar_documents SET approval_mode = 'sap', wdd_code = ?, wtm_code = ?, template_name = ?, status = ?, sap_doc_no = NULL WHERE company_id = ? AND id = ?`,
+      [req.wddCode, req.wtmCode, req.templateName, statusOf(req), companyId, d.id]
+    );
+    await query(
+      `INSERT INTO ar_document_events (company_id, ar_document_id, action, notes) VALUES (?, ?, 'imported', ?)`,
+      [companyId, d.id, `SAP approval request #${req.wddCode} (${req.templateName ?? "template"}) was raised on this draft in SAP — following SAP's approval now`]
+    );
+    await dropImportedCopies(req.wddCode, d.id);
+  }
+}
+
 async function importOne(wddCode: number, owner: string | null): Promise<number | null> {
   const req = await getArApprovalRequest(wddCode);
   if (!req) return null;
+  // A request on a draft the portal created belongs to that portal document (see linkRequestsOnPortalDrafts).
+  if (req.draftEntry && await queryOne(
+    `SELECT id FROM ar_documents WHERE company_id = ? AND source = 'portal' AND sap_db = ? AND sap_draft_entry = ? LIMIT 1`,
+    [getCompanyId(), getHanaSchema(), req.draftEntry]
+  )) return null;
   const status = statusOf(req);
   const entity = req.docEntry ? "Invoices" : "Drafts";
   const entry = req.docEntry ?? req.draftEntry;
@@ -113,9 +156,11 @@ async function importOne(wddCode: number, owner: string | null): Promise<number 
 
   const total = num(d.DocTotal), vat = num(d.VatSum);
   const first = lines[0] ?? {};
-  // "SAP-<request no.>"; the same number from another SAP company DB (test DB) gets the DB appended.
-  let docNo = `SAP-${wddCode}`;
-  if (await queryOne(`SELECT id FROM ar_documents WHERE company_id = ? AND doc_number = ?`, [companyId, docNo])) docNo = `${docNo}-${getHanaSchema()}`.slice(0, 30);
+  // Portal no. = SAP's AR. No (U_DocNo) when it has one and no other row uses it; else "SAP-<request no.>"
+  // (the same number from another SAP company DB — test DB — gets the DB appended).
+  const arNo = str(d.U_DocNo)?.slice(0, 30) ?? null;
+  let docNo = arNo && !(await queryOne(`SELECT id FROM ar_documents WHERE company_id = ? AND doc_number = ?`, [companyId, arNo])) ? arNo : `SAP-${wddCode}`;
+  if (docNo !== arNo && await queryOne(`SELECT id FROM ar_documents WHERE company_id = ? AND doc_number = ?`, [companyId, docNo])) docNo = `${docNo}-${getHanaSchema()}`.slice(0, 30);
   const ins = await query<{ insertId: number }>(
     `INSERT INTO ar_documents (company_id, doc_kind, source, sap_db, brand_code, sap_doc_no, doc_number, status, sap_card_code, card_name, bill_to_code, ship_to_code, inv_name, inv_tax_no, inv_address,
        doc_date, due_date, tax_date, num_at_card, comments, warehouse_code, department_code, total_before_vat, vat_sum, doc_total,
