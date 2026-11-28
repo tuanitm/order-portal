@@ -17,6 +17,34 @@ import { getStorefrontStockTable } from "@/lib/stock/liveStock";
 import type { ProductWithPricing } from "@/types/product";
 
 /**
+ * Short in-memory cache of the product list. The result only depends on the
+ * pricing context (customer code + groups + price list, warehouses, stock
+ * table) and the query (search, tab, page) — the storefront's default tabs
+ * ("Khuyến mãi", each brand) price up to 2,000 items per request to sort them
+ * by discount, so the same customer reopening the store or switching tabs back
+ * and forth gets the stored page instead. 30 s: stock syncs every 10 minutes
+ * and prices/promotions hourly at most, so a page is never noticeably stale.
+ * Per server process; at most CACHE_MAX entries (oldest dropped first).
+ */
+const CACHE_TTL_MS = 30_000;
+const CACHE_MAX = 500;
+const productCache = new Map<string, { at: number; body: unknown }>();
+function cacheGet(key: string): unknown | null {
+  const hit = productCache.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.at > CACHE_TTL_MS) { productCache.delete(key); return null; }
+  return hit.body;
+}
+function cachePut(key: string, body: unknown) {
+  if (productCache.size >= CACHE_MAX) {
+    const now = Date.now();
+    for (const [k, v] of productCache) if (now - v.at > CACHE_TTL_MS) productCache.delete(k);
+    while (productCache.size >= CACHE_MAX) productCache.delete(productCache.keys().next().value as string);
+  }
+  productCache.set(key, { at: Date.now(), body });
+}
+
+/**
  * GET /api/products — List products with pricing.
  *
  * The discount waterfall (Channel -> Period -> Contract -> Promotion),
@@ -94,6 +122,12 @@ export async function GET(request: NextRequest) {
       stockTable,
     };
 
+    const promoOnly = searchParams.get("promoOnly") === "true";
+    const sortByDiscount = searchParams.get("sort") === "discount";
+    const cacheKey = JSON.stringify([companyId, ctx, hiddenClauses, hiddenParams, search, category, page, limit, promoOnly, sortByDiscount]);
+    const cached = cacheGet(cacheKey);
+    if (cached) return NextResponse.json(cached, { headers: { "X-Products-Cache": "hit" } });
+
     // The COUNT(*) query can't reuse queryPricedProducts' full LATERAL-joined
     // query (that would compute pricing for rows never shown) — it needs its
     // own copy of just the WHERE clause, including the SAME stock-gate
@@ -130,7 +164,6 @@ export async function GET(request: NextRequest) {
     // promo/giveaway matches queryPricedProducts computes, which this simple
     // count query doesn't have; its `total` is derived from the filtered/
     // sorted JS array length instead (see below).
-    const promoOnly = searchParams.get("promoOnly") === "true";
     // Count, category chips and the product page are independent queries —
     // started together and awaited below, so the page costs the slowest of
     // them rather than their sum.
@@ -166,7 +199,6 @@ export async function GET(request: NextRequest) {
     // ORDER BY (it depends on the same sequential contract->promo compounding
     // computed inside queryPricedProducts), so this mode fetches a capped,
     // unpaginated set and sorts/paginates in JS instead of at the SQL level.
-    const sortByDiscount = searchParams.get("sort") === "discount";
     const DISCOUNT_SORT_CAP = 2000;
     if (promoOnly) {
       extraWhereSql.push("(promo_options.options IS NOT NULL OR giveaway_options.options IS NOT NULL)");
@@ -196,22 +228,14 @@ export async function GET(request: NextRequest) {
       });
       total = items.length;
       const paged = items.slice(offset, offset + limit);
-      return NextResponse.json({
-        items: paged,
-        total,
-        page,
-        totalPages: Math.ceil(total / limit),
-        categories,
-      });
+      const body = { items: paged, total, page, totalPages: Math.ceil(total / limit), categories };
+      cachePut(cacheKey, body);
+      return NextResponse.json(body);
     }
 
-    return NextResponse.json({
-      items,
-      total,
-      page,
-      totalPages: Math.ceil(total / limit),
-      categories,
-    });
+    const body = { items, total, page, totalPages: Math.ceil(total / limit), categories };
+    cachePut(cacheKey, body);
+    return NextResponse.json(body);
   } catch (error) {
     console.error("[API] List products error:", error);
     return NextResponse.json(

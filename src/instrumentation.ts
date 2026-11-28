@@ -25,6 +25,14 @@
  */
 export async function register() {
   if (process.env.NEXT_RUNTIME === "edge") return;
+  // RUN_SCHEDULER=false: this server only serves the portal; the background jobs
+  // (SAP sync, stock sync, approval pollers) run in a separate container
+  // ("scheduler" in docker-compose.yml), so customers never share the process
+  // with a heavy sync. Unset (local dev, a single server) = run them here.
+  if (process.env.RUN_SCHEDULER === "false") {
+    console.log("[Scheduler] RUN_SCHEDULER=false — background jobs run in the scheduler container");
+    return;
+  }
 
   const globalForScheduler = globalThis as typeof globalThis & {
     __syncSchedulerStarted?: boolean;

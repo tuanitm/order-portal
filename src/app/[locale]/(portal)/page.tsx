@@ -43,9 +43,13 @@ export default function HomePage() {
     setActiveCategory(category);
   };
 
-  // Debounced fetch whenever search/category changes
+  // Fetch whenever search/category changes. Only typing in search is debounced
+  // (250 ms); the first load and a tab click fetch right away.
+  const lastSearch = useRef(searchQuery);
   useEffect(() => {
     const controller = new AbortController();
+    const typing = searchQuery !== lastSearch.current;
+    lastSearch.current = searchQuery;
     const timer = setTimeout(async () => {
       setIsLoading(true);
       let fallingBack = false;
@@ -88,7 +92,7 @@ export default function HomePage() {
       } finally {
         if (!fallingBack) setIsLoading(false);
       }
-    }, 250);
+    }, typing ? 250 : 0);
 
     return () => {
       clearTimeout(timer);

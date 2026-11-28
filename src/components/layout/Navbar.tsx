@@ -11,6 +11,7 @@ import { useAppName } from "@/hooks/useAppName";
 import { usePushNotifications } from "@/hooks/usePushNotifications";
 import { useOnPushNotification } from "@/hooks/usePushRefresh";
 import { Link } from "@/i18n/navigation";
+import { fetchAuthMe, clearAuthMe } from "@/lib/authMeClient";
 
 interface AuthUser {
   fullName: string;
@@ -45,11 +46,9 @@ export default function Navbar() {
 
   const checkAuth = useCallback(async () => {
     try {
-      const res = await fetch("/api/auth/me");
-      if (res.ok) {
-        const data = await res.json();
-        setUser(data.user);
-      }
+      // Shared with the storefront layout's auth check — one request per page load.
+      const res = await fetchAuthMe();
+      if (res.ok && res.data?.user) setUser(res.data.user as unknown as AuthUser);
     } catch {
       // Not logged in
     }
@@ -103,6 +102,7 @@ export default function Navbar() {
       // can't clear it from here, only a server Set-Cookie response can;
       // this route does that and records the logout in the audit log.
       await fetch("/api/auth/logout", { method: "POST" });
+      clearAuthMe();
       setUser(null);
       setShowMenu(false);
       window.location.href = `/${locale}/identify`;

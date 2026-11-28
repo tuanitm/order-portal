@@ -7,6 +7,7 @@ import { SearchProvider } from "@/hooks/useSearch";
 import Navbar from "@/components/layout/Navbar";
 import CartSidebar from "@/components/layout/CartSidebar";
 import Footer from "@/components/layout/Footer";
+import { fetchAuthMe } from "@/lib/authMeClient";
 
 export default function PortalLayout({
   children,
@@ -19,9 +20,9 @@ export default function PortalLayout({
 
   const checkAuth = useCallback(async () => {
     try {
-      const res = await fetch("/api/auth/me");
+      const res = await fetchAuthMe();
       if (res.ok) {
-        const data = await res.json();
+        const data = res.data ?? {};
         // "Change password at next login": nothing else until it's changed.
         if (data.user?.mustChangePassword && !window.location.pathname.endsWith("/change-password")) {
           router.replace("/change-password?forced=1");

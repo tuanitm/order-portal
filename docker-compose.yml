@@ -2,7 +2,7 @@
 # own container, which joins this file's network ("order-network") and is
 # reached by container name (default "mysql8") on its internal port 3306.
 #
-#   docker compose up -d --build            # build + start the portal (http://<server>:5005)
+#   docker compose up -d --build            # build + start the portal (http://<server>:5005) and its scheduler
 #   docker compose logs -f order-portal
 #   docker compose --profile sync up -d     # also start the 03:00 SAP daily sync
 #   docker compose --profile proxy up -d    # also start HTTPS on https://order.imv.com.vn (Caddy)
@@ -41,6 +41,34 @@ services:
       # container's name and its internal port.
       MYSQL_HOST: ${MYSQL_HOST:-mysql8}
       MYSQL_PORT: ${MYSQL_PORT:-3306}
+      # Serve customers only — the background jobs run in "scheduler" below.
+      RUN_SCHEDULER: "false"
+      NODE_OPTIONS: --max-old-space-size=1024
+    depends_on:
+      # Starting the portal (also `docker compose up -d order-portal`) always starts its scheduler.
+      - scheduler
+    volumes:
+      - ./config.json:/app/config.json:ro
+      - ./.env:/app/.env:ro
+      - ./scripts/.encryption_key:/app/scripts/.encryption_key:ro
+    networks:
+      - order-network
+
+  # The same app, running ONLY the background jobs (instrumentation.ts): the
+  # SAP sync groups, Inventory Stock sync, SO / AR approval pollers and Auto
+  # SO Approval. Not published on any port — so a heavy sync (e.g. 258k
+  # promotion rows) never slows down the storefront. "Run now" buttons in
+  # Settings still run in the portal itself.
+  scheduler:
+    image: order-portal:latest
+    container_name: order-portal-scheduler
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Ho_Chi_Minh
+      MYSQL_HOST: ${MYSQL_HOST:-mysql8}
+      MYSQL_PORT: ${MYSQL_PORT:-3306}
+      RUN_SCHEDULER: "true"
+      NODE_OPTIONS: --max-old-space-size=1536
     volumes:
       - ./config.json:/app/config.json:ro
       - ./.env:/app/.env:ro
