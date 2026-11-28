@@ -3,7 +3,11 @@
 import { useState, useEffect, useRef } from "react";
 import { useTranslations, useLocale } from "next-intl";
 import ProductCard from "@/components/product/ProductCard";
-import ImportExcelModal from "@/components/cart/ImportExcelModal";
+import dynamic from "next/dynamic";
+
+// Import Excel pulls in the xlsx library (~870 KB) — loaded only when a customer
+// opens it, not with the storefront on every visit.
+const ImportExcelModal = dynamic(() => import("@/components/cart/ImportExcelModal"), { ssr: false });
 import { useSearch } from "@/hooks/useSearch";
 import type { ProductWithPricing, ProductListResponse } from "@/types/product";
 
@@ -240,7 +244,7 @@ export default function HomePage() {
           </div>
         </div>
 
-        <ImportExcelModal isOpen={isImportOpen} onClose={() => setIsImportOpen(false)} />
+        {isImportOpen && <ImportExcelModal isOpen={isImportOpen} onClose={() => setIsImportOpen(false)} />}
 
         {/* Product Grid */}
         {isLoading ? (

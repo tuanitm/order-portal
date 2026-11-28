@@ -3,6 +3,10 @@ import { requireAdminPermission } from "@/lib/auth/adminSession";
 import { queryOne, query } from "@/lib/db/connection";
 import { getCompanyId } from "@/lib/config";
 import { audited } from "@/lib/auditLog";
+import {
+  getSyncGroupSchedules, saveSyncGroupSchedule, syncGroupTableReady, SYNC_GROUPS,
+  SYNC_INTERVAL_MIN_HOURS, SYNC_INTERVAL_MAX_HOURS, type SyncGroupKey,
+} from "@/lib/sap-b1/scheduledSync";
 
 interface SyncScheduleRow {
   company_id: string;
@@ -26,7 +30,9 @@ export async function GET(request: NextRequest) {
     "SELECT *, DATE_FORMAT(so_approval_from_date, '%Y-%m-%d') AS so_approval_from_date FROM sync_schedule_settings WHERE company_id = ?",
     [getCompanyId()]
   );
-  return NextResponse.json({ schedule: row });
+  // SAP Sync split into groups, each with its own interval (Master Data, Price List, Discount, Promotion, SO status).
+  const groups = await getSyncGroupSchedules();
+  return NextResponse.json({ schedule: row, groups, groupTableReady: await syncGroupTableReady() });
 }
 
 async function PATCHHandler(request: NextRequest) {
@@ -34,7 +40,34 @@ async function PATCHHandler(request: NextRequest) {
   if (guard.response) return guard.response;
 
   const body = await request.json();
-  const { isEnabled, intervalHours, postSoMode, soApprovalRequired, soApprovalFromDate } = body;
+  const { isEnabled, intervalHours, postSoMode, soApprovalRequired, soApprovalFromDate, groups } = body;
+
+  // Per-group sync schedule: [{ key, isEnabled, intervalHours }]
+  if (groups !== undefined) {
+    if (!Array.isArray(groups)) return NextResponse.json({ error: "groups must be a list" }, { status: 400 });
+    for (const g of groups as { key?: unknown; isEnabled?: unknown; intervalHours?: unknown }[]) {
+      const def = SYNC_GROUPS.find((x) => x.key === g?.key);
+      if (!def) return NextResponse.json({ error: `Unknown sync group ${String(g?.key)}` }, { status: 400 });
+      if (typeof g.isEnabled !== "boolean" || !Number.isInteger(g.intervalHours)
+          || (g.intervalHours as number) < SYNC_INTERVAL_MIN_HOURS || (g.intervalHours as number) > SYNC_INTERVAL_MAX_HOURS) {
+        return NextResponse.json({ error: `${def.label}: interval must be a whole number of hours, ${SYNC_INTERVAL_MIN_HOURS}–${SYNC_INTERVAL_MAX_HOURS}` }, { status: 400 });
+      }
+    }
+    try {
+      for (const g of groups as { key: SyncGroupKey; isEnabled: boolean; intervalHours: number }[]) {
+        await saveSyncGroupSchedule(g.key, g.isEnabled, g.intervalHours);
+      }
+    } catch (e) {
+      return NextResponse.json({ error: e instanceof Error ? e.message : "Failed to save the sync groups" }, { status: 409 });
+    }
+    if (isEnabled === undefined && intervalHours === undefined && postSoMode === undefined && soApprovalFromDate === undefined) {
+      const row = await queryOne<SyncScheduleRow>(
+        "SELECT *, DATE_FORMAT(so_approval_from_date, '%Y-%m-%d') AS so_approval_from_date FROM sync_schedule_settings WHERE company_id = ?",
+        [getCompanyId()]
+      );
+      return NextResponse.json({ success: true, schedule: row, groups: await getSyncGroupSchedules() });
+    }
+  }
   // A real calendar date (2026-02-31 would pass the pattern but isn't one).
   const realDate = (v: string) => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
@@ -47,6 +80,7 @@ async function PATCHHandler(request: NextRequest) {
   }
 
   if (typeof isEnabled !== "boolean" || !Number.isInteger(intervalHours) || intervalHours < 1) {
+    // (the combined schedule — still saved with Post SO Mode; the per-group intervals above drive the scheduler)
     return NextResponse.json(
       { error: "isEnabled (boolean) and intervalHours (integer >= 1) are required" },
       { status: 400 }
@@ -76,7 +110,7 @@ async function PATCHHandler(request: NextRequest) {
     "SELECT *, DATE_FORMAT(so_approval_from_date, '%Y-%m-%d') AS so_approval_from_date FROM sync_schedule_settings WHERE company_id = ?",
     [companyId]
   );
-  return NextResponse.json({ success: true, schedule: row });
+  return NextResponse.json({ success: true, schedule: row, groups: await getSyncGroupSchedules() });
 }
 
 // Every call is written to the audit log (who, role, target, request, outcome).

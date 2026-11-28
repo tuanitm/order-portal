@@ -25,6 +25,21 @@ interface SyncSchedule {
   updated_at: string;
 }
 
+/** One SAP sync group with its own interval (GET /api/admin/settings/sync-schedule → groups). */
+interface SyncGroup {
+  key: string;
+  label: string;
+  steps: string[];
+  isEnabled: boolean;
+  intervalHours: number;
+  lastRunAt: string | null;
+  lastRunStatus: "success" | "partial" | "failed" | null;
+  lastRunSummary: string | null;
+  nextRunAt: string | null;
+}
+
+const vnTime = (iso: string | null) => (iso ? new Date(iso).toLocaleString(undefined, { timeZone: VN_TIME_ZONE }) : "—");
+
 interface StockSyncSchedule {
   stock_sync_enabled: number;
   stock_sync_windows: StockSyncWindow[];
@@ -54,8 +69,14 @@ export default function SettingsPage() {
   const [soApprovalRequired, setSoApprovalRequired] = useState(false);
   const [soApprovalFromDate, setSoApprovalFromDate] = useState("");
   const [isSaving, setIsSaving] = useState(false);
-  const [isRunning, setIsRunning] = useState(false);
   const [message, setMessage] = useState("");
+  // SAP sync groups (Master Data / Price List / Discount / Promotion / SO status), each on its own interval.
+  const [groups, setGroups] = useState<SyncGroup[]>([]);
+  const [groupTableReady, setGroupTableReady] = useState(true);
+  const [isGroupsSaving, setIsGroupsSaving] = useState(false);
+  const [runningGroup, setRunningGroup] = useState<string | null>(null);
+  const [groupMessage, setGroupMessage] = useState("");
+  const [openSummary, setOpenSummary] = useState<string | null>(null);
 
   // Inventory Stock sync — its own schedule, separate from the combined one above.
   const [stockSchedule, setStockSchedule] = useState<StockSyncSchedule | null>(null);
@@ -163,6 +184,8 @@ export default function SettingsPage() {
       setSoApprovalRequired(!!data.schedule.so_approval_required);
       setSoApprovalFromDate(data.schedule.so_approval_from_date || "");
     }
+    if (Array.isArray(data.groups)) setGroups(data.groups);
+    setGroupTableReady(data.groupTableReady !== false);
     setIsLoading(false);
   }, []);
 
@@ -190,19 +213,44 @@ export default function SettingsPage() {
     }
   };
 
-  const runNow = async () => {
-    setIsRunning(true);
-    setMessage("");
+  const setGroup = (key: string, patch: Partial<SyncGroup>) => setGroups((gs) => gs.map((g) => (g.key === key ? { ...g, ...patch } : g)));
+
+  const saveGroups = async () => {
+    const bad = groups.find((g) => !Number.isInteger(g.intervalHours) || g.intervalHours < 1 || g.intervalHours > 720);
+    if (bad) { setGroupMessage(`${bad.label}: interval must be 1–720 hours`); return; }
+    setIsGroupsSaving(true);
+    setGroupMessage("");
     try {
-      const res = await fetch("/api/admin/settings/sync-schedule/run-now", { method: "POST" });
+      const res = await fetch("/api/admin/settings/sync-schedule", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ groups: groups.map((g) => ({ key: g.key, isEnabled: g.isEnabled, intervalHours: g.intervalHours })) }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to save");
+      if (Array.isArray(data.groups)) setGroups(data.groups);
+      setGroupMessage("Saved.");
+    } catch (err) {
+      setGroupMessage(err instanceof Error ? err.message : "Failed to save");
+    } finally {
+      setIsGroupsSaving(false);
+    }
+  };
+
+  const runGroupNow = async (key: string | null) => {
+    setRunningGroup(key ?? "all");
+    setGroupMessage("");
+    try {
+      const res = await fetch(`/api/admin/settings/sync-schedule/run-now${key ? `?group=${encodeURIComponent(key)}` : ""}`, { method: "POST" });
       const data = await res.json();
       if (!res.ok) throw new Error([data.error, data.message].filter(Boolean).join(" — "));
-      setMessage(`Run finished: ${data.status}`);
+      setGroupMessage(`${key ? groups.find((g) => g.key === key)?.label ?? key : "All groups"}: run finished — ${data.status}`);
+      setOpenSummary(key);
       await load();
     } catch (err) {
-      setMessage(err instanceof Error ? err.message : "Sync run failed");
+      setGroupMessage(err instanceof Error ? err.message : "Sync run failed");
     } finally {
-      setIsRunning(false);
+      setRunningGroup(null);
     }
   };
 
@@ -325,70 +373,98 @@ export default function SettingsPage() {
           )}
         </Section>
 
-        {/* ── SAP Sync Schedule ──────────────────────────────────────────── */}
+        {/* ── SAP Sync Schedule: one interval per group ─────────────────── */}
         <Section title="SAP Sync Schedule">
           <p style={{ fontSize: "0.8125rem", color: "var(--text-tertiary, #94A3B8)", marginBottom: "1rem" }}>
-            One combined run covers: Customer Group, Item Group, SAP Customers, Items, Warehouse, Price List, Channel
-            Price List (every price list), Period Discount (every price list), Contract Discount, Promotion Discount,
-            and SAP Order Status. Inventory Stock has its own schedule below.
+            Each group syncs from SAP on its own interval (e.g. Master Data every 6 hours, Price List and Discount every 24,
+            Promotion every 12, SO status every 4). Due groups run one after another, in the order below. Inventory Stock has
+            its own schedule further down.
           </p>
 
           {isLoading ? (
             <div style={styles.empty}>Loading...</div>
           ) : (
             <>
-              <div style={{ display: "flex", flexDirection: "column", gap: "1rem", maxWidth: "420px" }}>
-                <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", fontSize: "0.875rem", cursor: "pointer" }}>
-                  <input
-                    type="checkbox"
-                    checked={isEnabled}
-                    onChange={(e) => setIsEnabled(e.target.checked)}
-                    style={{ width: 16, height: 16, cursor: "pointer" }}
-                  />
-                  Enable automated sync
-                </label>
-
-                <label style={{ display: "flex", flexDirection: "column", gap: "0.375rem", fontSize: "0.8125rem" }}>
-                  Run every (hours)
-                  <input
-                    type="number"
-                    min={1}
-                    value={intervalHours}
-                    onChange={(e) => setIntervalHours(Math.max(1, Number(e.target.value) || 1))}
-                    style={{ ...styles.input, width: "120px" }}
-                  />
-                </label>
-
-                <div style={{ display: "flex", gap: "0.75rem" }}>
-                  <button onClick={save} disabled={isSaving} style={btn("primary", isSaving)}>
-                    {isSaving ? "Saving..." : "Save"}
-                  </button>
-                  <button onClick={runNow} disabled={isRunning} style={btn("secondary", isRunning)}>
-                    {isRunning ? "Running..." : "Run now"}
-                  </button>
+              {!groupTableReady && (
+                <div style={{ marginBottom: "1rem", padding: "0.7rem 0.9rem", borderRadius: 8, background: "#FFFBEB", border: "1px solid #FCD34D", fontSize: "0.8125rem", color: "#92400E" }}>
+                  The per-group schedule isn&apos;t set up in the database yet — every group follows the old combined schedule
+                  ({isEnabled ? `every ${intervalHours} h` : "off"}). Run <code>node scripts/migrate_sync_group_schedule.mjs --apply</code> once, then set the intervals here.
                 </div>
-
-                {message && <p style={{ fontSize: "0.8125rem", color: "var(--text-secondary, #64748B)" }}>{message}</p>}
+              )}
+              <div style={{ overflowX: "auto" }}>
+                <table style={styles.table}>
+                  <thead>
+                    <tr>
+                      <th style={{ ...styles.th, padding: "0.55rem 0.7rem" }}>Group</th>
+                      <th style={{ ...styles.th, padding: "0.55rem 0.7rem" }}>On</th>
+                      <th style={{ ...styles.th, padding: "0.55rem 0.7rem" }}>Every (hours)</th>
+                      <th style={{ ...styles.th, padding: "0.55rem 0.7rem" }}>Last run</th>
+                      <th style={{ ...styles.th, padding: "0.55rem 0.7rem" }}>Next run</th>
+                      <th style={{ ...styles.th, padding: "0.55rem 0.7rem" }}></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {groups.map((g) => (
+                      <Fragment key={g.key}>
+                        <tr>
+                          <td style={{ ...styles.td, padding: "0.6rem 0.7rem" }}>
+                            <div style={{ fontWeight: 700 }}>{g.label}</div>
+                            <div style={{ fontSize: "0.72rem", color: "var(--text-tertiary, #94A3B8)" }}>{g.steps.join(" · ")}</div>
+                          </td>
+                          <td style={{ ...styles.td, padding: "0.6rem 0.7rem" }}>
+                            <input type="checkbox" checked={g.isEnabled} disabled={!groupTableReady} aria-label={`${g.label} on`}
+                              onChange={(e) => setGroup(g.key, { isEnabled: e.target.checked })} style={{ width: 16, height: 16, cursor: "pointer" }} />
+                          </td>
+                          <td style={{ ...styles.td, padding: "0.6rem 0.7rem" }}>
+                            <input type="number" min={1} max={720} step={1} value={g.intervalHours} disabled={!groupTableReady || !g.isEnabled} aria-label={`${g.label} interval in hours`}
+                              onChange={(e) => setGroup(g.key, { intervalHours: Math.max(1, Math.floor(Number(e.target.value) || 1)) })}
+                              style={{ ...styles.input, width: 90 }} />
+                          </td>
+                          <td style={{ ...styles.td, padding: "0.6rem 0.7rem", fontSize: "0.8rem", whiteSpace: "nowrap" }}>
+                            {g.lastRunAt ? (
+                              <button type="button" onClick={() => setOpenSummary(openSummary === g.key ? null : g.key)} disabled={!g.lastRunSummary}
+                                title={g.lastRunSummary ? "Show the result" : undefined}
+                                style={{ border: "none", background: "none", padding: 0, cursor: g.lastRunSummary ? "pointer" : "default", textAlign: "left", color: "inherit", font: "inherit" }}>
+                                {vnTime(g.lastRunAt)}{" "}
+                                {g.lastRunStatus && <Badge label={g.lastRunStatus} tone={g.lastRunStatus === "success" ? "success" : g.lastRunStatus === "partial" ? "warning" : "error"} />}
+                                {g.lastRunSummary ? " ▾" : ""}
+                              </button>
+                            ) : "Never"}
+                          </td>
+                          <td style={{ ...styles.td, padding: "0.6rem 0.7rem", fontSize: "0.8rem", whiteSpace: "nowrap", color: "var(--text-secondary, #64748B)" }}>
+                            {g.isEnabled ? (g.nextRunAt && new Date(g.nextRunAt).getTime() <= Date.now() ? "due — within a minute" : vnTime(g.nextRunAt)) : "off"}
+                          </td>
+                          <td style={{ ...styles.td, padding: "0.6rem 0.7rem" }}>
+                            <button type="button" onClick={() => runGroupNow(g.key)} disabled={!!runningGroup} style={btn("secondary", !!runningGroup)}>
+                              {runningGroup === g.key ? "Running…" : "Run now"}
+                            </button>
+                          </td>
+                        </tr>
+                        {openSummary === g.key && g.lastRunSummary && (
+                          <tr>
+                            <td colSpan={6} style={{ ...styles.td, padding: "0 0.7rem 0.7rem" }}>
+                              <pre style={{
+                                margin: 0, padding: "0.75rem", background: "var(--bg-secondary, #F8FAFC)", borderRadius: "var(--radius-lg, 8px)",
+                                fontSize: "0.75rem", whiteSpace: "pre-wrap", border: "1px solid var(--color-gray-200, #E2E8F0)",
+                              }}>{g.lastRunSummary}</pre>
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    ))}
+                  </tbody>
+                </table>
               </div>
 
-              <div style={{ marginTop: "1.5rem", paddingTop: "1.5rem", borderTop: "1px solid var(--color-gray-200, #E2E8F0)" }}>
-                <h3 style={{ fontSize: "0.875rem", fontWeight: 700, marginBottom: "0.5rem" }}>Last run</h3>
-                {schedule?.last_run_at ? (
-                  <>
-                    <p style={{ fontSize: "0.8125rem", color: "var(--text-secondary, #64748B)" }}>
-                      {new Date(schedule.last_run_at).toLocaleString(undefined, { timeZone: VN_TIME_ZONE })} — {schedule.last_run_status}
-                    </p>
-                    <pre style={{
-                      marginTop: "0.5rem", padding: "0.75rem", background: "var(--bg-secondary, #F8FAFC)",
-                      borderRadius: "var(--radius-lg, 8px)", fontSize: "0.75rem", whiteSpace: "pre-wrap",
-                      border: "1px solid var(--color-gray-200, #E2E8F0)",
-                    }}>
-                      {schedule.last_run_summary}
-                    </pre>
-                  </>
-                ) : (
-                  <p style={{ fontSize: "0.8125rem", color: "var(--text-tertiary, #94A3B8)" }}>Never run yet.</p>
-                )}
+              <div style={{ display: "flex", gap: "0.75rem", alignItems: "center", marginTop: "1rem", flexWrap: "wrap" }}>
+                <button onClick={saveGroups} disabled={isGroupsSaving || !groupTableReady} style={btn("primary", isGroupsSaving || !groupTableReady)}>
+                  {isGroupsSaving ? "Saving..." : "Save sync schedule"}
+                </button>
+                <button onClick={() => runGroupNow(null)} disabled={!!runningGroup} style={btn("secondary", !!runningGroup)}
+                  title="Run every group now, one after another">
+                  {runningGroup === "all" ? "Running all…" : "Run all now"}
+                </button>
+                {groupMessage && <span style={{ fontSize: "0.8125rem", color: "var(--text-secondary, #64748B)" }}>{groupMessage}</span>}
               </div>
             </>
           )}
